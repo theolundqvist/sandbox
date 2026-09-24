@@ -76,7 +76,7 @@ export interface ClientCtx {
   use<T = any>(mod: string): T;
   /** URL of a file added with add_asset: ctx.asset("dragon.glb") for this mod's, ctx.asset("other-mod/dragon.glb") for another's. */
   asset(name: string): string;
-  /** Adds a tab to the game menu (Esc) and returns its empty content element; it is removed when this mod is reloaded or removed. */
+  /** Adds a tab to the game menu (Tab) and returns its empty content element; it is removed when this mod is reloaded or removed. */
   menuTab(title: string): HTMLElement;
 }
 

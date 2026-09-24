@@ -520,23 +520,13 @@ function toast(text: string, kind = "info") {
 const chat = $<HTMLInputElement>("chat");
 const menu = $("menu");
 const howto = $("howto");
+const palette = $("palette");
 const typing = () => document.activeElement instanceof HTMLInputElement;
 
 /** During play the mouse steers the camera; the cursor is free only while chat, the menu or an overlay is open. */
 function capture() {
-  if (!document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && !document.pointerLockElement) renderer.domElement.requestPointerLock();
+  if (!document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !document.pointerLockElement) renderer.domElement.requestPointerLock();
 }
-// The browser releases the mouse on Esc without sending the key, so a release opens the menu, unless a mod released it to show its own UI.
-let modReleased = false;
-const releasePointer = document.exitPointerLock.bind(document);
-document.exitPointerLock = () => {
-  if (document.pointerLockElement) modReleased = true;
-  return releasePointer();
-};
-document.addEventListener("pointerlockchange", () => {
-  if (document.pointerLockElement) modReleased = false;
-  else if (!modReleased && menu.hidden && chat.hidden && howto.hidden) openMenu();
-});
 renderer.domElement.addEventListener("click", capture);
 const ideas = ["add coins that respawn and a scoreboard", "make the floor lava every 30 seconds", "give me a grappling hook", "spawn a boss that chases whoever is winning", "let us build with blocks", "add a race track with a timer", "make me tiny and everyone else huge"];
 function openChat() {
@@ -544,7 +534,7 @@ function openChat() {
   chat.hidden = false;
   chat.focus();
   startTalking();
-  if (document.pointerLockElement) releasePointer();
+  if (document.pointerLockElement) document.exitPointerLock();
 }
 function closeMenu() {
   menu.hidden = true;
@@ -604,6 +594,10 @@ showMic();
 $("howto-play").onclick = play;
 
 addEventListener("keydown", (e: KeyboardEvent) => {
+  if ((e.metaKey || e.ctrlKey) && e.code === "KeyK") {
+    e.preventDefault();
+    return palette.hidden ? openPalette() : closePalette();
+  }
   if (!howto.hidden) {
     if (e.code === "Enter" || e.code === "Space") play();
     return;
@@ -617,12 +611,12 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     e.preventDefault();
     return;
   }
-  if (e.code === "Escape" && !typing()) {
+  // Only Tab opens the game menu, so Esc and every other key stay free for mods.
+  if (e.code === "Tab" && !typing()) {
     e.preventDefault();
-    // The first Esc while a mod's UI holds the mouse belongs to that mod, which usually closes on it.
-    if (menu.hidden && modReleased) return void (modReleased = false);
     return menu.hidden ? openMenu() : closeMenu();
   }
+  if (e.code === "Escape" && !typing() && !menu.hidden) return closeMenu();
   if (e.code === "KeyT" && !typing() && menu.hidden) return startTalking();
   if (!typing()) keys.add(e.code);
 });
@@ -735,6 +729,95 @@ function showTab(tab: string) {
   if (tab === "mods") refreshMenu();
 }
 for (const b of $("tabs").querySelectorAll<HTMLElement>("button")) b.onclick = () => showTab(b.dataset.tab!);
+$("tabs").addEventListener("wheel", (e) => {
+  if (!e.deltaY) return;
+  $("tabs").scrollLeft += e.deltaY;
+  e.preventDefault();
+}, { passive: false });
+
+/** Cmd+K: every menu tab, and every button and setting inside one, searchable in one list. Buttons run straight away. */
+type Command = { label: string; where: string; run(): void };
+let commands: Command[] = [];
+let shown: Command[] = [];
+let picked = 0;
+const textOf = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+function menuCommands(): Command[] {
+  const list: Command[] = [];
+  const open = (tab: string, el?: HTMLElement) => {
+    if (menu.hidden) void openMenu();
+    showTab(tab);
+    el?.scrollIntoView({ block: "center" });
+    el?.focus();
+  };
+  for (const b of $("tabs").querySelectorAll<HTMLElement>("button")) list.push({ label: textOf(b), where: "Menu", run: () => open(b.dataset.tab!) });
+  for (const section of menu.querySelectorAll<HTMLElement>("section[data-tab]")) {
+    const tab = section.dataset.tab!;
+    const title = textOf($("tabs").querySelector(`[data-tab="${CSS.escape(tab)}"]`));
+    for (const el of section.querySelectorAll<HTMLElement>("button, input, select, textarea")) {
+      const hiddenIn = el.parentElement?.closest("[hidden]");
+      if ((el as HTMLButtonElement).disabled || el.hidden || (hiddenIn && hiddenIn !== section && section.contains(hiddenIn))) continue;
+      const heading = [...section.querySelectorAll("h2, h3, b, label")].filter((h) => h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING && !h.contains(el)).pop();
+      const own = el.tagName === "BUTTON" ? textOf(el) : textOf(el.closest("label")) || el.getAttribute("aria-label") || (el as HTMLInputElement).placeholder || textOf(heading);
+      if (!own) continue;
+      const context = textOf(heading) && textOf(heading) !== own ? `${title} · ${textOf(heading)}` : title;
+      list.push({ label: own, where: context, run: el.tagName === "BUTTON" ? () => el.click() : () => open(tab, el) });
+    }
+  }
+  for (const b of menu.querySelectorAll<HTMLElement>(".actions button")) if (!b.hidden) list.push({ label: textOf(b), where: "Menu", run: () => b.click() });
+  return list;
+}
+function openPalette() {
+  commands = menuCommands();
+  palette.hidden = false;
+  if (document.pointerLockElement) document.exitPointerLock();
+  const input = $<HTMLInputElement>("palette-input");
+  input.value = "";
+  input.focus();
+  filterPalette();
+}
+function closePalette() {
+  palette.hidden = true;
+  capture();
+}
+function filterPalette() {
+  const words = $<HTMLInputElement>("palette-input").value.toLowerCase().split(/\s+/).filter(Boolean);
+  const score = (c: Command) => (c.label.toLowerCase().startsWith(words[0] ?? "") ? 0 : 1);
+  shown = commands.filter((c) => words.every((w) => `${c.label} ${c.where}`.toLowerCase().includes(w))).sort((a, b) => score(a) - score(b)).slice(0, 60);
+  picked = 0;
+  $("palette-empty").hidden = shown.length > 0;
+  $("palette-list").replaceChildren(
+    ...shown.map((c, i) => {
+      const li = document.createElement("li");
+      li.append(Object.assign(document.createElement("b"), { textContent: c.label }), Object.assign(document.createElement("span"), { textContent: c.where }));
+      li.onmouseenter = () => markPicked(i);
+      li.onclick = () => runPicked(i);
+      return li;
+    }),
+  );
+  markPicked(0);
+}
+function markPicked(i: number) {
+  picked = i;
+  $("palette-list").querySelectorAll("li").forEach((li, j) => li.classList.toggle("active", j === i));
+  $("palette-list").children[i]?.scrollIntoView({ block: "nearest" });
+}
+function runPicked(i: number) {
+  const command = shown[i];
+  if (!command) return;
+  palette.hidden = true;
+  command.run();
+  capture();
+}
+$("palette-input").oninput = filterPalette;
+$("palette-input").addEventListener("keydown", (e: KeyboardEvent) => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    markPicked((picked + (e.key === "ArrowDown" ? 1 : -1) + shown.length) % Math.max(1, shown.length));
+  } else if (e.key === "Enter") runPicked(picked);
+  else if (e.key === "Escape") closePalette();
+  if (!((e.metaKey || e.ctrlKey) && e.code === "KeyK")) e.stopPropagation();
+});
+palette.onclick = (e) => e.target === palette && closePalette();
 for (const keysList of $("howto").querySelectorAll(".keys")) $("help-keys").append(keysList.cloneNode(true));
 $("main-menu").hidden = !localStorage.getItem("sandbox-menu");
 $("main-menu").onclick = () => location.assign("/menu");
@@ -752,7 +835,7 @@ async function openMenu() {
   keys.clear();
   menu.hidden = false;
   replaying = false;
-  if (document.pointerLockElement) releasePointer();
+  if (document.pointerLockElement) document.exitPointerLock();
   $("menu-world").textContent = world;
   $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;
   const name = slug(world);

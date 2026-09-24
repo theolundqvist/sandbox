@@ -79,7 +79,18 @@
   #replay { position: fixed; top: 20px; left: 50%; translate: -50% 0; padding: 10px 18px; background: var(--veil); border-bottom: 2px solid var(--accent); }
   #replay span { color: var(--accent); margin-left: 10px; }
   .sheet.wide { width: min(640px, 100%); height: min(780px, calc(100vh - 32px)); display: flex; flex-direction: column; }
-  #tabs { display: flex; gap: 28px; margin-top: 24px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  #tabs { display: flex; gap: 28px; margin-top: 24px; border-bottom: 1px solid var(--line); overflow-x: auto; flex-shrink: 0; }
+  #tabs button { flex-shrink: 0; }
+  #tabs, #menu section, #palette ul { scrollbar-width: none; }
+  #tabs::-webkit-scrollbar, #menu section::-webkit-scrollbar, #palette ul::-webkit-scrollbar { display: none; }
+  #palette { align-items: start; padding-top: 14vh; }
+  #palette .sheet { padding: 20px 0 8px; width: min(600px, 100%); }
+  #palette input { padding: 6px 28px 14px; font-size: 20px; border-color: var(--line); }
+  #palette ul { max-height: 52vh; overflow-y: auto; }
+  #palette li { padding: 11px 28px; border: 0; border-left: 3px solid transparent; cursor: pointer; align-items: baseline; }
+  #palette li span { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+  #palette li.active { background: rgba(255,255,255,.07); border-left-color: var(--accent); }
+  #palette p { padding: 12px 28px; margin: 0; }
   #tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 12px 0; color: var(--dim); background: none; }
   #tabs button:hover { color: var(--text); background: none; }
   #tabs button.active { color: var(--text); border-color: var(--accent); }
@@ -138,12 +149,12 @@
     <div id="rules" class="caps"></div>
     <button id="claude"></button>
     <button id="mic" title="Hold T, or open the chat, and what you say is transcribed into it"></button>
-    <button id="menu-button">Menu<kbd class="desk">Esc</kbd></button>
+    <button id="menu-button">Menu<kbd class="desk">Tab</kbd></button>
   </div>
   <div id="status" class="caps">Connecting…</div>
   <div id="feed"></div>
   <input id="chat" placeholder="Say something, or ask your Claude for anything…" maxlength="300" autocomplete="off" hidden>
-  <div id="hint" class="caps shadow">Enter to chat · Esc for menu</div>
+  <div id="hint" class="caps shadow">Enter to chat · Tab for menu</div>
   <div id="toasts"></div>
   <div id="builders" class="caps shadow"></div>
   <div id="replay" class="caps" hidden>Timelapse <span id="replay-time"></span></div>
@@ -151,7 +162,7 @@
   <div id="announce" hidden><div class="caps"></div><b></b><p></p></div>
   <div id="stick" hidden><div></div></div>
   <button id="jump" hidden>Jump</button>
-  <div id="empty" class="shadow" hidden><b>Nothing exists yet</b>Press Esc, connect your Claude, and ask it for ground to stand on.</div>
+  <div id="empty" class="shadow" hidden><b>Nothing exists yet</b>Press Tab, connect your Claude, and ask it for ground to stand on.</div>
 </div>
 
 <div id="join" class="overlay" hidden>
@@ -177,7 +188,8 @@
       <dt><span>Space</span></dt><dd>Jump</dd>
       <dt><span>Enter</span></dt><dd>Chat with everyone and your Claude, typed or spoken</dd>
       <dt><span>T</span></dt><dd>Hold to talk</dd>
-      <dt><span>Esc</span></dt><dd>Menu: connect your Claude, invite friends, see what everyone builds</dd>
+      <dt><span>⌘</span><span>K</span></dt><dd>Search every menu and setting</dd>
+      <dt><span>Tab</span></dt><dd>Menu: connect your Claude, invite friends, see what everyone builds</dd>
     </dl>
     <dl class="keys touchonly">
       <dt>Left stick</dt><dd>Move</dd>
@@ -187,6 +199,14 @@
       <dt>Menu</dt><dd>Connect your Claude, invite friends</dd>
     </dl>
     <div class="actions"><button id="howto-play" class="primary">Play</button></div>
+  </div>
+</div>
+
+<div id="palette" class="overlay" hidden>
+  <div class="sheet">
+    <input id="palette-input" placeholder="Search menus, settings and actions" autocomplete="off" spellcheck="false">
+    <ul id="palette-list"></ul>
+    <p id="palette-empty" hidden>Nothing matches.</p>
   </div>
 </div>
 
