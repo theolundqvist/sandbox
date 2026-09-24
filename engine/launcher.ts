@@ -72,6 +72,7 @@ async function host(id: string) {
   running = { id, proc, port };
   state.hosting = id;
   saveState();
+  await publish();
   proc.exited.then(() => {
     if (running?.proc !== proc) return;
     running = null;
@@ -96,6 +97,7 @@ function share(on: boolean) {
     const current = tunnel;
     tunnel = null;
     current?.ws.close();
+    void publish();
     return;
   }
   if (tunnel) return;
@@ -108,7 +110,10 @@ function share(on: boolean) {
   const local = new Map<number, { ws: WebSocket; queue: string[] }>();
   const ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ t: "ping" })), 20_000);
   const reply = (msg: object) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(msg));
-  ws.onopen = () => (current.url = `${RELAY}/r/${state.room}`);
+  ws.onopen = () => {
+    current.url = `${RELAY}/r/${state.room}`;
+    void publish();
+  };
   ws.onmessage = async ({ data }) => {
     const msg = JSON.parse(String(data));
     if (msg.t === "req") {
@@ -149,6 +154,7 @@ function share(on: boolean) {
     for (const pipe of local.values()) pipe.ws.close();
     if (tunnel !== current) return;
     tunnel = null;
+    void publish();
     tunnelError = `Lost the connection to ${RELAY}${e.reason ? `: ${e.reason}` : ""}. Retrying in 5 seconds.`;
     console.error(tunnelError);
     setTimeout(() => state.sharing && !tunnel && share(true), 5_000);
@@ -170,6 +176,11 @@ async function world(action: string, body?: object) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error);
   return data;
+}
+
+/** The running world's public address, so its invite links point at the relay rather than wherever the host opened the game. */
+async function publish() {
+  if (running) await world("public", { url: tunnel?.url ?? null });
 }
 
 async function menuState() {

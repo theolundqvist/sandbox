@@ -210,6 +210,7 @@ const perf = () => ({
   players: Object.fromEntries([...clientPerf].map(([name, { at, ...p }]) => [name, { ...p, secondsOld: Math.round((Date.now() - at) / 1000) }])),
 });
 
+let publicUrl: string | null = null;
 const shots = new Map<string, (data: string) => void>();
 const mcp = createMcp({
   root: ROOT,
@@ -288,6 +289,10 @@ const server = Bun.serve<Conn>({
           feed(`${body.name} was removed by the host`, "info");
           return Response.json({});
         }
+        case "public":
+          publicUrl = body.url ?? null;
+          broadcast({ t: "public", url: publicUrl });
+          return Response.json({});
         case "invite":
           config.invite = token();
           writeJson("config.json", config);
@@ -347,6 +352,7 @@ const server = Bun.serve<Conn>({
           world: config.name,
           rules: config.rules,
           invite: config.invite,
+          publicUrl,
           mods: [...mods.running].filter(([, m]) => m.build.client).map(([name, m]) => ({ name, url: m.build.client })),
           feed: feedLog.slice(-8),
           claudes: Object.fromEntries([...claudes.keys()].map((name) => [name, builder(name)])),

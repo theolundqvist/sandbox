@@ -13,6 +13,7 @@ let key = hashParams.get("key") ?? localStorage.getItem(keyName);
 let me = "";
 let world = "";
 let invite = "";
+let publicUrl: string | null = null;
 
 async function join(body: object) {
   const res = await fetch("/api/join", { method: "POST", body: JSON.stringify(body) });
@@ -350,6 +351,7 @@ function connect() {
       case "welcome": {
         world = msg.world;
         invite = msg.invite;
+        publicUrl = msg.publicUrl;
         me = msg.playerId;
         $("world-name").textContent = world;
         $("rules").textContent = msg.rules === "additive" ? "additive" : "open";
@@ -364,6 +366,9 @@ function connect() {
         for (const f of msg.feed) addLine(f.text, f.kind);
         return;
       }
+      case "public":
+        publicUrl = msg.url;
+        return;
       case "claude":
         if (msg.name === me) showClaude(msg.state);
         claudes.set(msg.name, { state: msg.state, task: msg.task });
@@ -723,7 +728,7 @@ async function openMenu() {
   replaying = false;
   if (document.pointerLockElement) document.exitPointerLock();
   $("menu-world").textContent = world;
-  $("invite-link").textContent = `${origin}/#invite=${invite}`;
+  $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;
   const name = slug(world);
   const title = world.replace(/['"`$\\]/g, "");
   $("claude-command").textContent = connectCommand(
