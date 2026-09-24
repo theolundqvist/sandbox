@@ -29,6 +29,11 @@
   #claude[data-state=listening]::before { content: ""; display: inline-block; width: 6px; height: 6px; background: var(--claude); margin-right: 8px; vertical-align: 1px; }
   #claude[data-state=offline] { color: var(--text); border-color: var(--claude); }
   #claude:not([data-state=offline]) { cursor: default; pointer-events: none; }
+  #mic { background: var(--glass); border-color: transparent; }
+  #mic[data-state=on] { color: var(--err); }
+  #mic[data-state=on]::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--err); margin-right: 8px; vertical-align: 1px; }
+  #mic[data-state=none] { opacity: .45; pointer-events: none; }
+  .line.spoken { font-style: italic; }
   #menu-button { background: var(--glass); border-color: transparent; }
   #menu-button:hover { background: var(--text); }
   kbd { font: inherit; border: 1px solid currentColor; padding: 2px 5px; margin-left: 6px; opacity: .6; }
@@ -73,6 +78,22 @@
   @media (max-width: 900px) { body:not(.touch) #react { bottom: 72px; } }
   #replay { position: fixed; top: 20px; left: 50%; translate: -50% 0; padding: 10px 18px; background: var(--veil); border-bottom: 2px solid var(--accent); }
   #replay span { color: var(--accent); margin-left: 10px; }
+  .sheet.wide { width: min(640px, 100%); height: min(780px, calc(100vh - 32px)); display: flex; flex-direction: column; }
+  #tabs { display: flex; gap: 28px; margin-top: 24px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  #tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 12px 0; color: var(--dim); background: none; }
+  #tabs button:hover { color: var(--text); background: none; }
+  #tabs button.active { color: var(--text); border-color: var(--accent); }
+  #menu section { flex: 1; min-height: 0; overflow-y: auto; padding-top: 8px; }
+  #menu h2 span { color: var(--claude); margin-left: 8px; }
+  .row { display: block; }
+  .row > div { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+  .row p { margin: 4px 0 0; }
+  .row .votes { justify-content: flex-start; gap: 6px; margin-top: 10px; }
+  .row .votes button { padding: 7px 10px; border-color: transparent; background: rgba(255,255,255,.06); }
+  .row .votes button:hover, .row .votes button.picked { background: var(--text); color: #0b0b0c; }
+  .bar { height: 2px; background: var(--line); margin-top: 8px; }
+  .bar i { display: block; height: 100%; background: var(--claude); }
+  .row.done .bar i { background: var(--ok); } .row.blocked .bar i { background: var(--err); }
   .overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(6,7,9,.5); padding: 16px; }
   .sheet { width: min(560px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; padding: 40px 44px; background: var(--veil); backdrop-filter: blur(10px); }
   @media (max-width: 600px) { .sheet { padding: 28px 20px; } }
@@ -116,6 +137,7 @@
     <div id="world-name"></div>
     <div id="rules" class="caps"></div>
     <button id="claude"></button>
+    <button id="mic" title="Everything you say is transcribed into the chat"></button>
     <button id="menu-button">Menu<kbd class="desk">Esc</kbd></button>
   </div>
   <div id="status" class="caps">Connecting…</div>
@@ -154,7 +176,7 @@
       <dt>Mouse</dt><dd>Look around</dd>
       <dt><span>Space</span></dt><dd>Jump</dd>
       <dt><span>Enter</span></dt><dd>Chat with everyone and your Claude</dd>
-      <dt><span>Esc</span></dt><dd>Menu: connect your Claude, invite friends</dd>
+      <dt><span>Esc</span></dt><dd>Menu: connect your Claude, invite friends, see what everyone builds</dd>
     </dl>
     <dl class="keys touchonly">
       <dt>Left stick</dt><dd>Move</dd>
@@ -168,19 +190,32 @@
 </div>
 
 <div id="menu" class="overlay" hidden>
-  <div class="sheet">
+  <div class="sheet wide">
     <p class="kicker caps">Paused</p>
-    <h1>Build this world</h1>
-    <p>Everything here is made by the players' Claudes, live, while you play.</p>
-    <h2>Connect your Claude</h2>
-    <p>Paste this into a terminal, then ask for things in the in-game chat. No Claude Code yet? Install it with <code>curl -fsSL https://claude.ai/install.sh | bash</code></p>
-    <div class="copy"><code id="claude-command"></code><button data-copy="claude-command">Copy</button></div>
-    <h2>Invite friends</h2>
-    <div class="copy"><code id="invite-link"></code><button data-copy="invite-link">Copy</button></div>
-    <h2>Playing now</h2>
-    <ul id="menu-players"></ul>
-    <h2>Mods</h2>
-    <ul id="menu-mods"></ul>
+    <h1 id="menu-world"></h1>
+    <nav id="tabs"><button data-tab="game" class="active">Game</button><button data-tab="builders">Builders</button><button data-tab="mods">Mods</button><button data-tab="help">Help</button></nav>
+    <section data-tab="game">
+      <h2>Connect your Claude</h2>
+      <p>Paste this into a terminal, then ask for things in the in-game chat. No Claude Code yet? Install it with <code>curl -fsSL https://claude.ai/install.sh | bash</code></p>
+      <div class="copy"><code id="claude-command"></code><button data-copy="claude-command">Copy</button></div>
+      <h2>Invite friends</h2>
+      <div class="copy"><code id="invite-link"></code><button data-copy="invite-link">Copy</button></div>
+      <h2>Playing now</h2>
+      <ul id="menu-players"></ul>
+      <h2>Game master <span id="gm-state"></span></h2>
+      <p>One Claude that runs the whole world: random events, challenges, a boss to build up to, and credits for spectacular builds. One player runs it for everyone.</p>
+      <div class="copy"><code id="gm-command"></code><button data-copy="gm-command">Copy</button></div>
+    </section>
+    <section data-tab="builders" hidden><ul id="menu-builders"></ul></section>
+    <section data-tab="mods" hidden><ul id="menu-mods"></ul></section>
+    <section data-tab="help" hidden>
+      <p>Nothing here is fixed. Every player's Claude changes this world while you play: new rules, weapons, whole games. Ask yours for anything in the chat, then watch it go live for everyone.</p>
+      <div id="help-keys"></div>
+      <h2>Votes</h2>
+      <p>When a mod goes live, press 1 to love it or 2 to vote it out. If more than half of the players online vote it out, it is undone. Vote on any mod at any time in the Mods tab.</p>
+      <h2>Game master</h2>
+      <p>If someone runs the game master, expect trouble. Say "game master" in chat to talk to it.</p>
+    </section>
     <div class="actions"><button id="menu-close" class="primary">Resume</button><button id="timelapse">Timelapse</button><button id="main-menu" hidden>Main menu</button></div>
   </div>
 </div>

@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { ServerWebSocket } from "bun";
-import { createMcp } from "./mcp";
+import { createMcp, GAME_MASTER, type Task } from "./mcp";
 import { Mods } from "./mods";
 import { SimHost } from "./simhost";
 import { openStore } from "./world";
@@ -89,13 +89,13 @@ Bun.spawnSync(["git", "commit", "-qm", "server start"], { cwd: ROOT });
 const logs: { at: number; mod: string; level: string; text: string; player?: string }[] = [];
 const clientPerf = new Map<string, { at: number } & Record<string, unknown>>();
 const feedLog: { at: number; text: string; kind: string }[] = [];
-const chatLog: { seq: number; from: string; text: string }[] = [];
+const chatLog: { seq: number; from: string; text: string; spoken?: boolean }[] = [];
 const chatWaiters = new Set<() => void>();
 let chatSeq = 0;
-function chat(from: string, text: string) {
-  chatLog.push({ seq: ++chatSeq, from, text });
+function chat(from: string, text: string, spoken?: boolean) {
+  chatLog.push({ seq: ++chatSeq, from, text, spoken });
   if (chatLog.length > 50) chatLog.shift();
-  broadcast({ t: "chat", from, text });
+  broadcast({ t: "chat", from, text, spoken });
   for (const wake of chatWaiters) wake();
 }
 const sockets = new Map<string, ServerWebSocket<Conn>>();
@@ -120,12 +120,25 @@ function react(from: string, mod: string, kind: string) {
 
 /** Whether each player's Claude is waiting on the chat, busy, or gone, so players know if anyone hears them. */
 type Presence = "listening" | "working" | "offline";
-const claudes = new Map<string, { state: Presence; at: number }>();
+const claudes = new Map<string, { state: Presence; at: number; task?: Task }>();
+const builder = (name: string) => ({ state: claudes.get(name)?.state ?? "offline", task: claudes.get(name)?.task });
 function presence(name: string, state: Presence) {
   const changed = claudes.get(name)?.state !== state;
-  claudes.set(name, { state, at: Date.now() });
-  if (changed) broadcast({ t: "claude", name, state });
+  claudes.set(name, { ...claudes.get(name), state, at: Date.now() });
+  if (changed) broadcast({ t: "claude", name, ...builder(name) });
 }
+function setTask(name: string, task: Task) {
+  claudes.set(name, { state: "working", ...claudes.get(name), at: Date.now(), task });
+  broadcast({ t: "claude", name, ...builder(name) });
+}
+
+/** What each mod is, from the last banner its builder gave it. */
+const about = readJson<Record<string, { title: string; text: string; color: string }>>("about.json", {});
+if (!Object.values(keys).includes(GAME_MASTER)) {
+  keys[token() + token()] = GAME_MASTER;
+  writeJson("keys.json", keys);
+}
+const gameMasterKey = Object.keys(keys).find((k) => keys[k] === GAME_MASTER)!;
 setInterval(() => {
   for (const [name, c] of claudes) if (c.state === "working" && Date.now() - c.at > 120_000) presence(name, "offline");
 }, 15_000);
@@ -182,7 +195,11 @@ const status = () => ({
   world: config.name,
   rules: config.rules === "additive" ? "additive: you can add mods and change your own, never someone else's" : "open: anyone can change any mod",
   online: [...sockets.keys()],
-  mods: [...mods.running].map(([name, m]) => ({ name, author: m.author, version: m.version, server: !!m.build.server, client: !!m.build.client })),
+  mods: [...mods.running].map(([name, m]) => {
+    const v = votes.get(name)?.version === m.version ? votes.get(name) : undefined;
+    return { name, author: m.author, version: m.version, server: !!m.build.server, client: !!m.build.client, about: about[name], love: v?.love.size ?? 0, undo: v?.undo.size ?? 0 };
+  }),
+  undoNeeded: Math.floor(sockets.size / 2) + 1,
   entities: sim.entities.size,
   recent: feedLog.slice(-15).map((f) => f.text),
 });
@@ -207,7 +224,12 @@ const mcp = createMcp({
   chat,
   chatLog,
   presence,
-  announce: (a) => broadcast({ t: "announce", ...a }),
+  setTask,
+  announce: (a) => {
+    about[a.mod] = { title: a.title, text: a.text, color: a.color };
+    writeJson("about.json", about);
+    broadcast({ t: "announce", ...a });
+  },
   nextChat: () => new Promise<void>((resolve) => chatWaiters.add(function wake() { chatWaiters.delete(wake); resolve(); })),
   status,
   perf,
@@ -258,7 +280,7 @@ const server = Bun.serve<Conn>({
       const body = req.method === "POST" ? await req.json() : {};
       switch (path.slice("/api/host/".length)) {
         case "players":
-          return Response.json([...new Set(Object.values(keys))].map((name) => ({ name, online: sockets.has(name), key: Object.keys(keys).find((k) => keys[k] === name) })));
+          return Response.json([...new Set(Object.values(keys))].filter((name) => name !== GAME_MASTER).map((name) => ({ name, online: sockets.has(name), key: Object.keys(keys).find((k) => keys[k] === name) })));
         case "remove": {
           for (const [key, name] of Object.entries(keys)) if (name === body.name) delete keys[key];
           writeJson("keys.json", keys);
@@ -285,7 +307,7 @@ const server = Bun.serve<Conn>({
       const who = nameByKey(bearer(req));
       return who ? Response.json(await sim.visibleTo(who, store.frames(40))) : new Response(null, { status: 401 });
     }
-    if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json(status()) : new Response(null, { status: 401 });
+    if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json({ ...status(), gameMaster: { key: gameMasterKey, ...builder(GAME_MASTER) } }) : new Response(null, { status: 401 });
     if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size });
     if (path === "/api/join" && req.method === "POST") {
       const body = await req.json();
@@ -327,7 +349,7 @@ const server = Bun.serve<Conn>({
           invite: config.invite,
           mods: [...mods.running].filter(([, m]) => m.build.client).map(([name, m]) => ({ name, url: m.build.client })),
           feed: feedLog.slice(-8),
-          claudes: Object.fromEntries([...claudes].map(([name, c]) => [name, c.state])),
+          claudes: Object.fromEntries([...claudes.keys()].map((name) => [name, builder(name)])),
         }),
       );
       if (!previous) feed(`${name} joined`, "info");
@@ -336,6 +358,7 @@ const server = Bun.serve<Conn>({
       const msg = JSON.parse(String(raw));
       if (msg.t === "m") sim.send({ t: "msg", id: ws.data.name, mod: msg.mod, msg: msg.msg });
       else if (msg.t === "chat") chat(ws.data.name, String(msg.text).slice(0, 300));
+      else if (msg.t === "voice") chat(ws.data.name, String(msg.text).slice(0, 300), true);
       else if (msg.t === "resync") sim.resync(ws.data.name);
       else if (msg.t === "react") react(ws.data.name, String(msg.mod), String(msg.kind));
       else if (msg.t === "shot") shots.get(msg.id)?.(String(msg.data));

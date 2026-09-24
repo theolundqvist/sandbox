@@ -235,7 +235,7 @@ function applyTick({ reset, set, unset, removed, events }: Tick) {
 }
 
 // ---------- mods ----------
-type Loaded = { name: string; url: string; mod: ClientMod; ctx: ClientCtx; errors: number; ms: number };
+type Loaded = { name: string; url: string; mod: ClientMod; ctx: ClientCtx; errors: number; ms: number; tabs: HTMLElement[] };
 const mods = new Map<string, Loaded>();
 let ordered: Loaded[] = [];
 const keys = new Set<string>();
@@ -296,6 +296,8 @@ async function loadMod(name: string, url: string | null) {
   }
   if (old) {
     call(old, "dispose");
+    for (const el of old.tabs) el.remove();
+    if (old.tabs.some((el) => el.classList.contains("active"))) showTab("game");
     mods.delete(name);
   }
   if (!mod || !url) {
@@ -314,8 +316,20 @@ async function loadMod(name: string, url: string | null) {
     send: (msg) => send({ t: "m", mod: name, msg }),
     use,
     asset: (file) => `/assets/${file.includes("/") ? file : `${name}/${file}`}`,
+    menuTab: (title) => {
+      const id = `${name}:${title}`;
+      const button = Object.assign(document.createElement("button"), { textContent: title });
+      const section = document.createElement("section");
+      button.dataset.tab = section.dataset.tab = id;
+      section.hidden = true;
+      button.onclick = () => showTab(id);
+      $("tabs").insertBefore(button, $("tabs").querySelector("[data-tab=help]"));
+      $("menu").querySelector("section[data-tab=help]")!.before(section);
+      loaded.tabs.push(button, section);
+      return section;
+    },
   };
-  const loaded: Loaded = { name, url, mod, ctx, errors: 0, ms: 0 };
+  const loaded: Loaded = { name, url, mod, ctx, errors: 0, ms: 0, tabs: [] };
   mods.set(name, loaded);
   reorder();
   call(loaded, "init");
@@ -341,7 +355,7 @@ function connect() {
         $("rules").textContent = msg.rules === "additive" ? "additive" : "open";
         $("status").hidden = true;
         welcomedAt = performance.now();
-        showClaude(msg.claudes[me] ?? "offline");
+        showClaude(msg.claudes[me]?.state ?? "offline");
         claudes = new Map(Object.entries(msg.claudes));
         showBuilders();
         const wanted = new Map<string, string>(msg.mods.map((m: any) => [m.name, m.url]));
@@ -352,7 +366,7 @@ function connect() {
       }
       case "claude":
         if (msg.name === me) showClaude(msg.state);
-        claudes.set(msg.name, msg.state);
+        claudes.set(msg.name, { state: msg.state, task: msg.task });
         return showBuilders();
       case "tick":
         return replaying || applyTick(msg);
@@ -374,9 +388,10 @@ function connect() {
           $("react").querySelector("[data-kind=love] span")!.textContent = msg.love ? String(msg.love) : "";
           $("react").querySelector("[data-kind=undo] span")!.textContent = `${msg.undo}/${msg.needed}`;
         }
+        if (!menu.hidden) refreshMenu();
         return;
       case "chat":
-        return addLine(`${msg.from}: ${msg.text}`, msg.from.endsWith("'s Claude") ? "claude" : "chat");
+        return addLine(`${msg.from}${msg.spoken ? " (voice)" : ""}: ${msg.text}`, msg.from.endsWith("'s Claude") || msg.from === "Game master" ? "claude" : msg.spoken ? "chat spoken" : "chat");
     }
   };
   ws.onclose = (e) => {
@@ -521,7 +536,52 @@ function closeMenu() {
 function play() {
   howto.hidden = true;
   capture();
+  if (!micRecognizer && readPref("sandbox-mic") !== "off") setMic(true);
 }
+
+/** The mic stays on and every finished sentence goes to chat, so everyone and every Claude hears how players feel. */
+const Recognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+const readPref = (name: string) => {
+  try {
+    return localStorage.getItem(name);
+  } catch {
+    return null;
+  }
+};
+let micOn = false;
+let micRecognizer: any = null;
+function setMic(on: boolean) {
+  micOn = on && !!Recognition;
+  try {
+    localStorage.setItem("sandbox-mic", on ? "on" : "off");
+  } catch {}
+  showMic();
+  if (micOn && !micRecognizer) {
+    const r = (micRecognizer = new Recognition());
+    r.continuous = true;
+    r.lang = navigator.language;
+    r.onresult = (e: any) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const text = e.results[i].isFinal ? e.results[i][0].transcript.trim() : "";
+        if (text) send({ t: "voice", text });
+      }
+    };
+    // Browsers end recognition after a stretch of silence; keep listening until the player mutes.
+    r.onend = () => (micOn ? r.start() : (micRecognizer = null));
+    r.onerror = (e: any) => {
+      if (e.error !== "not-allowed" && e.error !== "service-not-allowed") return;
+      setMic(false);
+      toast("The microphone is blocked. Allow it in the browser's address bar, then turn the mic on.", "error");
+    };
+    r.start();
+  } else if (!micOn) micRecognizer?.stop();
+}
+function showMic() {
+  $("mic").textContent = !Recognition ? "No voice here" : micOn ? "Mic on" : "Mic off";
+  $("mic").dataset.state = !Recognition ? "none" : micOn ? "on" : "off";
+}
+$("mic").onclick = () => setMic(!micOn);
+showMic();
 $("howto-play").onclick = play;
 
 addEventListener("keydown", (e: KeyboardEvent) => {
@@ -560,10 +620,37 @@ chat.addEventListener("keydown", (e: KeyboardEvent) => {
 });
 $("menu-button").onclick = () => openMenu();
 
-let claudes = new Map<string, unknown>();
+type Builder = { state: "listening" | "working" | "offline"; task?: { title: string; status: string; percent?: number; state: "working" | "done" | "blocked" } };
+const GAME_MASTER = "gamemaster";
+const builderName = (name: string) => (name === GAME_MASTER ? "Game master" : `${name}'s Claude`);
+let claudes = new Map<string, Builder>();
+/** Everyone sees what every Claude is building: a HUD line per busy Claude and the Builders tab. */
 function showBuilders() {
-  const working = [...claudes].filter(([name, state]) => state === "working" && name !== me).map(([name]) => name);
-  $("builders").replaceChildren(...working.map((name) => Object.assign(document.createElement("div"), { textContent: `${name}'s Claude is building…` })));
+  const busy = [...claudes].filter(([name, b]) => b.state === "working" && name !== me);
+  $("builders").replaceChildren(
+    ...busy.map(([name, { task }]) =>
+      Object.assign(document.createElement("div"), {
+        textContent: task?.state === "working" ? `${builderName(name)}: ${task.title}${task.percent === undefined ? "" : ` ${task.percent}%`}` : `${builderName(name)} is building…`,
+      }),
+    ),
+  );
+  const states = { working: "Working", listening: "Listening", offline: "Offline" };
+  const rows = [...claudes].sort(([, a], [, b]) => Number(b.state === "working") - Number(a.state === "working"));
+  $("menu-builders").replaceChildren(
+    ...(rows.length
+      ? rows.map(([name, b]) => {
+          const li = document.createElement("li");
+          li.className = `row ${b.task?.state ?? ""}`;
+          li.innerHTML = `<div><b></b><span></span></div><p></p><div class="bar"><i></i></div>`;
+          li.querySelector("b")!.textContent = builderName(name);
+          li.querySelector("span")!.textContent = b.task ? `${b.task.state === "working" ? states[b.state] : b.task.state}${b.task.percent === undefined ? "" : ` · ${b.task.percent}%`}` : states[b.state];
+          li.querySelector("p")!.textContent = b.task ? `${b.task.title}${b.task.status ? ` — ${b.task.status}` : ""}` : "No task posted yet.";
+          li.querySelector<HTMLElement>(".bar i")!.style.width = `${b.task?.state === "done" ? 100 : (b.task?.percent ?? 0)}%`;
+          if (b.task?.percent === undefined && b.task?.state !== "done") li.querySelector(".bar")!.remove();
+          return li;
+        })
+      : [Object.assign(document.createElement("li"), { textContent: "No Claude has connected yet." })]),
+  );
 }
 
 const claudeLabels = { listening: "Claude listening", working: "Claude working…", offline: "Connect Claude" };
@@ -611,29 +698,72 @@ function enableTouch() {
 if (matchMedia("(pointer: coarse)").matches) enableTouch();
 else addEventListener("touchstart", enableTouch, { once: true });
 $("menu-close").onclick = closeMenu;
+function showTab(tab: string) {
+  for (const el of $("menu").querySelectorAll<HTMLElement>("[data-tab]")) {
+    if (el.tagName === "BUTTON") el.classList.toggle("active", el.dataset.tab === tab);
+    else el.hidden = el.dataset.tab !== tab;
+  }
+  if (tab === "mods") refreshMenu();
+}
+for (const b of $("tabs").querySelectorAll<HTMLElement>("button")) b.onclick = () => showTab(b.dataset.tab!);
+for (const keysList of $("howto").querySelectorAll(".keys")) $("help-keys").append(keysList.cloneNode(true));
 $("main-menu").hidden = !localStorage.getItem("sandbox-menu");
 $("main-menu").onclick = () => location.assign("/menu");
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "sandbox";
+
+const connectCommand = (prompt: string, key: string | null) => {
+  const name = slug(world);
+  return `claude '${prompt}' --mcp-config '${JSON.stringify({ mcpServers: { [name]: { type: "http", url: `${origin}/mcp`, headers: { Authorization: `Bearer ${key}` } } } })}' --allowedTools mcp__${name} Agent WebSearch WebFetch`;
+};
 
 async function openMenu() {
   keys.clear();
   menu.hidden = false;
   replaying = false;
   if (document.pointerLockElement) document.exitPointerLock();
+  $("menu-world").textContent = world;
   $("invite-link").textContent = `${origin}/#invite=${invite}`;
   const name = slug(world);
-  const prompt = `We are playing ${world.replace(/['"`$\\]/g, "")} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through the ${name} MCP tools, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat: call wait_for_chat with seconds 600, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`;
-  $("claude-command").textContent = `claude '${prompt}' --mcp-config '${JSON.stringify({ mcpServers: { [name]: { type: "http", url: `${origin}/mcp`, headers: { Authorization: `Bearer ${key}` } } } })}' --allowedTools mcp__${name}`;
+  const title = world.replace(/['"`$\\]/g, "");
+  $("claude-command").textContent = connectCommand(
+    `We are playing ${title} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through the ${name} MCP tools, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Make it look and sound like a real game, following the guide's Make it look and sound great section: for every build, search the web for a real model, textures and sounds and add them with add_asset instead of modelling from boxes, use proper materials and shaders, and start parallel subagents (one for the model, one for the sound, one for the code) for anything bigger than a tweak. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and my microphone is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 600, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
+    key,
+  );
+  showBuilders();
+  await refreshMenu();
+}
+
+const myVotes = new Map<string, string>();
+async function refreshMenu() {
   const status = await (await fetch("/api/status", { headers: { authorization: `Bearer ${key}` } })).json();
+  const title = world.replace(/['"`$\\]/g, "");
+  $("gm-command").textContent = connectCommand(
+    `You are the game master of ${title}, a live multiplayer 3D game that my friends and I build with our own Claudes while we play it. You are connected to the game server through the ${slug(world)} MCP tools as the game master, shared by every player. Start with the status tool, read GUIDE.md (especially its Game master section), then run the game master loop it describes until I tell you to stop.`,
+    status.gameMaster.key,
+  );
+  $("gm-state").textContent = { working: "Running", listening: "Running", offline: "" }[status.gameMaster.state as Builder["state"]];
   $("menu-players").replaceChildren(...status.online.map((p: string) => Object.assign(document.createElement("li"), { textContent: p === me ? `${p} (you)` : p })));
   $("menu-mods").replaceChildren(
     ...(status.mods.length
       ? status.mods.map((m: any) => {
           const li = document.createElement("li");
-          li.innerHTML = `<b></b><span></span>`;
-          li.querySelector("b")!.textContent = m.name;
+          li.className = "row";
+          li.innerHTML = `<div><b></b><span></span></div><p></p><div class="votes"><button data-kind="love">Love it</button><button data-kind="undo">Vote to undo</button></div>`;
+          li.querySelector("b")!.textContent = m.about?.title && m.about.title.toLowerCase() !== m.name ? `${m.name} · ${m.about.title}` : m.name;
           li.querySelector("span")!.textContent = `by ${m.author} · v${m.version}`;
+          if (m.about?.text) li.querySelector("p")!.textContent = m.about.text;
+          else li.querySelector("p")!.remove();
+          const [love, undo] = li.querySelectorAll("button");
+          love!.textContent += m.love ? ` ${m.love}` : "";
+          undo!.textContent += ` ${m.undo}/${status.undoNeeded}`;
+          for (const b of [love!, undo!]) {
+            b.classList.toggle("picked", myVotes.get(m.name) === `${m.version}:${b.dataset.kind}`);
+            b.onclick = () => {
+              myVotes.set(m.name, `${m.version}:${b.dataset.kind}`);
+              send({ t: "react", mod: m.name, kind: b.dataset.kind });
+            };
+          }
           return li;
         })
       : [Object.assign(document.createElement("li"), { textContent: "No mods yet. The world is empty." })]),
