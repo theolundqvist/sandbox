@@ -318,7 +318,7 @@ async function loadMod(name: string, url: string | null) {
     use,
     asset: (file) => `/assets/${file.includes("/") ? file : `${name}/${file}`}`,
     menuTab: (title) => {
-      const id = `${name}:${title}`;
+      const id = `${name}:${world}`;
       const button = Object.assign(document.createElement("button"), { textContent: title });
       const section = document.createElement("section");
       button.dataset.tab = section.dataset.tab = id;
@@ -717,9 +717,11 @@ $("main-menu").onclick = () => location.assign("/menu");
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "sandbox";
 
+/** Single-quotes a shell argument, so prompts may contain apostrophes and world names anything. */
+const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
 const connectCommand = (prompt: string, key: string | null) => {
   const name = slug(world);
-  return `claude '${prompt}' --mcp-config '${JSON.stringify({ mcpServers: { [name]: { type: "http", url: `${origin}/mcp`, headers: { Authorization: `Bearer ${key}` } } } })}' --allowedTools mcp__${name} Agent WebSearch WebFetch`;
+  return `claude ${shellQuote(prompt)} --mcp-config ${shellQuote(JSON.stringify({ mcpServers: { [name]: { type: "http", url: `${origin}/mcp`, headers: { Authorization: `Bearer ${key}` } } } }))} --allowedTools mcp__${name} Agent WebSearch WebFetch`;
 };
 
 async function openMenu() {
@@ -730,9 +732,8 @@ async function openMenu() {
   $("menu-world").textContent = world;
   $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;
   const name = slug(world);
-  const title = world.replace(/['"`$\\]/g, "");
   $("claude-command").textContent = connectCommand(
-    `We are playing ${title} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through the ${name} MCP tools, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Build everything like a real game, following the guide's Build it like a real game section: think about every part of quality (looks, feel, motion, sound, atmosphere, play, speed), find or build proper models and assets instead of boxes, and start parallel subagents, one per part, for anything bigger than a tweak. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and my microphone is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 600, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
+    `We are playing ${world} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through the ${name} MCP tools, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Build everything like a real game, following the guide's Build it like a real game section: think about every part of quality (looks, feel, motion, sound, atmosphere, play, speed), find or build proper models and assets instead of boxes, and start parallel subagents, one per part, for anything bigger than a tweak. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and my microphone is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 600, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
     key,
   );
   showBuilders();
@@ -742,9 +743,8 @@ async function openMenu() {
 const myVotes = new Map<string, string>();
 async function refreshMenu() {
   const status = await (await fetch("/api/status", { headers: { authorization: `Bearer ${key}` } })).json();
-  const title = world.replace(/['"`$\\]/g, "");
   $("gm-command").textContent = connectCommand(
-    `You are the game master of ${title}, a live multiplayer 3D game that my friends and I build with our own Claudes while we play it. You are connected to the game server through the ${slug(world)} MCP tools as the game master, shared by every player. Start with the status tool, read GUIDE.md (especially its Game master section), then run the game master loop it describes until I tell you to stop.`,
+    `You are the game master of ${world}, a live multiplayer 3D game that my friends and I build with our own Claudes while we play it. You are connected to the game server through the ${slug(world)} MCP tools as the game master, shared by every player. Start with the status tool, read GUIDE.md (especially its Game master section), then run the game master loop it describes until I tell you to stop.`,
     status.gameMaster.key,
   );
   $("gm-state").textContent = { working: "Running", listening: "Running", offline: "" }[status.gameMaster.state as Builder["state"]];
