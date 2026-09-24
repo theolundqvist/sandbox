@@ -331,6 +331,8 @@ function connect() {
         $("status").hidden = true;
         welcomedAt = performance.now();
         showClaude(msg.claudes[me] ?? "offline");
+        claudes = new Map(Object.entries(msg.claudes));
+        showBuilders();
         const wanted = new Map<string, string>(msg.mods.map((m: any) => [m.name, m.url]));
         for (const name of mods.keys()) if (!wanted.has(name)) await loadMod(name, null);
         for (const [name, url] of wanted) await loadMod(name, url);
@@ -339,7 +341,8 @@ function connect() {
       }
       case "claude":
         if (msg.name === me) showClaude(msg.state);
-        return;
+        claudes.set(msg.name, msg.state);
+        return showBuilders();
       case "tick":
         return applyTick(msg);
       case "mod":
@@ -440,7 +443,9 @@ document.addEventListener("pointerlockchange", () => {
   if (!document.pointerLockElement && menu.hidden && chat.hidden && howto.hidden) openMenu();
 });
 renderer.domElement.addEventListener("click", capture);
+const ideas = ["add coins that respawn and a scoreboard", "make the floor lava every 30 seconds", "give me a grappling hook", "spawn a boss that chases whoever is winning", "let us build with blocks", "add a race track with a timer", "make me tiny and everyone else huge"];
 function openChat() {
+  chat.placeholder = `Chat, or ask your Claude: "${ideas[Math.floor(Math.random() * ideas.length)]}"`;
   chat.hidden = false;
   chat.focus();
   if (document.pointerLockElement) document.exitPointerLock();
@@ -486,6 +491,12 @@ chat.addEventListener("keydown", (e: KeyboardEvent) => {
   e.stopPropagation();
 });
 $("menu-button").onclick = () => openMenu();
+
+let claudes = new Map<string, unknown>();
+function showBuilders() {
+  const working = [...claudes].filter(([name, state]) => state === "working" && name !== me).map(([name]) => name);
+  $("builders").replaceChildren(...working.map((name) => Object.assign(document.createElement("div"), { textContent: `${name}'s Claude is building…` })));
+}
 
 const claudeLabels = { listening: "Claude listening", working: "Claude working…", offline: "Connect Claude" };
 function showClaude(state: keyof typeof claudeLabels) {

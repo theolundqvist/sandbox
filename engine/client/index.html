@@ -39,11 +39,15 @@
   .line { padding: 4px 10px; background: var(--glass); width: fit-content; max-width: 100%; border-left: 2px solid transparent; }
   .line.ok { color: var(--ok); } .line.error { color: var(--err); border-color: var(--err); } .line.info { color: var(--dim); } .line.claude { color: var(--claude); }
   .line.mod { color: var(--c); border-color: var(--c); font-weight: 600; }
-  #chat { position: fixed; left: 24px; bottom: 20px; width: min(440px, calc(100vw - 48px)); padding: 11px 14px; font: inherit; color: var(--text); background: var(--veil); border: 0; border-bottom: 2px solid var(--accent); outline: none; }
+  #chat { position: fixed; left: 24px; bottom: 20px; width: min(600px, calc(100vw - 48px)); padding: 11px 14px; font: inherit; color: var(--text); background: var(--veil); border: 0; border-bottom: 2px solid var(--accent); outline: none; }
   #hint { position: fixed; left: 24px; bottom: 24px; color: var(--dim); }
   #chat:not([hidden]) ~ #hint { display: none; }
   #empty { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); color: var(--dim); text-align: center; width: min(460px, calc(100vw - 32px)); }
   #empty b { display: block; color: var(--text); font-size: 22px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 8px; }
+  #builders { position: fixed; top: 64px; left: 24px; display: grid; gap: 6px; color: var(--claude); pointer-events: none; }
+  #builders div { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  body.touch #builders { top: auto; bottom: 180px; }
   #toasts { position: fixed; top: 72px; right: 24px; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
   .toast { padding: 10px 14px; background: var(--veil); border-left: 2px solid var(--dim); animation: in .25s ease-out; max-width: 360px; }
   .toast.ok { border-color: var(--ok); } .toast.error { border-color: var(--err); }
@@ -87,7 +91,7 @@
   .keys dd { margin: 0; color: var(--dim); }
   body.touch .desk, body:not(.touch) .touchonly { display: none; }
 
-  #top, #status, #chat, #hint, #toasts, #stick, #jump, #announce { z-index: 1000; } .overlay { z-index: 1001; }
+  #top, #status, #chat, #hint, #toasts, #builders, #stick, #jump, #announce { z-index: 1000; } .overlay { z-index: 1001; }
   body.touch canvas { touch-action: none; }
   body.touch #feed { top: 72px; bottom: auto; max-height: 24vh; width: calc(100vw - 130px); }
   body.touch #chat { top: 72px; bottom: auto; }
@@ -110,6 +114,7 @@
   <input id="chat" placeholder="Say something, or ask your Claude for anything…" maxlength="300" autocomplete="off" hidden>
   <div id="hint" class="caps shadow">Enter to chat · Tab for menu</div>
   <div id="toasts"></div>
+  <div id="builders" class="caps shadow"></div>
   <div id="announce" hidden><div class="caps"></div><b></b><p></p></div>
   <div id="stick" hidden><div></div></div>
   <button id="jump" hidden>Jump</button>
