@@ -740,7 +740,7 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
 const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
 const connectCommand = (prompt: string, key: string | null) => {
   const name = slug(world);
-  return `claude ${shellQuote(prompt)} --mcp-config ${shellQuote(JSON.stringify({ mcpServers: { [name]: { type: "http", url: `${origin}/mcp`, headers: { Authorization: `Bearer ${key}` } } } }))} --allowedTools mcp__${name} Agent WebSearch WebFetch`;
+  return `claude ${shellQuote(prompt)} --mcp-config ${shellQuote(JSON.stringify({ mcpServers: { [name]: { type: "http", url: `${publicUrl ?? origin}/mcp`, headers: { Authorization: `Bearer ${key}` } } } }))} --allowedTools mcp__${name} Agent WebSearch WebFetch`;
 };
 
 async function openMenu() {
