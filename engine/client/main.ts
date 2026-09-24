@@ -77,6 +77,25 @@ const objects = new Map<number, THREE.Object3D>();
 const looks = new Map<number, string>();
 const custom = new Set<THREE.Object3D>();
 
+const geometries = new Map<string, { geometry: THREE.BufferGeometry; users: number }>();
+
+function sharedGeometry(shape: string, size: number[]) {
+  const key = JSON.stringify([shape, size]);
+  const entry = geometries.get(key) ?? { geometry: geometry(shape, size), users: 0 };
+  geometries.set(key, entry);
+  entry.users++;
+  entry.geometry.userData.key = key;
+  return entry.geometry;
+}
+
+function releaseGeometry(g: THREE.BufferGeometry) {
+  const entry = geometries.get(g.userData.key);
+  if (!entry || entry.geometry !== g) return g.dispose();
+  if (--entry.users > 0) return;
+  geometries.delete(g.userData.key);
+  g.dispose();
+}
+
 function geometry(shape: string, size: number[]) {
   const [x = 1, y = x, z = x] = size;
   switch (shape) {
@@ -137,7 +156,7 @@ function defaultObject(e: Entity) {
       transparent: e.mesh.opacity !== undefined,
       opacity: e.mesh.opacity ?? 1,
     });
-    const mesh = new THREE.Mesh(geometry(e.mesh.shape ?? "box", size), material);
+    const mesh = new THREE.Mesh(sharedGeometry(e.mesh.shape ?? "box", size), material);
     mesh.castShadow = mesh.receiveShadow = true;
     group.add(mesh);
   }
@@ -155,7 +174,7 @@ function dispose(obj: THREE.Object3D) {
   scene.remove(obj);
   if (custom.delete(obj)) return;
   obj.traverse((o: any) => {
-    o.geometry?.dispose();
+    if (o.geometry) releaseGeometry(o.geometry);
     o.material?.map?.dispose();
     o.material?.dispose();
   });

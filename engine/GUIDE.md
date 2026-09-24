@@ -33,6 +33,8 @@ Entities with `pos` and either `mesh` or `label` are drawn automatically:
 - `mesh: { shape: "box" | "sphere" | "cylinder" | "cone" | "plane", size: number | [x, y, z], color, emissive?, opacity?, roughness?, metalness? }`
 - `label: "text"` floats above the entity.
 
+Each drawn entity is its own draw call, which stays smooth up to a couple of thousand. For more (voxel terrain, a forest, a crowd, particles), keep them as data without `mesh` and draw them yourself in `client.ts` with one `THREE.InstancedMesh` per look, updating it from `ctx.entities`.
+
 For anything richer, such as models, particles, shaders, sound, UI or post-processing, write it in `client.ts` with full access to Three.js (`ctx.THREE`, `ctx.scene`, `ctx.camera`, `ctx.renderer`, `import ... from "three/addons/..."`) and the DOM.
 
 ## Server hooks (`server.ts`)
