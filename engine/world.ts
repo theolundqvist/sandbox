@@ -169,27 +169,47 @@ export function openStore(path: string) {
       db.run("delete from timelapse where at < ?", [Date.now() - 3 * 3_600_000]);
     },
     /** Up to `limit` recorded moments, oldest first, evenly spread. */
-    frames(limit: number) {
+    /** Up to `limit` evenly spaced moments as ticks: the first in full, then what changed since the previous one. */
+    ticks(limit: number) {
       const rows = db.query("select at, full, data from timelapse order by at").all() as { at: number; full: number; data: Uint8Array<ArrayBuffer> }[];
       const usable = rows.slice(Math.max(0, rows.findIndex((r) => r.full)));
       const every = Math.ceil(usable.length / limit);
-      let state: Record<string, Entity> = {};
-      const frames: { at: number; entities: Record<string, Entity> }[] = [];
+      const state: Record<string, Entity> = {};
+      let before = new Map<string, Entity | undefined>();
+      const touch = (id: string) => before.has(id) || before.set(id, state[id]);
+      const ticks: Tick[] = [];
       usable.forEach((row, i) => {
         const data = JSON.parse(new TextDecoder().decode(Bun.gunzipSync(row.data)));
-        if (row.full) state = data;
+        const set: Record<string, Entity> = row.full ? data : data.set;
+        const removed: string[] = row.full ? Object.keys(state).filter((id) => !(id in data)) : data.removed.map(String);
+        for (const id of [...Object.keys(set), ...removed]) touch(id);
+        Object.assign(state, set);
+        for (const id of removed) delete state[id];
+        if (i % every) return;
+        if (!ticks.length) ticks.push({ at: row.at, reset: true, set: { ...state }, unset: {}, removed: [] });
         else {
-          state = { ...state, ...data.set };
-          for (const id of data.removed) delete state[id];
+          const tick: Tick = { at: row.at, set: {}, unset: {}, removed: [] };
+          for (const [id, was] of before) {
+            const now = state[id];
+            if (!now) {
+              if (was) tick.removed.push(Number(id));
+            } else if (now !== was) {
+              tick.set[id] = now;
+              if (was) tick.unset[id] = Object.keys(was).filter((k) => !(k in now));
+            }
+          }
+          ticks.push(tick);
         }
-        if (i % every === 0) frames.push({ at: row.at, entities: state });
+        before = new Map();
       });
-      return frames;
+      return ticks;
     },
     snapshots: () => (db.query("select at from snapshots order by at desc").all() as { at: number }[]).map((r) => r.at),
     rewind: (at: number, world: Persisted) => read(db.query("select next_id, entities from snapshots where at = ?").get(at) as any, world),
   };
 }
+
+export type Tick = { at: number; reset?: true; set: Record<string, Entity>; unset: Record<string, string[]>; removed: number[] };
 
 /** What differs between two moments; changed entities are sent whole, with the keys they lost. */
 export function changes(before: Record<string, Entity>, after: Record<string, Entity>) {

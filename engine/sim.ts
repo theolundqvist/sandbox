@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Entity, ModDb, Player, ServerHooks, ServerMod } from "./api";
-import { GameWorld, modDb, type Diff } from "./world";
+import { GameWorld, modDb, type Diff, type Tick } from "./world";
 
 declare var self: Worker;
 
@@ -284,8 +284,22 @@ self.onmessage = async ({ data: msg }) => {
       return void resync.add(msg.id);
     case "see": {
       const p = world.players.get(msg.player);
-      const frames = p ? msg.frames.map((f: { at: number; entities: Record<string, Entity> }) => ({ at: f.at, entities: Object.fromEntries(Object.entries(f.entities).filter(([id, e]) => visible(p, Number(id), e))) })) : [];
-      return post({ t: "seen", id: msg.id, frames });
+      // Visibility is checked when an entity changes, so the check runs once per change instead of once per entity per moment.
+      const shown = new Set<string>();
+      const ticks = p
+        ? msg.ticks.map((t: Tick) => {
+            const out: Tick = { at: t.at, reset: t.reset, set: {}, unset: {}, removed: t.removed.filter((id) => shown.delete(String(id))) };
+            for (const [id, e] of Object.entries(t.set)) {
+              if (visible(p, Number(id), e)) {
+                out.set[id] = e;
+                if (t.unset[id] && shown.has(id)) out.unset[id] = t.unset[id]!;
+                shown.add(id);
+              } else if (shown.delete(id)) out.removed.push(Number(id));
+            }
+            return out;
+          })
+        : [];
+      return post({ t: "seen", id: msg.id, ticks });
     }
     case "leave": {
       const p = world.players.get(msg.id);

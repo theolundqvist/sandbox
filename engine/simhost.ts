@@ -1,7 +1,6 @@
 import type { Entity, Player } from "./api";
-import type { Diff } from "./world";
+import type { Diff, Tick } from "./world";
 
-export type Frame = { at: number; entities: Record<string, Entity> };
 
 export type RunningMod = { name: string; id: number; server: string | null };
 
@@ -64,7 +63,7 @@ export class SimHost {
       else if (msg.t === "fault") this.on.fault(msg.mod, msg.error);
       else if (msg.t === "applied") this.applying.get(msg.name)?.(msg.error);
       else if (msg.t === "seen") {
-        this.seeing.get(msg.id)?.(msg.frames);
+        this.seeing.get(msg.id)?.(msg.ticks);
         this.seeing.delete(msg.id);
       }
     };
@@ -79,14 +78,14 @@ export class SimHost {
     });
   }
 
-  private seeing = new Map<number, (frames: Frame[]) => void>();
+  private seeing = new Map<number, (ticks: Tick[]) => void>();
   private seeSeq = 0;
-  /** Saved moments cut down to what one player may see under the live mods' rules. */
-  visibleTo(player: string, frames: Frame[]) {
+  /** Timelapse ticks cut down to what one player may see under the live mods' rules. */
+  visibleTo(player: string, ticks: Tick[]) {
     const id = ++this.seeSeq;
-    return new Promise<Frame[]>((resolve) => {
+    return new Promise<Tick[]>((resolve) => {
       this.seeing.set(id, resolve);
-      this.worker.postMessage({ t: "see", id, player, frames });
+      this.worker.postMessage({ t: "see", id, player, ticks });
     });
   }
 
