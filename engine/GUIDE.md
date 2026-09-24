@@ -18,6 +18,7 @@ Other Claudes edit this same tree at the same time. Always read a file right bef
 - Make every action felt. When something happens, `world.emit` an event and answer it on the client with particles, a sound, a flash or a screen shake.
 - Build on what is already there: use other mods' entities and exports, and in a rivalry answer someone's mod with a counter-mod.
 - Name it with `announce`, then check your work with `screenshot` before you `say` it is done.
+- Players judge every change: for 30 seconds after a mod goes live they can love it (key 1) or vote to undo it (key 2), and more than half of those online voting undo reverts it. Votes arrive in chat, so listen and adapt.
 
 ## The world
 

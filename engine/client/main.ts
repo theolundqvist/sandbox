@@ -356,7 +356,14 @@ function connect() {
       case "announce":
         addLine(`${msg.title}${msg.text ? ` · ${msg.text}` : ""}  (${msg.by}'s Claude)`, "mod").style.setProperty("--c", msg.color);
         banners.push(msg);
+        askReaction(msg);
         return nextBanner();
+      case "votes":
+        if (msg.mod === reacting) {
+          $("react").querySelector("[data-kind=love] span")!.textContent = msg.love ? String(msg.love) : "";
+          $("react").querySelector("[data-kind=undo] span")!.textContent = `${msg.undo}/${msg.needed}`;
+        }
+        return;
       case "chat":
         return addLine(`${msg.from}: ${msg.text}`, msg.from.endsWith("'s Claude") ? "claude" : "chat");
     }
@@ -403,6 +410,30 @@ function addLine(text: string, kind = "info") {
   $("feed").scrollTop = 1e9;
   return line;
 }
+
+/** After a mod arrives, players have 30 s to love it or vote it out. */
+let reacting = "";
+let reactTimer: ReturnType<typeof setTimeout> | undefined;
+function askReaction(a: { mod: string; title: string; color: string }) {
+  reacting = a.mod;
+  const bar = $("react");
+  bar.style.setProperty("--c", a.color);
+  $("react-mod").textContent = a.title;
+  for (const b of bar.querySelectorAll("button")) {
+    b.classList.remove("picked");
+    b.querySelector("span")!.textContent = "";
+  }
+  bar.hidden = false;
+  clearTimeout(reactTimer);
+  reactTimer = setTimeout(() => (bar.hidden = true), 30_000);
+}
+function react(kind: string) {
+  const button = $("react").querySelector<HTMLElement>(`[data-kind=${kind}]`)!;
+  if ($("react").hidden || button.classList.contains("picked")) return;
+  for (const b of $("react").querySelectorAll("button")) b.classList.toggle("picked", b === button);
+  send({ t: "react", mod: reacting, kind });
+}
+for (const b of $("react").querySelectorAll<HTMLElement>("button")) b.onclick = () => react(b.dataset.kind!);
 
 const banners: { mod: string; by: string; title: string; text: string; color: string }[] = [];
 function nextBanner() {
@@ -463,6 +494,10 @@ $("howto-play").onclick = play;
 addEventListener("keydown", (e: KeyboardEvent) => {
   if (!howto.hidden) {
     if (e.code === "Enter" || e.code === "Space") play();
+    return;
+  }
+  if ((e.code === "Digit1" || e.code === "Digit2") && !typing() && menu.hidden && !$("react").hidden) {
+    react(e.code === "Digit1" ? "love" : "undo");
     return;
   }
   if (e.code === "Enter" && !typing() && menu.hidden) {

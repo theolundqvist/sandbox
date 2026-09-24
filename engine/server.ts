@@ -96,6 +96,24 @@ function chat(from: string, text: string) {
 }
 const sockets = new Map<string, ServerWebSocket<Conn>>();
 
+/** Players' verdicts on the live version of each mod; more than half of those online voting undo reverts it. */
+const votes = new Map<string, { version: number; love: Set<string>; undo: Set<string> }>();
+function react(from: string, mod: string, kind: string) {
+  const live = mods.running.get(mod);
+  if (!live || (kind !== "love" && kind !== "undo")) return;
+  let v = votes.get(mod);
+  if (v?.version !== live.version) votes.set(mod, (v = { version: live.version, love: new Set(), undo: new Set() }));
+  if (v[kind].has(from)) return;
+  v[kind].add(from);
+  v[kind === "love" ? "undo" : "love"].delete(from);
+  const needed = Math.floor(sockets.size / 2) + 1;
+  broadcast({ t: "votes", mod, love: v.love.size, undo: v.undo.size, needed });
+  chat("game", kind === "love" ? `${from} loves ${mod} by ${live.author}` : `${from} votes to undo ${mod} by ${live.author} (${v.undo.size}/${needed})`);
+  if (v.undo.size < needed) return;
+  votes.delete(mod);
+  mods.revert(mod, `the players voted it out`);
+}
+
 /** Whether each player's Claude is waiting on the chat, busy, or gone, so players know if anyone hears them. */
 type Presence = "listening" | "working" | "offline";
 const claudes = new Map<string, { state: Presence; at: number }>();
@@ -303,6 +321,7 @@ const server = Bun.serve<Conn>({
       const msg = JSON.parse(String(raw));
       if (msg.t === "m") sim.send({ t: "msg", id: ws.data.name, mod: msg.mod, msg: msg.msg });
       else if (msg.t === "chat") chat(ws.data.name, String(msg.text).slice(0, 300));
+      else if (msg.t === "react") react(ws.data.name, String(msg.mod), String(msg.kind));
       else if (msg.t === "shot") shots.get(msg.id)?.(String(msg.data));
       else if (msg.t === "error") log(msg.mod, "client-error", `${ws.data.name}'s game: ${String(msg.text).slice(0, 2000)}`);
     },
