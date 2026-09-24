@@ -12,7 +12,7 @@ export type McpContext = {
   saveOwners(): void;
   mods: Mods;
   sim: SimHost;
-  logs: { at: number; mod: string; level: string; text: string }[];
+  logs: { at: number; mod: string; level: string; text: string; player?: string }[];
   feed(text: string, kind?: string): void;
   chat(from: string, text: string): void;
   chatLog: { seq: number; from: string; text: string }[];
@@ -20,6 +20,7 @@ export type McpContext = {
   presence(who: string, state: "listening" | "working" | "offline"): void;
   announce(a: { mod: string; by: string; title: string; text: string; color: string }): void;
   status(): object;
+  perf(): object;
   screenshot(who: string): Promise<string>;
 };
 
@@ -105,8 +106,13 @@ const tools = [
   },
   {
     name: "logs",
-    description: "Recent console output and errors from server and client mods (client errors are reported by every player's game).",
-    inputSchema: { type: "object", properties: { mod: { type: "string" }, limit: { type: "number" } } },
+    description: "Recent console output and errors from server mods and from every player's game (their client mods' console.log/warn/error and crashes). Filter by mod, or by player to see one game, e.g. your own player's.",
+    inputSchema: { type: "object", properties: { mod: { type: "string" }, player: { type: "string" }, limit: { type: "number" } } },
+  },
+  {
+    name: "perf",
+    description: "Why is the game slow? Server cost per mod (ms per 50 ms tick) and, for every player's game, fps, slowest frames, ms per frame spent in each client mod and in drawing, draw calls, triangles, scene objects, network ping and download rate, memory and GPU. Games report every 2 seconds.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "query_world",
@@ -297,9 +303,11 @@ export function createMcp(ctx: McpContext) {
         return result.report;
       }
       case "logs": {
-        const lines = ctx.logs.filter((l) => !args.mod || l.mod === args.mod).slice(-(args.limit ?? 50));
+        const lines = ctx.logs.filter((l) => (!args.mod || l.mod === args.mod) && (!args.player || l.player === args.player)).slice(-(args.limit ?? 50));
         return lines.map((l) => `${new Date(l.at).toISOString().slice(11, 19)} [${l.mod}] ${l.level}: ${l.text}`).join("\n") || "No logs yet.";
       }
+      case "perf":
+        return JSON.stringify(ctx.perf(), null, 2);
       case "query_world": {
         const components: string[] = args.components ?? [];
         const found = [...ctx.sim.entities].filter(([, e]) => components.every((c) => c in e));

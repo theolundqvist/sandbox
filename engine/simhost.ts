@@ -10,6 +10,7 @@ const HANG_MS = 2000;
 export class SimHost {
   entities = new Map<number, Entity>();
   nextId = 1;
+  perf: { msPerTick: number; mods: Record<string, number> } | null = null;
   players = new Map<string, Player>();
   private worker!: Worker;
   private beat = new Int32Array(new SharedArrayBuffer(8));
@@ -59,6 +60,7 @@ export class SimHost {
         this.nextId = msg.nextId;
         this.on.tick(msg.outs);
       } else if (msg.t === "log") this.on.log(msg.mod, msg.level, msg.text);
+      else if (msg.t === "perf") this.perf = msg;
       else if (msg.t === "fault") this.on.fault(msg.mod, msg.error);
       else if (msg.t === "applied") this.applying.get(msg.name)?.(msg.error);
       else if (msg.t === "seen") {

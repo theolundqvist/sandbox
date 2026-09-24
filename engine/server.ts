@@ -86,7 +86,8 @@ writeFileSync(
 Bun.spawnSync(["git", "add", "-A"], { cwd: ROOT });
 Bun.spawnSync(["git", "commit", "-qm", "server start"], { cwd: ROOT });
 
-const logs: { at: number; mod: string; level: string; text: string }[] = [];
+const logs: { at: number; mod: string; level: string; text: string; player?: string }[] = [];
+const clientPerf = new Map<string, { at: number } & Record<string, unknown>>();
 const feedLog: { at: number; text: string; kind: string }[] = [];
 const chatLog: { seq: number; from: string; text: string }[] = [];
 const chatWaiters = new Set<() => void>();
@@ -132,8 +133,8 @@ const broadcast = (msg: object) => {
   const text = JSON.stringify(msg);
   for (const ws of sockets.values()) ws.send(text);
 };
-function log(mod: string, level: string, text: string) {
-  logs.push({ at: Date.now(), mod, level, text });
+function log(mod: string, level: string, text: string, player?: string) {
+  logs.push({ at: Date.now(), mod, level, text, player });
   if (logs.length > 1000) logs.shift();
 }
 function feed(text: string, kind = "info") {
@@ -186,6 +187,12 @@ const status = () => ({
   recent: feedLog.slice(-15).map((f) => f.text),
 });
 
+const perf = () => ({
+  server: { ...sim.perf, budget: "a tick is due every 50 ms; mods is ms per tick" },
+  entities: sim.entities.size,
+  players: Object.fromEntries([...clientPerf].map(([name, { at, ...p }]) => [name, { ...p, secondsOld: Math.round((Date.now() - at) / 1000) }])),
+});
+
 const shots = new Map<string, (data: string) => void>();
 const mcp = createMcp({
   root: ROOT,
@@ -203,6 +210,7 @@ const mcp = createMcp({
   announce: (a) => broadcast({ t: "announce", ...a }),
   nextChat: () => new Promise<void>((resolve) => chatWaiters.add(function wake() { chatWaiters.delete(wake); resolve(); })),
   status,
+  perf,
   screenshot: (who) =>
     new Promise((resolve, reject) => {
       const ws = sockets.get(who);
@@ -331,11 +339,18 @@ const server = Bun.serve<Conn>({
       else if (msg.t === "resync") sim.resync(ws.data.name);
       else if (msg.t === "react") react(ws.data.name, String(msg.mod), String(msg.kind));
       else if (msg.t === "shot") shots.get(msg.id)?.(String(msg.data));
-      else if (msg.t === "error") log(msg.mod, "client-error", `${ws.data.name}'s game: ${String(msg.text).slice(0, 2000)}`);
+      else if (msg.t === "error") log(msg.mod, "client-error", `${ws.data.name}'s game: ${String(msg.text).slice(0, 2000)}`, ws.data.name);
+      else if (msg.t === "log") log(String(msg.mod), `client-${msg.level}`, `${ws.data.name}'s game: ${String(msg.text).slice(0, 2000)}`, ws.data.name);
+      else if (msg.t === "perf") {
+        const { t, at, ...report } = msg;
+        clientPerf.set(ws.data.name, { ...report, at: Date.now() });
+        ws.send(JSON.stringify({ t: "pong", at }));
+      }
     },
     close(ws) {
       if (sockets.get(ws.data.name) !== ws) return;
       sockets.delete(ws.data.name);
+      clientPerf.delete(ws.data.name);
       sim.send({ t: "leave", id: ws.data.name });
       feed(`${ws.data.name} left`, "info");
     },

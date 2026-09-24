@@ -6,7 +6,7 @@ import { GameWorld, modDb, type Diff } from "./world";
 
 declare var self: Worker;
 
-type Loaded = { id: number; name: string; mod: ServerMod; errors: number; slowTicks: number; lastError?: string };
+type Loaded = { id: number; name: string; mod: ServerMod; errors: number; slowTicks: number; ms: number; lastError?: string };
 type Event = { from: string; name: string; data: any; to?: string[] };
 
 const world = new GameWorld();
@@ -138,8 +138,10 @@ function call(m: Loaded, hook: keyof ServerHooks, ...args: any[]): any {
   if (!base && !wrapped) return;
   const started = performance.now();
   const result = next(...args);
+  const ms = performance.now() - started;
+  m.ms += ms;
   if (hook === "tick") {
-    m.slowTicks = performance.now() - started > 50 ? m.slowTicks + 1 : 0;
+    m.slowTicks = ms > 50 ? m.slowTicks + 1 : 0;
     if (m.slowTicks >= 100) fault(m, "every tick took over 50 ms for 5 s", true);
   }
   return result;
@@ -163,7 +165,7 @@ async function setMod(name: string, id: number, path: string | null) {
     mods.delete(name);
     return reorder();
   }
-  const loaded: Loaded = { id, name, mod: (await import(path)).default ?? {}, errors: 0, slowTicks: 0 };
+  const loaded: Loaded = { id, name, mod: (await import(path)).default ?? {}, errors: 0, slowTicks: 0, ms: 0 };
   mods.set(name, loaded);
   reorder();
   call(loaded, "load");
@@ -249,11 +251,19 @@ self.onmessage = async ({ data: msg }) => {
       }
       if (trial) return runTrial();
       let last = performance.now();
+      let busy = 0;
+      let ticks = 0;
       setInterval(() => {
         const now = performance.now();
         tick(Math.min((now - last) / 1000, 0.25));
         last = now;
         flush();
+        busy += performance.now() - now;
+        if (++ticks < 40) return;
+        const cost = Object.fromEntries(ordered.filter((m) => m.ms).sort((a, b) => b.ms - a.ms).map((m) => [m.name, +(m.ms / ticks).toFixed(2)]));
+        post({ t: "perf", msPerTick: +(busy / ticks).toFixed(2), mods: cost });
+        for (const m of ordered) m.ms = 0;
+        busy = ticks = 0;
       }, 50);
       return post({ t: "ready" });
     }

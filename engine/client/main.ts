@@ -56,6 +56,7 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.info.autoReset = false;
 document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -232,7 +233,7 @@ function applyTick({ reset, set, unset, removed, events }: Tick) {
 }
 
 // ---------- mods ----------
-type Loaded = { name: string; url: string; mod: ClientMod; ctx: ClientCtx; errors: number };
+type Loaded = { name: string; url: string; mod: ClientMod; ctx: ClientCtx; errors: number; ms: number };
 const mods = new Map<string, Loaded>();
 let ordered: Loaded[] = [];
 const keys = new Set<string>();
@@ -266,7 +267,11 @@ function call(m: Loaded, hook: keyof ClientHooks, ...args: any[]): any {
     const inner = next;
     next = (...a: any[]) => guarded(w, `wrap ${m.name}.${hook}`, () => fn.call(w.mod, inner, w.ctx, ...a));
   }
-  return next(...args);
+  if (hook === "render") return next(...args);
+  const started = performance.now();
+  const result = next(...args);
+  m.ms += performance.now() - started;
+  return result;
 }
 
 function use(name: string) {
@@ -308,7 +313,7 @@ async function loadMod(name: string, url: string | null) {
     use,
     asset: (file) => `/assets/${file.includes("/") ? file : `${name}/${file}`}`,
   };
-  const loaded: Loaded = { name, url, mod, ctx, errors: 0 };
+  const loaded: Loaded = { name, url, mod, ctx, errors: 0, ms: 0 };
   mods.set(name, loaded);
   reorder();
   call(loaded, "init");
@@ -320,8 +325,12 @@ function connect() {
   const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/ws?key=${key}`);
   socket = ws;
   ws.onmessage = async ({ data }) => {
+    stats.bytes += data.length;
     const msg = JSON.parse(data);
     switch (msg.t) {
+      case "pong":
+        stats.ping = Math.round(performance.now() - msg.at);
+        return;
       case "welcome": {
         world = msg.world;
         invite = msg.invite;
@@ -643,7 +652,9 @@ let last = performance.now();
 renderer.setAnimationLoop(() => {
   const now = performance.now();
   const dt = Math.min((now - last) / 1000, 0.1);
+  stats.frames.push(now - last);
   last = now;
+  renderer.info.reset();
   const blend = 1 - Math.exp(-dt * 15);
   for (const [id, obj] of objects) {
     const e = entities.get(id);
@@ -657,7 +668,12 @@ renderer.setAnimationLoop(() => {
     camera.position.set(Math.cos(a) * orbit * 1.4, orbit * 0.8, Math.sin(a) * orbit * 1.4);
     camera.lookAt(0, 0, 0);
   }
+  const drawStart = performance.now();
   draw(dt);
+  stats.drawMs += performance.now() - drawStart;
+  stats.loopMs += performance.now() - now;
+  stats.calls += renderer.info.render.calls;
+  stats.triangles += renderer.info.render.triangles;
   const hideHint = entities.size > 0 || mods.size > 0 || now - welcomedAt < 1000;
   if (emptyHint.hidden !== hideHint) emptyHint.hidden = hideHint;
 });
@@ -671,6 +687,96 @@ function draw(dt: number) {
   }
   next();
 }
+
+// ---------- debugging for the Claudes: the perf and logs tools ----------
+const stats = { frames: [] as number[], loopMs: 0, drawMs: 0, calls: 0, triangles: 0, bytes: 0, ping: 0 };
+const gl = renderer.getContext();
+const gpu = gl.getExtension("WEBGL_debug_renderer_info");
+const gpuName = gpu ? gl.getParameter(gpu.UNMASKED_RENDERER_WEBGL) : "unknown";
+let reportedAt = performance.now();
+setInterval(() => {
+  const now = performance.now();
+  const n = stats.frames.length || 1;
+  const sorted = [...stats.frames].sort((a, b) => a - b);
+  const r = (v: number) => Math.round(v * 100) / 100;
+  send({
+    t: "perf",
+    at: now,
+    fps: Math.round((stats.frames.length * 1000) / (now - reportedAt)),
+    slowestFrameMs: r(sorted.at(-1) ?? 0),
+    p95FrameMs: r(sorted[Math.floor(sorted.length * 0.95)] ?? 0),
+    msPerFrame: { engineAndMods: r(stats.loopMs / n), drawing: r(stats.drawMs / n) },
+    modsMsPerFrame: Object.fromEntries(ordered.filter((m) => m.ms).sort((a, b) => b.ms - a.ms).map((m) => [m.name, r(m.ms / n)])),
+    drawCallsPerFrame: Math.round(stats.calls / n),
+    trianglesPerFrame: Math.round(stats.triangles / n),
+    geometries: renderer.info.memory.geometries,
+    textures: renderer.info.memory.textures,
+    ...sceneCost(),
+    entities: entities.size,
+    pingMs: stats.ping,
+    downloadKBps: r(stats.bytes / 1024 / ((now - reportedAt) / 1000)),
+    heapMB: Math.round(((performance as any).memory?.usedJSHeapSize ?? 0) / 1048576) || undefined,
+    screen: `${renderer.domElement.width}x${renderer.domElement.height} at pixel ratio ${renderer.getPixelRatio()}`,
+    gpu: gpuName,
+    hidden: document.hidden || undefined,
+  });
+  for (const m of ordered) m.ms = 0;
+  Object.assign(stats, { frames: [], loopMs: 0, drawMs: 0, calls: 0, triangles: 0, bytes: 0 });
+  reportedAt = now;
+  forwarded = 0;
+}, 2000);
+
+// Tags every object with the mod whose code added it, so perf can name who owns the heavy ones.
+const add = THREE.Object3D.prototype.add;
+THREE.Object3D.prototype.add = function (...objects) {
+  const mod = modOf(new Error().stack);
+  if (mod) for (const o of objects) o.userData.mod ??= mod;
+  return add.apply(this, objects);
+};
+function sceneCost() {
+  let sceneObjects = 0;
+  const heavy: { mod: string; object: string; triangles: number; shadow: boolean }[] = [];
+  const shadowLights: string[] = [];
+  scene.traverse((o: any) => {
+    sceneObjects++;
+    let mod = "engine";
+    for (let p = o; p; p = p.parent) if (p.userData.mod) { mod = p.userData.mod; break; }
+    if (o.isLight && o.castShadow && o.visible) shadowLights.push(`${mod}: ${o.type} ${o.shadow.mapSize.x}px`);
+    if (!o.isMesh && !o.isPoints && !o.isLine) return;
+    const g = o.geometry;
+    const triangles = Math.round(((g.index?.count ?? g.attributes.position?.count ?? 0) / 3) * (o.isInstancedMesh ? o.count : 1));
+    heavy.push({ mod, object: `${o.type}${o.name ? ` "${o.name}"` : ""}${o.isInstancedMesh ? ` x${o.count}` : ""}`, triangles, shadow: !!o.castShadow });
+  });
+  const byMod: Record<string, number> = {};
+  for (const h of heavy) byMod[h.mod] = (byMod[h.mod] ?? 0) + h.triangles;
+  return {
+    sceneObjects,
+    trianglesByMod: Object.fromEntries(Object.entries(byMod).sort((a, b) => b[1] - a[1]).slice(0, 10)),
+    heaviestObjects: heavy.sort((a, b) => b.triangles - a.triangles).slice(0, 8),
+    shadowLights,
+    renderHooks: ordered.filter((m) => m.mod.render).map((m) => m.name),
+  };
+}
+
+let forwarded = 0;
+const modOf = (stack = "") => stack.match(/\/build\/([^/]+)\/[^/]+\/client\//)?.[1];
+for (const level of ["log", "info", "warn", "error"] as const) {
+  const original = console[level].bind(console);
+  console[level] = (...args: any[]) => {
+    original(...args);
+    const mod = modOf(new Error().stack);
+    if (!mod || ++forwarded > 30) return;
+    send({ t: "log", mod, level, text: args.map((a) => (typeof a === "string" ? a : a instanceof Error ? a.stack : JSON.stringify(a) ?? String(a))).join(" ") });
+  };
+}
+addEventListener("error", (e: ErrorEvent) => {
+  const mod = modOf(e.error?.stack ?? e.filename);
+  if (mod && ++forwarded <= 30) send({ t: "error", mod, text: `uncaught: ${e.error?.stack ?? e.message}` });
+});
+addEventListener("unhandledrejection", (e: PromiseRejectionEvent) => {
+  const mod = modOf(e.reason?.stack);
+  if (mod && ++forwarded <= 30) send({ t: "error", mod, text: `unhandled rejection: ${e.reason?.stack ?? e.reason}` });
+});
 
 await start();
 $("hud").hidden = false;
