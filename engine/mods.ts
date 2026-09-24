@@ -5,8 +5,11 @@ import type { RunningMod, SimHost } from "./simhost";
 type Build = { server: string | null; client: string | null };
 type Mod = { id: number; author: string; version: number; build: Build; previous: Build[] };
 
+export type Declared = Record<string, { mod: string; label: string }[]>;
+
 export type ModEvents = {
-  client(name: string, url: string | null): void;
+  /** Returns whether any player has the game open to load it. */
+  client(name: string, url: string | null): boolean;
   feed(text: string, kind?: "ok" | "error" | "info"): void;
 };
 
@@ -24,6 +27,9 @@ export class Mods {
   private nextId = 1;
   private queue: Promise<unknown> = Promise.resolve();
   sim!: SimHost;
+  /** Keys client mods declared with ctx.key, as the latest player's game reported them. */
+  declared: Declared = {};
+  private awaitingKeys = new Map<string, () => void>();
 
   constructor(
     private root: string,
@@ -104,7 +110,8 @@ export class Mods {
     this.running.set(name, { id, author: current?.author ?? author, version, build, previous: current ? [...current.previous, current.build].slice(-5) : [] });
     this.save();
     const loadError = await this.sim.apply({ name, id, server: build.server });
-    this.events.client(name, build.client);
+    if (this.events.client(name, build.client) && build.client) await Promise.race([new Promise<void>((r) => this.awaitingKeys.set(name, r)), Bun.sleep(3000)]);
+    this.awaitingKeys.delete(name);
     await this.commit(name, `${name} v${version}`, who);
     const ms = Math.round(performance.now() - started);
     this.events.feed(`${who} reloaded ${name} v${version}`, "ok");
@@ -112,7 +119,13 @@ export class Mods {
     return { ok: true, report: `${name} v${version} is live for everyone (${ms} ms).${warning}${this.overlaps(name)}\nWatch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.` };
   }
 
-  /** Which live mods read which keys and fill which menu tabs, found in their client code. */
+  /** A player's game loaded `loaded` and now has these declared keys. */
+  reportKeys(declared: Declared, loaded: string[]) {
+    this.declared = declared;
+    for (const name of loaded) this.awaitingKeys.get(name)?.();
+  }
+
+  /** Which live mods read which keys and fill which menu tabs, found in their client code, and the keys they declared. */
   controls() {
     const keys: Record<string, string[]> = {};
     const menus: Record<string, string[]> = {};
@@ -123,14 +136,16 @@ export class Mods {
       for (const key of new Set([...code.matchAll(KEY_CODE)].map((m) => m[1]!))) (keys[key] ??= []).push(name);
       for (const title of new Set([...code.matchAll(MENU_TAB)].map((m) => m[1]!))) (menus[title] ??= []).push(name);
     }
-    return { keys, menus };
+    return { keys, menus, declared: this.declared };
   }
 
-  /** Keys this mod reads that the engine or another mod already uses, as advice for whoever just reloaded it. */
+  /** Keys this mod reads or declares that the engine or another mod already uses, as advice for whoever just reloaded it. */
   private overlaps(name: string) {
     const lines: string[] = [];
-    for (const [key, users] of Object.entries(this.controls().keys)) {
-      if (!users.includes(name) || SHARED_KEYS.has(key)) continue;
+    const { keys, declared } = this.controls();
+    for (const [key, list] of Object.entries(declared)) keys[key] = [...new Set([...(SHARED_KEYS.has(key) ? [] : (keys[key] ?? [])), ...list.map((d) => d.mod)])];
+    for (const [key, users] of Object.entries(keys)) {
+      if (!users.includes(name) || (SHARED_KEYS.has(key) && !declared[key])) continue;
       const others = users.filter((u) => u !== name);
       if (key === "KeyE") lines.push("- KeyE: the engine owns E. Offer the action with ctx.interact instead, so players get one prompt for the nearest thing and E never fires two mods.");
       else if (ENGINE_KEYS[key]) lines.push(`- ${key}: the engine uses it for ${ENGINE_KEYS[key]}. Pick another key.`);

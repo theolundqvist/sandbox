@@ -67,6 +67,27 @@ const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
 camera.position.set(0, 10, 16);
 camera.lookAt(0, 0, 0);
 
+const listener = new THREE.AudioListener();
+camera.add(listener);
+const audio = { context: listener.context, listener, output: listener.getInput() };
+for (const type of ["pointerdown", "keydown"]) addEventListener(type, () => audio.context.state === "suspended" && void audio.context.resume(), true);
+
+/** Every mod's shakes add up into one camera offset, applied for the draw only. */
+const shakes: { strength: number; seconds: number; left: number }[] = [];
+const shakeOffset = new THREE.Vector3();
+function shakeCamera(dt: number) {
+  shakeOffset.set(0, 0, 0);
+  for (const s of shakes) {
+    const k = (s.strength * s.left) / s.seconds;
+    shakeOffset.x += (Math.random() * 2 - 1) * k;
+    shakeOffset.y += (Math.random() * 2 - 1) * k;
+    shakeOffset.z += (Math.random() * 2 - 1) * k;
+    s.left -= dt;
+  }
+  for (let i = shakes.length - 1; i >= 0; i--) if (shakes[i]!.left <= 0) shakes.splice(i, 1);
+  camera.position.add(shakeOffset);
+}
+
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
@@ -243,6 +264,100 @@ let ordered: Loaded[] = [];
 const keys = new Set<string>();
 let socket: WebSocket | null = null;
 const send = (msg: object) => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(msg));
+const warn = console.warn.bind(console);
+
+/** Keys mods declare with ctx.key: the engine dispatches them, so they never fire while the player types or has a window open. */
+type Binding = { mod: Loaded; code: string; label: string; down?: () => void; up?: () => void };
+const ENGINE_OWNED = ["Tab", "Enter", "KeyT", "KeyE"];
+let bindings: Binding[] = [];
+const held = new Map<string, Binding>();
+const keyLabel = (code: string) => code.replace(/^(Key|Digit)/, "");
+
+function declareKey(mod: Loaded, code: string, label: string, run: Parameters<ClientCtx["key"]>[2], opts?: { hold?: boolean }) {
+  if (ENGINE_OWNED.includes(code)) throw new Error(`${code} belongs to the engine; pick another key`);
+  const b: Binding = typeof run === "function" ? { mod, code, label, down: () => run(true), up: opts?.hold ? () => run(false) : undefined } : { mod, code, label, down: run.down, up: run.up };
+  const other = bindings.findLast((x) => x.code === code && x.mod.name !== mod.name);
+  if (other) {
+    const text = `${code} is declared by both ${other.mod.name} ("${other.label}") and ${mod.name} ("${label}"); only ${mod.name}'s runs. Pick a free key (status lists them).`;
+    warn(text);
+    for (const name of [other.mod.name, mod.name]) send({ t: "log", mod: name, level: "warn", text });
+  }
+  bindings.push(b);
+  keysChanged(mod.name);
+  return () => {
+    bindings = bindings.filter((x) => x !== b);
+    if (held.get(code) === b) held.delete(code);
+    keysChanged(mod.name);
+  };
+}
+/** The latest live binding for each key; while a panel is open, only its mod's. */
+function activeBindings() {
+  const seen = new Map<string, Binding>();
+  for (const b of bindings.toReversed()) if (!seen.has(b.code) && mods.get(b.mod.name) === b.mod && (!panel || b.mod === panel.mod)) seen.set(b.code, b);
+  return [...seen.values()];
+}
+function press(b: Binding, down: boolean) {
+  const fn = down ? b.down : b.up;
+  if (fn) guarded(b.mod, `key ${b.code}`, fn);
+}
+function releaseKeys() {
+  for (const b of held.values()) press(b, false);
+  held.clear();
+}
+
+let changedMods: Set<string> | null = null;
+/** Tells the server which keys are declared, once per batch of changes, so status and reload reports list them. */
+function keysChanged(mod: string) {
+  if (!changedMods) {
+    changedMods = new Set();
+    setTimeout(() => {
+      const declared: Record<string, { mod: string; label: string }[]> = {};
+      for (const b of bindings) (declared[b.code] ??= []).push({ mod: b.mod.name, label: b.label });
+      send({ t: "keys", mods: [...changedMods!], keys: declared });
+      changedMods = null;
+      showModKeys();
+    });
+  }
+  changedMods.add(mod);
+}
+function showModKeys() {
+  $("mod-keys").replaceChildren(
+    ...activeBindings().flatMap((b) => {
+      const dt = document.createElement("dt");
+      dt.append(Object.assign(document.createElement("span"), { textContent: keyLabel(b.code) }));
+      return [dt, Object.assign(document.createElement("dd"), { textContent: `${b.label} (${b.mod.name})` })];
+    }),
+  );
+}
+
+/** One mod window at a time: it holds the mouse and the keyboard until Esc or close(). */
+let panel: { mod: Loaded; el: HTMLElement; added: boolean; relock: boolean; onClose?: () => void } | null = null;
+function openPanel(mod: Loaded, el: HTMLElement, onClose?: () => void) {
+  const relock = panel ? panel.relock : !!document.pointerLockElement;
+  closePanel(false);
+  const p = { mod, el, added: !el.isConnected, relock, onClose };
+  if (p.added) {
+    el.classList.add("mod-panel");
+    document.body.append(el);
+  }
+  el.hidden = false;
+  if (!el.hasAttribute("tabindex")) el.tabIndex = -1;
+  releaseKeys();
+  keys.clear();
+  panel = p;
+  if (document.pointerLockElement) document.exitPointerLock();
+  el.focus({ preventScroll: true });
+  return { close: () => panel === p && closePanel() };
+}
+function closePanel(relock = true) {
+  const p = panel;
+  if (!p) return;
+  panel = null;
+  if (p.added) p.el.remove();
+  else p.el.hidden = true;
+  if (p.onClose) guarded(p.mod, "panel onClose", p.onClose);
+  if (relock && p.relock) capture();
+}
 
 function reorder() {
   ordered = [...mods.values()].sort((a, b) => (a.mod.order ?? 0) - (b.mod.order ?? 0) || a.name.localeCompare(b.name));
@@ -299,9 +414,13 @@ async function loadMod(name: string, url: string | null) {
   if (old) {
     call(old, "dispose");
     for (const el of old.owned) el.remove();
+    if (panel?.mod === old) closePanel();
+    bindings = bindings.filter((b) => b.mod !== old);
+    for (const [code, b] of held) if (b.mod === old) held.delete(code);
     mods.delete(name);
     pruneTabs();
   }
+  keysChanged(name);
   if (!mod || !url) {
     reorder();
     return rebuildAll();
@@ -334,6 +453,11 @@ async function loadMod(name: string, url: string | null) {
       loaded.actions.add(action);
       return () => void loaded.actions.delete(action);
     },
+    key: (code, label, run, opts) => declareKey(loaded, code, label, run, opts),
+    panel: (el, opts) => openPanel(loaded, el, opts?.onClose),
+    inputFree,
+    audio,
+    shake: (strength, seconds) => void (seconds > 0 && shakes.push({ strength, seconds, left: seconds })),
   };
   const loaded: Loaded = { name, url, mod, ctx, errors: 0, ms: 0, owned: [], actions: new Set() };
   mods.set(name, loaded);
@@ -596,11 +720,15 @@ const chat = $<HTMLInputElement>("chat");
 const menu = $("menu");
 const howto = $("howto");
 const palette = $("palette");
-const typing = () => document.activeElement instanceof HTMLInputElement;
+const typing = () => {
+  const el = document.activeElement;
+  return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || (el instanceof HTMLElement && el.isContentEditable);
+};
+const inputFree = () => !(typing() || panel || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden);
 
-/** During play the mouse steers the camera; the cursor is free only while chat, the menu or an overlay is open. */
+/** During play the mouse steers the camera; the cursor is free only while chat, the menu, a panel or an overlay is open. */
 function capture() {
-  if (!document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !document.pointerLockElement) renderer.domElement.requestPointerLock();
+  if (!document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !panel && !document.pointerLockElement) renderer.domElement.requestPointerLock();
 }
 renderer.domElement.addEventListener("click", capture);
 const ideas = ["add coins that respawn and a scoreboard", "make the floor lava every 30 seconds", "give me a grappling hook", "spawn a boss that chases whoever is winning", "let us build with blocks", "add a race track with a timer", "make me tiny and everyone else huge"];
@@ -608,6 +736,7 @@ function openChat() {
   chat.placeholder = `Chat, or ask your Claude: "${ideas[Math.floor(Math.random() * ideas.length)]}"`;
   chat.hidden = false;
   chat.focus();
+  releaseKeys();
   startTalking();
   if (document.pointerLockElement) document.exitPointerLock();
 }
@@ -668,6 +797,23 @@ $("mic").onpointerup = $("mic").onpointerleave = () => stopTalking(true);
 showMic();
 $("howto-play").onclick = play;
 
+// Capture phase, so mods' own listeners can't swallow declared keys.
+addEventListener("keydown", (e: KeyboardEvent) => {
+  if (e.code === "Escape" && panel && menu.hidden && chat.hidden && palette.hidden) return closePanel();
+  if (e.repeat || e.metaKey || e.ctrlKey || held.has(e.code) || typing() || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden) return;
+  if ((e.code === "Digit1" || e.code === "Digit2") && !$("react").hidden) return;
+  const b = activeBindings().find((x) => x.code === e.code);
+  if (!b) return;
+  if (b.up) held.set(e.code, b);
+  press(b, true);
+}, true);
+addEventListener("keyup", (e: KeyboardEvent) => {
+  const b = held.get(e.code);
+  if (!b) return;
+  held.delete(e.code);
+  press(b, false);
+}, true);
+
 addEventListener("keydown", (e: KeyboardEvent) => {
   if ((e.metaKey || e.ctrlKey) && e.code === "KeyK") {
     e.preventDefault();
@@ -694,7 +840,7 @@ addEventListener("keydown", (e: KeyboardEvent) => {
   if (e.code === "Escape" && !typing() && !menu.hidden) return closeMenu();
   if (e.code === "KeyT" && !typing() && menu.hidden) return startTalking();
   if (e.code === "KeyE" && !e.repeat && !typing() && menu.hidden) runAction();
-  if (!typing()) keys.add(e.code);
+  if (!typing() && !panel) keys.add(e.code);
 });
 addEventListener("keyup", (e: KeyboardEvent) => {
   if (e.code === "KeyT") stopTalking(true);
@@ -702,6 +848,7 @@ addEventListener("keyup", (e: KeyboardEvent) => {
 });
 addEventListener("blur", () => {
   keys.clear();
+  releaseKeys();
   stopTalking(true);
 });
 chat.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -840,9 +987,11 @@ function menuCommands(): Command[] {
     }
   }
   for (const b of menu.querySelectorAll<HTMLElement>(".actions button")) if (!b.hidden) list.push({ label: textOf(b), where: "Menu", run: () => b.click() });
+  for (const b of activeBindings()) list.push({ label: b.label, where: `Key ${keyLabel(b.code)} · ${b.mod.name}`, run: () => (press(b, true), press(b, false)) });
   return list;
 }
 function openPalette() {
+  releaseKeys();
   commands = menuCommands();
   palette.hidden = false;
   if (document.pointerLockElement) document.exitPointerLock();
@@ -931,6 +1080,7 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-via]"))
 
 async function openMenu() {
   keys.clear();
+  releaseKeys();
   menu.hidden = false;
   replaying = false;
   if (document.pointerLockElement) document.exitPointerLock();
@@ -1012,8 +1162,10 @@ renderer.setAnimationLoop(() => {
     camera.position.set(Math.cos(a) * orbit * 1.4, orbit * 0.8, Math.sin(a) * orbit * 1.4);
     camera.lookAt(0, 0, 0);
   }
+  shakeCamera(dt);
   const drawStart = performance.now();
   draw(dt);
+  camera.position.sub(shakeOffset);
   stats.drawMs += performance.now() - drawStart;
   stats.loopMs += performance.now() - now;
   stats.calls += renderer.info.render.calls;

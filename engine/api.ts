@@ -82,6 +82,16 @@ export interface ClientCtx {
   hud(area: "left" | "right" | "bottom"): HTMLElement;
   /** Offers an action on E. The engine shows one prompt for the nearest available action of any mod, and E (or tapping the prompt) runs only that one. `distance` returns how far the player is from it, or null while it is out of reach. Returns a function that withdraws it; reloading withdraws it too. */
   interact(action: { label: string | (() => string); distance(): number | null; run(): void }): () => void;
+  /** Binds a key (KeyboardEvent.code, e.g. "KeyM") labelled in Cmd+K and Help: run(true) on press, run(false) on release with `hold`, or { down, up }. Never fires while the player types, has the menu, Cmd+K, chat or another mod's panel open. The later of two mods declaring a key wins and both are warned. Tab, Enter, T and E are the engine's and throw; 1 and 2 go to votes while the vote bar shows. Returns a remover; reloading removes it too. */
+  key(code: string, label: string, run: ((down: boolean) => void) | { down?(): void; up?(): void }, opts?: { hold?: boolean }): () => void;
+  /** Shows el as this mod's window (centred on the page when el is not in the document): frees the mouse, pauses other mods' keys and ctx.keys, closes on Esc and gives the mouse back when closed. Opening a panel closes the open one. */
+  panel(el: HTMLElement, opts?: { onClose?(): void }): { close(): void };
+  /** True while the player controls the game: not typing, no menu, Cmd+K, chat or panel open. For mods that still listen to keys themselves. */
+  inputFree(): boolean;
+  /** The shared audio graph: connect sounds to `output` (master volume), or use `listener` (on the camera) for THREE.Audio and THREE.PositionalAudio. Resumed on the player's first click or key. */
+  audio: { context: AudioContext; listener: THREE.AudioListener; output: GainNode };
+  /** Shakes the camera, fading out over `seconds`. Every mod's shakes add up; the engine offsets the camera only while drawing, so camera.position stays yours. */
+  shake(strength: number, seconds: number): void;
 }
 
 export interface ClientHooks {
