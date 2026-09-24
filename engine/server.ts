@@ -250,17 +250,18 @@ const mcp = createMcp({
     }),
 });
 
-/** Whisper on Groq; segments it judges to be silence are dropped, since Whisper invents words for noise. */
+/** ElevenLabs Scribe in English; it tags sounds like [laughter], and a phrase with nothing but tags was only noise. */
 async function transcribe(audio: Blob) {
   const form = new FormData();
   form.append("file", audio, audio.type.includes("mp4") ? "speech.mp4" : "speech.webm");
-  form.append("model", "whisper-large-v3-turbo");
-  form.append("response_format", "verbose_json");
-  const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", { method: "POST", headers: { authorization: `Bearer ${process.env.GROQ_API_KEY}` }, body: form });
+  form.append("model_id", "scribe_v2");
+  form.append("language_code", "eng");
+  form.append("tag_audio_events", "true");
+  // This key belongs to ElevenLabs' EU data-residency stack, which rejects the global API host.
+  const res = await fetch("https://api.eu.residency.elevenlabs.io/v1/speech-to-text", { method: "POST", headers: { "xi-api-key": process.env.ELEVENLABS_API_KEY! }, body: form });
   if (!res.ok) throw new Error(`transcription failed: ${res.status} ${await res.text()}`);
-  const { segments } = (await res.json()) as { segments: { text: string; no_speech_prob: number }[] };
-  const text = segments.filter((s) => s.no_speech_prob < 0.5).map((s) => s.text.trim()).join(" ");
-  return /\p{L}/u.test(text) ? text : "";
+  const { text } = (await res.json()) as { text: string };
+  return /\p{L}/u.test(text.replace(/\[[^\]]*\]|\([^)]*\)/g, "")) ? text.trim() : "";
 }
 
 const html = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });
@@ -377,7 +378,7 @@ const server = Bun.serve<Conn>({
           rules: config.rules,
           invite: config.invite,
           publicUrl,
-          voice: !!process.env.GROQ_API_KEY,
+          voice: !!process.env.ELEVENLABS_API_KEY,
           mods: [...mods.running].filter(([, m]) => m.build.client).map(([name, m]) => ({ name, url: m.build.client })),
           feed: feedLog.slice(-8),
           claudes: Object.fromEntries([...claudes.keys()].map((name) => [name, builder(name)])),
