@@ -75,7 +75,11 @@ writeFileSync(
         skipLibCheck: true,
         typeRoots: [join(ENGINE, "../node_modules/@types")],
         types: ["bun"],
-        paths: { "three": [join(ENGINE, "../node_modules/@types/three")], "three/*": [join(ENGINE, "../node_modules/@types/three/*")] },
+        paths: {
+          "three": [join(ENGINE, "../node_modules/@types/three")],
+          "three/addons/*": [join(ENGINE, "../node_modules/@types/three/examples/jsm/*")],
+          "three/*": [join(ENGINE, "../node_modules/@types/three/*")],
+        },
       },
       include: ["**/*.ts"],
     },
