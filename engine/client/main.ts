@@ -1,3 +1,4 @@
+import { toCanvas } from "html-to-image";
 import * as THREE from "three";
 import type { ClientCtx, ClientHooks, ClientMod, Entity } from "../api";
 
@@ -317,8 +318,7 @@ function connect() {
       case "mod":
         return loadMod(msg.name, msg.url);
       case "shot":
-        draw(0);
-        return send({ t: "shot", id: msg.id, data: renderer.domElement.toDataURL("image/jpeg", 0.8).split(",")[1] });
+        return send({ t: "shot", id: msg.id, data: await screenshot() });
       case "feed":
         addLine(msg.text, msg.kind);
         if (msg.kind !== "info") toast(msg.text, msg.kind);
@@ -336,6 +336,22 @@ function connect() {
     $("status").textContent = "Reconnecting…";
     setTimeout(connect, 1000);
   };
+}
+
+/** The 3D view with every HTML overlay (engine HUD and mod UI) drawn on top, as base64 JPEG. */
+async function screenshot() {
+  draw(0);
+  const scene3d = new Image();
+  scene3d.src = renderer.domElement.toDataURL("image/png");
+  const [overlay] = await Promise.all([
+    toCanvas(document.body, { filter: (node) => node !== renderer.domElement, skipFonts: true, pixelRatio: 1, style: { background: "transparent" } }),
+    scene3d.decode(),
+  ]);
+  const out = Object.assign(document.createElement("canvas"), { width: innerWidth, height: innerHeight });
+  const g = out.getContext("2d")!;
+  g.drawImage(scene3d, 0, 0, innerWidth, innerHeight);
+  g.drawImage(overlay, 0, 0, innerWidth, innerHeight);
+  return out.toDataURL("image/jpeg", 0.8).split(",")[1]!;
 }
 
 // ---------- HUD ----------

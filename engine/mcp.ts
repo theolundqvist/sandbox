@@ -15,6 +15,8 @@ export type McpContext = {
   logs: { at: number; mod: string; level: string; text: string }[];
   feed(text: string, kind?: string): void;
   chat(from: string, text: string): void;
+  chatLog: { seq: number; from: string; text: string }[];
+  nextChat(): Promise<void>;
   status(): object;
   screenshot(who: string): Promise<string>;
 };
@@ -24,7 +26,7 @@ const hash = (text: string) => new Bun.CryptoHasher("sha256").update(text).diges
 const tools = [
   {
     name: "status",
-    description: "World name, rules, who is online, running mods with authors and versions, recent activity and recent chat. Start here, and check it between tasks: players ask their Claudes for things in chat.",
+    description: "World name, rules, who is online, running mods with authors and versions, and recent activity. Start here.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -110,7 +112,7 @@ const tools = [
   },
   {
     name: "screenshot",
-    description: "See the 3D view your player sees right now (they must have the game open; HTML overlays are not included). Use it to check your visuals.",
+    description: "See exactly what your player sees right now, 3D view and HTML overlays (they must have the game open). Use it to check your visuals and UI.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -118,6 +120,12 @@ const tools = [
     description:
       "Install an npm package (e.g. \"@dimforge/rapier3d-compat\", \"simplex-noise@4\") so any mod can import it on the server or client. Packages are shared by every mod and cannot be removed.",
     inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+  },
+  {
+    name: "wait_for_chat",
+    description:
+      "Wait until someone says something in the in-game chat, then return it. Call it whenever you have nothing else to do: players ask their Claudes for things in chat. New chat is also appended to every other tool result.",
+    inputSchema: { type: "object", properties: { seconds: { type: "number", description: "How long to wait, default 60, max 600." } } },
   },
   {
     name: "say",
@@ -129,7 +137,7 @@ const tools = [
 export const instructions = `This is a live multiplayer game that the players build together while playing. Every player's Claude edits the same shared file tree on the game server.
 Workflow: call status, read GUIDE.md and api.ts, then write or edit files under mods/<your-mod>/ and call reload to put them live for everyone. Nothing you write affects the game until reload succeeds.
 Other Claudes are editing at the same time: always re-read a file right before changing it, and keep each feature in its own mod folder.
-Mods can hide entities per player, send one-off events, call each other's exports, fetch any HTTP or MCP API asynchronously, load models or sounds added with add_asset, and import npm packages added with add_package. Use screenshot to see what your player sees; GUIDE.md shows how.`;
+Mods can hide entities per player, send one-off events, call each other's exports, fetch any HTTP or MCP API asynchronously, load models or sounds added with add_asset, and import npm packages added with add_package. Use screenshot to see what your player sees, and wait_for_chat between builds to hear what players want; GUIDE.md shows how.`;
 
 class ToolError extends Error {}
 
@@ -313,11 +321,24 @@ export function createMcp(ctx: McpContext) {
         ctx.feed(`${who}'s Claude added the ${spec} package`, "info");
         return `${out.trim().split("\n").slice(-3).join("\n")}\nImport it from any mod, then reload that mod.`;
       }
+      case "wait_for_chat": {
+        const until = Date.now() + Math.min(Number(args.seconds) || 60, 600) * 1000;
+        while (!unseenChat(who).length && Date.now() < until) await Promise.race([ctx.nextChat(), Bun.sleep(until - Date.now())]);
+        return unseenChat(who).length ? "New chat:" : "Nobody said anything.";
+      }
       case "say":
         ctx.chat(`${who}'s Claude`, String(args.text).slice(0, 300));
         return "Said.";
     }
     throw new ToolError(`Unknown tool ${name}`);
+  }
+
+  const chatSeen = new Map<string, number>();
+  const unseenChat = (who: string) => ctx.chatLog.filter((c) => c.seq > (chatSeen.get(who) ?? 0) && c.from !== `${who}'s Claude`);
+  function takeChat(who: string) {
+    const lines = unseenChat(who).map((c) => `${c.from}: ${c.text}`);
+    chatSeen.set(who, ctx.chatLog.at(-1)?.seq ?? 0);
+    return lines.length ? [{ type: "text", text: `In-game chat since your last call:\n${lines.join("\n")}` }] : [];
   }
 
   async function handle(msg: any, who: string) {
@@ -337,10 +358,10 @@ export function createMcp(ctx: McpContext) {
       case "tools/call":
         try {
           const result = await call(msg.params.name, msg.params.arguments ?? {}, who);
-          return reply({ content: [typeof result === "string" ? { type: "text", text: result } : { type: "image", data: result.image, mimeType: "image/jpeg" }] });
+          return reply({ content: [typeof result === "string" ? { type: "text", text: result } : { type: "image", data: result.image, mimeType: "image/jpeg" }, ...takeChat(who)] });
         } catch (e: any) {
           if (!(e instanceof ToolError)) console.error(e);
-          return reply({ content: [{ type: "text", text: e.message }], isError: true });
+          return reply({ content: [{ type: "text", text: e.message }, ...takeChat(who)], isError: true });
         }
     }
     if (msg.id === undefined) return null;

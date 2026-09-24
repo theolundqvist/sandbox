@@ -84,11 +84,14 @@ Bun.spawnSync(["git", "commit", "-qm", "server start"], { cwd: ROOT });
 
 const logs: { at: number; mod: string; level: string; text: string }[] = [];
 const feedLog: { at: number; text: string; kind: string }[] = [];
-const chatLog: { from: string; text: string }[] = [];
+const chatLog: { seq: number; from: string; text: string }[] = [];
+const chatWaiters = new Set<() => void>();
+let chatSeq = 0;
 function chat(from: string, text: string) {
-  chatLog.push({ from, text });
+  chatLog.push({ seq: ++chatSeq, from, text });
   if (chatLog.length > 50) chatLog.shift();
   broadcast({ t: "chat", from, text });
+  for (const wake of chatWaiters) wake();
 }
 const sockets = new Map<string, ServerWebSocket<Conn>>();
 const broadcast = (msg: object) => {
@@ -145,7 +148,6 @@ const status = () => ({
   mods: [...mods.running].map(([name, m]) => ({ name, author: m.author, version: m.version, server: !!m.build.server, client: !!m.build.client })),
   entities: sim.entities.size,
   recent: feedLog.slice(-15).map((f) => f.text),
-  chat: chatLog.slice(-20).map((c) => `${c.from}: ${c.text}`),
 });
 
 const shots = new Map<string, (data: string) => void>();
@@ -160,6 +162,8 @@ const mcp = createMcp({
   logs,
   feed,
   chat,
+  chatLog,
+  nextChat: () => new Promise<void>((resolve) => chatWaiters.add(function wake() { chatWaiters.delete(wake); resolve(); })),
   status,
   screenshot: (who) =>
     new Promise((resolve, reject) => {
