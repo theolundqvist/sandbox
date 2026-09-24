@@ -383,7 +383,7 @@ export function createMcp(ctx: McpContext) {
         const called = who === GAME_MASTER ? /\b(gm|game ?master)\b/i : { test: (text: string) => text.toLowerCase().includes(who) };
         const forMe = () => unseenChat(who).some((c) => c.from === who || called.test(c.text));
         while (!forMe() && Date.now() < until) await Promise.race([ctx.nextChat(), Bun.sleep(until - Date.now())]);
-        return forMe() ? "New chat:" : who === GAME_MASTER ? "Nobody called for the game master. Time for your next event?" : `Nothing for you from ${who} yet.`;
+        return forMe() ? "New chat:" : who === GAME_MASTER ? "Nobody called for the game master. Check how play feels and tune one small thing if it needs it." : `Nothing for you from ${who} yet.`;
       }
       case "say":
         ctx.chat(speaker(who), String(args.text).slice(0, 300));

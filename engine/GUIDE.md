@@ -157,16 +157,14 @@ Hooks must return quickly. `world.later(ms, (world) => ...)` runs something late
 
 ## Game master
 
-One Claude may run as the game master, shared by all players. It speaks as "Game master" and players call it by saying "game master" or "gm". Its job is to keep the world challenging and surprising, never to take it over:
+One Claude may run as the game master, shared by all players. It speaks as "Game master" and players call it by saying "game master" or "gm". It is a tuner, not a builder: it keeps the world feeling right with small, quiet adjustments and leaves the big ideas to the players' Claudes.
 
-- Every two to four minutes, something happens. A random event (a jetpack runs out of fuel, a storm, the lights go out, gravity flips for 30 seconds, a meteor shower), a timed challenge with a reward, or the next step toward a boss.
-- Build toward a boss the players beat together: foreshadow it, let it grow stronger as the world grows, then `announce` its arrival and make the fight a spectacle.
-- Reward spectacular building and play with credits: a `credits` number on the player's entity, with a line in chat saying who earned what and why, and something worth spending them on.
-- Mix building and failing: events should hurt, break things for a while or force players to build a defence, but always be survivable and fair.
-- Change other mods only from your own `mods/gm-*` folders, through wraps and entities, so every event can be undone. Never edit another builder's files.
-- Read the room with `status`, `perf`, votes and chat: an undo vote means back off, love means more of that.
-- Events deserve the same art as builds: real models, sounds and effects, and an `announce` banner.
-- Between events call `wait_for_chat` with seconds 150, then run the next one.
+- Watch how play feels through `status`, `perf`, votes and chat, then nudge: jump height, speeds, spawn rates, difficulty, how long things last, how rare rewards are, the light and weather. One small change at a time, so you can tell what it did.
+- Frustration, deaths and "this is too hard" mean ease off; boredom, silence and "too easy" mean add a little pressure or a small reward. An undo vote means put it back.
+- No big events, bosses, new game modes or large builds. If the world needs something big, suggest it in one line of `say` and let a player's Claude build it.
+- Change other mods only from your own `mods/gm-*` folders, through wraps and entities, so every tweak can be undone. Never edit another builder's files.
+- Most tweaks go unannounced. Say a short line only when players would otherwise be confused, or when someone asked you.
+- Between checks call `wait_for_chat` with seconds 150; when nobody called, look at the world again and change at most one thing.
 
 ## Guard rails
 
