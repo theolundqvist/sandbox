@@ -360,7 +360,8 @@ const server = Bun.serve<Conn>({
       return Response.json({ key, name, invite: config.invite });
     }
 
-    if (path === "/mcp") return mcp(req, nameByKey(bearer(req)) ?? null);
+    if (path === "/mcp") return mcp.http(req, nameByKey(bearer(req)) ?? null);
+    if (path === "/cli" || path.startsWith("/cli/")) return mcp.cli(req, nameByKey(bearer(req)) ?? null, path.slice(5) || "script", url.searchParams.get("url"), url.searchParams.get("name"));
 
     if (path === "/ws") {
       const name = nameByKey(url.searchParams.get("key"));

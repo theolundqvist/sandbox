@@ -438,7 +438,78 @@ export function createMcp(ctx: McpContext) {
     return { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `Unknown method ${msg.method}` } };
   }
 
-  return async (req: Request, who: string | null) => {
+  const usage = (tool: (typeof tools)[number]) => {
+    const props: Record<string, any> = tool.inputSchema.properties;
+    const required: string[] = (tool.inputSchema as any).required ?? [];
+    return [tool.name, ...Object.entries(props).map(([k, v]) => (required.includes(k) ? `${k}=<${v.type}>` : `[${k}=<${v.type}>]`))].join(" ");
+  };
+
+  /** The command line: the same tools as plain HTTP, for agents that would rather run a shell command than hold MCP tool schemas. */
+  async function cli(req: Request, who: string | null, command: string, url: string | null, name: string | null) {
+    if (!who) return new Response(`${STALE}
+`, { status: 401 });
+    if (command === "script") {
+      if (!url || !name || !/^[a-z0-9-]{1,40}$/.test(name)) return new Response("Give ?url=<this world's public URL>&name=<command name>.\n", { status: 400 });
+      return new Response(script(url, req.headers.get("authorization")!.slice(7), name), { headers: { "content-type": "text/x-shellscript" } });
+    }
+    if (command === "help") {
+      const list = tools.map((t) => `${usage(t)}\n    ${t.description}${Object.entries(t.inputSchema.properties as Record<string, any>).map(([k, v]) => (v.description ? `\n    ${k}: ${v.description}` : "")).join("")}`);
+      return new Response(`${instructions}\n\nname=value sends text, name=@file sends a file (binary files work for add_asset base64), name=- reads stdin. Numbers, booleans and lists are JSON. New chat is appended to every result.\n\n${list.join("\n\n")}\n`);
+    }
+    const tool = tools.find((t) => t.name === command);
+    if (!tool) return new Response(`Unknown tool ${command}. Run the command alone to list the tools.\n`, { status: 404 });
+    const args: Record<string, any> = {};
+    if (req.headers.get("content-type")?.startsWith("multipart/form-data"))
+      for (const [key, value] of await req.formData()) {
+        const type = (tool.inputSchema.properties as Record<string, any>)[key]?.type;
+        const text = typeof value === "string" ? value : key === "base64" ? Buffer.from(await value.arrayBuffer()).toString("base64") : await value.text();
+        try {
+          args[key] = type && type !== "string" ? JSON.parse(text) : text;
+        } catch {
+          return new Response(`${key} must be JSON of type ${type}, got: ${text}\n`, { status: 400 });
+        }
+      }
+    const listening = command === "wait_for_chat";
+    ctx.presence(who, listening ? "listening" : "working");
+    if (listening) req.signal.addEventListener("abort", () => ctx.presence(who, "offline"));
+    const answer = async (): Promise<{ status: number; body: string | Blob; image?: boolean }> => {
+      try {
+        const result = await call(command, args, who);
+        if (typeof result !== "string") return { status: 200, body: new Blob([Buffer.from(result.image, "base64")]), image: true };
+        return { status: 200, body: [result, ...takeChat(who).map((c) => c.text)].join("\n\n") + "\n" };
+      } catch (e: any) {
+        if (!(e instanceof ToolError)) console.error(e);
+        return { status: 422, body: [e.message, ...takeChat(who).map((c) => c.text)].join("\n\n") + "\n" };
+      } finally {
+        if (listening && !req.signal.aborted) ctx.presence(who, "working");
+      }
+    };
+    if (!listening) {
+      const { status, body, image } = await answer();
+      return new Response(body, { status, headers: { "content-type": image ? "image/jpeg" : "text/plain; charset=utf-8" } });
+    }
+    // Tunnels drop responses that stay silent for about 100 s, so a long wait sends newlines until it has an answer.
+    let keepalive: Timer | undefined;
+    return new Response(
+      new ReadableStream({
+        async start(stream) {
+          keepalive = setInterval(() => stream.enqueue("\n"), 15_000);
+          const { body } = await answer();
+          if (!keepalive) return;
+          clearInterval(keepalive);
+          stream.enqueue(body);
+          stream.close();
+        },
+        cancel() {
+          clearInterval(keepalive);
+          keepalive = undefined;
+        },
+      }),
+      { headers: { "content-type": "text/plain; charset=utf-8" } },
+    );
+  }
+
+  const http = async (req: Request, who: string | null) => {
     if (req.method !== "POST") return new Response(null, { status: 405 });
     const body = await req.json();
     const messages: any[] = Array.isArray(body) ? body : [body];
@@ -479,4 +550,36 @@ export function createMcp(ctx: McpContext) {
       { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } },
     );
   };
+
+  return { http, cli };
 }
+
+const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
+
+/** The command a player installs: POSIX sh and curl, so it runs on any Mac or Linux box without installing anything. */
+const script = (url: string, key: string, name: string) => `#!/bin/sh
+# Sandbox world ${name} from the command line. Run it alone for the tools and how to call them.
+URL=${quote(url)}
+KEY=${quote(key)}
+auth="Authorization: Bearer $KEY"
+if [ $# -eq 0 ] || [ "$1" = help ]; then exec curl -sS --fail-with-body -H "$auth" "$URL/cli/help"; fi
+tool=$1
+shift
+for arg do
+  shift
+  case $arg in *=*) ;; *) echo "Arguments are name=value, got: $arg" >&2; exit 2 ;; esac
+  name=\${arg%%=*}
+  value=\${arg#*=}
+  case $value in
+    -) set -- "$@" -F "$name=@-" ;;
+    @*) set -- "$@" -F "$name=@\${value#@}" ;;
+    *) set -- "$@" --form-string "$name=$value" ;;
+  esac
+done
+if [ "$tool" = screenshot ]; then
+  out="\${TMPDIR:-/tmp}/${name}-screenshot.jpg"
+  curl -sS --fail-with-body -X POST -H "$auth" "$@" -o "$out" "$URL/cli/screenshot" && echo "$out"
+  exit
+fi
+exec curl -sS --fail-with-body -X POST -H "$auth" "$@" "$URL/cli/$tool"
+`;

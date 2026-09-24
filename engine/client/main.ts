@@ -902,10 +902,32 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
 
 /** Single-quotes a shell argument, so prompts may contain apostrophes and world names anything. */
 const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
-const connectCommand = (prompt: string, key: string | null) => {
-  const name = slug(world);
-  return `claude ${shellQuote(prompt)} --mcp-config ${shellQuote(JSON.stringify({ mcpServers: { [name]: { type: "http", url: `${publicUrl ?? origin}/mcp`, headers: { Authorization: `Bearer ${key}` } } } }))} --allowedTools mcp__${name} Agent WebSearch WebFetch`;
+let via = "cli";
+try {
+  via = localStorage.getItem("sandbox-via") ?? "cli";
+} catch {}
+/** Starts a Claude connected to this world, through a shell command it installs (fewer tokens than MCP tool schemas) or through MCP. */
+const connectCommand = (prompt: (tools: string) => string, key: string | null, command: string) => {
+  const base = publicUrl ?? origin;
+  if (via === "mcp") {
+    const name = slug(world);
+    return `claude ${shellQuote(prompt(`the ${name} MCP tools`))} --mcp-config ${shellQuote(JSON.stringify({ mcpServers: { [name]: { type: "http", url: `${base}/mcp`, headers: { Authorization: `Bearer ${key}` } } } }))} --allowedTools mcp__${name} Agent WebSearch WebFetch`;
+  }
+  const bin = `~/.local/bin/${command}`;
+  const tools = `the ${bin} command: run it alone to list its tools, call one as ${bin} <tool> name=value, and give wait_for_chat calls a Bash timeout of 600000`;
+  return `mkdir -p ~/.local/bin && curl -fsS -H ${shellQuote(`Authorization: Bearer ${key}`)} ${shellQuote(`${base}/cli?name=${command}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin} && claude ${shellQuote(prompt(tools))} --allowedTools ${shellQuote(`Bash(${bin}:*)`)} Agent WebSearch WebFetch`;
 };
+for (const button of document.querySelectorAll<HTMLButtonElement>("[data-via]")) {
+  button.classList.toggle("active", button.dataset.via === via);
+  button.onclick = () => {
+    via = button.dataset.via!;
+    try {
+      localStorage.setItem("sandbox-via", via);
+    } catch {}
+    for (const b of document.querySelectorAll("[data-via]")) b.classList.toggle("active", b === button);
+    openMenu();
+  };
+}
 
 async function openMenu() {
   keys.clear();
@@ -914,10 +936,10 @@ async function openMenu() {
   if (document.pointerLockElement) document.exitPointerLock();
   $("menu-world").textContent = world;
   $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;
-  const name = slug(world);
   $("claude-command").textContent = connectCommand(
-    `We are playing ${world} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through the ${name} MCP tools, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Build everything like a real game, following the guide's Build it like a real game section: think about every part of quality (looks, feel, motion, sound, atmosphere, play, speed), find or build proper models and assets instead of boxes, and start parallel subagents, one per part, for anything bigger than a tweak. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and when I hold T or have the chat open my voice is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 600, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
+    (tools) => `We are playing ${world} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through ${tools}, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Build everything like a real game, following the guide's Build it like a real game section: think about every part of quality (looks, feel, motion, sound, atmosphere, play, speed), find or build proper models and assets instead of boxes, and start parallel subagents, one per part, for anything bigger than a tweak. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and when I hold T or have the chat open my voice is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 590, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
     key,
+    slug(world),
   );
   showBuilders();
   await refreshMenu();
@@ -927,8 +949,9 @@ const myVotes = new Map<string, string>();
 async function refreshMenu() {
   const status = await (await fetch("/api/status", { headers: { authorization: `Bearer ${key}` } })).json();
   $("gm-command").textContent = connectCommand(
-    `You are the game master of ${world}, a live multiplayer 3D game that my friends and I build with our own Claudes while we play it. You are connected to the game server through the ${slug(world)} MCP tools as the game master, shared by every player. Start with the status tool, read GUIDE.md (especially its Game master section), then run the game master loop it describes until I tell you to stop.`,
+    (tools) => `You are the game master of ${world}, a live multiplayer 3D game that my friends and I build with our own Claudes while we play it. You are connected to the game server through ${tools} as the game master, shared by every player. Start with the status tool, read GUIDE.md (especially its Game master section), then run the game master loop it describes until I tell you to stop.`,
     status.gameMaster.key,
+    `${slug(world)}-gm`,
   );
   $("gm-state").textContent = { working: "Running", listening: "Running", offline: "" }[status.gameMaster.state as Builder["state"]];
   $("menu-players").replaceChildren(...status.online.map((p: string) => Object.assign(document.createElement("li"), { textContent: p === me ? `${p} (you)` : p })));
