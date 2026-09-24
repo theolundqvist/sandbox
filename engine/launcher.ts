@@ -118,8 +118,8 @@ function share(on: boolean) {
     const msg = JSON.parse(String(data));
     if (msg.t === "req") {
       try {
-        const res = await fetch(`http://127.0.0.1:${PORT}${msg.path}`, { method: msg.method, headers: msg.headers, body: msg.body && Buffer.from(msg.body, "base64"), redirect: "manual" });
-        const headers = Object.fromEntries([...res.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k)));
+        const res = await fetch(`http://127.0.0.1:${PORT}${msg.path}`, { method: msg.method, headers: msg.headers, body: msg.body && Buffer.from(msg.body, "base64"), redirect: "manual", decompress: false });
+        const headers = Object.fromEntries([...res.headers].filter(([k]) => !["content-length", "transfer-encoding", "connection"].includes(k)));
         reply({ t: "res", id: msg.id, status: res.status, headers });
         if (res.body) for await (const chunk of res.body) reply({ t: "chunk", id: msg.id, data: Buffer.from(chunk).toString("base64") });
       } catch (e: any) {
@@ -240,7 +240,8 @@ Bun.serve<Pipe>({
     if (!running) return url.pathname === "/" ? page("menu.html") : Response.json({ error: "No world is running right now." }, { status: 503 });
     if (req.headers.get("upgrade") === "websocket")
       return server.upgrade(req, { data: { target: `ws://127.0.0.1:${running.port}${url.pathname}${url.search}`, queue: [] } }) ? undefined : new Response("upgrade failed", { status: 400 });
-    return fetch(`http://127.0.0.1:${running.port}${url.pathname}${url.search}`, { method: req.method, headers: req.headers, body: req.body, redirect: "manual" });
+    // Pass compressed bodies through as they are: decompressing here would leave a gzip header on plain bytes.
+    return fetch(`http://127.0.0.1:${running.port}${url.pathname}${url.search}`, { method: req.method, headers: req.headers, body: req.body, redirect: "manual", decompress: false });
   },
   websocket: {
     open(ws) {
