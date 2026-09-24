@@ -59,7 +59,8 @@ export class GameWorld implements World {
   use!: World["use"];
   later!: World["later"];
   async!: World["async"];
-  private sent = new Map<number, Map<string, string>>();
+  /** What players last received of each entity, as JSON. */
+  private sent = new Map<number, string>();
   private cursor: number[] = [];
 
   spawn(entity: Entity) {
@@ -74,11 +75,10 @@ export class GameWorld implements World {
 
   query(...components: string[]): [number, Entity][] {
     const found: [number, Entity][] = [];
-    for (const [id, e] of this.entities.raw()) {
-      if (components.every((c) => c in e)) {
-        this.entities.touched.add(id);
-        found.push([id, e]);
-      }
+    outer: for (const [id, e] of this.entities.raw()) {
+      for (const c of components) if (!(c in e)) continue outer;
+      this.entities.touched.add(id);
+      found.push([id, e]);
     }
     return found;
   }
@@ -96,31 +96,26 @@ export class GameWorld implements World {
     if (!this.cursor.length) this.cursor = [...new Set([...this.sent.keys(), ...[...this.entities.raw()].map(([id]) => id)])];
     const scan = this.cursor.splice(0, Math.max(64, Math.ceil(this.entities.size / 20)));
     const diff: Diff = { set: {}, unset: {}, removed: [] };
-    for (const id of new Set([...touched, ...deleted, ...scan])) {
+    for (const id of deleted) touched.add(id);
+    for (const id of scan) touched.add(id);
+    for (const id of touched) {
       const e = this.entities.peek(id);
       const prev = this.sent.get(id);
       if (!e) {
-        if (prev) {
+        if (prev !== undefined) {
           diff.removed.push(id);
           this.sent.delete(id);
         }
         continue;
       }
-      const seen = prev ?? new Map<string, string>();
-      if (!prev) this.sent.set(id, seen);
+      const json = JSON.stringify(e);
+      if (prev === json) continue;
+      this.sent.set(id, json);
+      const old: Entity = prev === undefined ? {} : JSON.parse(prev);
       let changed: Entity | undefined;
-      for (const key in e) {
-        const json = JSON.stringify(e[key]);
-        if (seen.get(key) === json) continue;
-        seen.set(key, json);
-        (changed ??= {})[key] = e[key];
-      }
+      for (const key in e) if (!(key in old) || JSON.stringify(e[key]) !== JSON.stringify(old[key])) (changed ??= {})[key] = e[key];
       if (changed) diff.set[id] = changed;
-      for (const key of seen.keys()) {
-        if (key in e) continue;
-        seen.delete(key);
-        (diff.unset[id] ??= []).push(key);
-      }
+      for (const key in old) if (!(key in e)) (diff.unset[id] ??= []).push(key);
     }
     touched.clear();
     deleted.clear();
