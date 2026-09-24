@@ -526,8 +526,16 @@ const typing = () => document.activeElement instanceof HTMLInputElement;
 function capture() {
   if (!document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && !document.pointerLockElement) renderer.domElement.requestPointerLock();
 }
+// The browser releases the mouse on Esc without sending the key, so a release opens the menu, unless a mod released it to show its own UI.
+let modReleased = false;
+const releasePointer = document.exitPointerLock.bind(document);
+document.exitPointerLock = () => {
+  if (document.pointerLockElement) modReleased = true;
+  return releasePointer();
+};
 document.addEventListener("pointerlockchange", () => {
-  if (!document.pointerLockElement && menu.hidden && chat.hidden && howto.hidden) openMenu();
+  if (document.pointerLockElement) modReleased = false;
+  else if (!modReleased && menu.hidden && chat.hidden && howto.hidden) openMenu();
 });
 renderer.domElement.addEventListener("click", capture);
 const ideas = ["add coins that respawn and a scoreboard", "make the floor lava every 30 seconds", "give me a grappling hook", "spawn a boss that chases whoever is winning", "let us build with blocks", "add a race track with a timer", "make me tiny and everyone else huge"];
@@ -536,7 +544,7 @@ function openChat() {
   chat.hidden = false;
   chat.focus();
   startTalking();
-  if (document.pointerLockElement) document.exitPointerLock();
+  if (document.pointerLockElement) releasePointer();
 }
 function closeMenu() {
   menu.hidden = true;
@@ -611,6 +619,8 @@ addEventListener("keydown", (e: KeyboardEvent) => {
   }
   if (e.code === "Escape" && !typing()) {
     e.preventDefault();
+    // The first Esc while a mod's UI holds the mouse belongs to that mod, which usually closes on it.
+    if (menu.hidden && modReleased) return void (modReleased = false);
     return menu.hidden ? openMenu() : closeMenu();
   }
   if (e.code === "KeyT" && !typing() && menu.hidden) return startTalking();
@@ -742,7 +752,7 @@ async function openMenu() {
   keys.clear();
   menu.hidden = false;
   replaying = false;
-  if (document.pointerLockElement) document.exitPointerLock();
+  if (document.pointerLockElement) releasePointer();
   $("menu-world").textContent = world;
   $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;
   const name = slug(world);
