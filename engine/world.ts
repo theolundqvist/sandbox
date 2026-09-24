@@ -57,6 +57,7 @@ export class GameWorld implements World {
   dbOf!: (mod: string) => ModDb;
   emit!: World["emit"];
   use!: World["use"];
+  has!: World["has"];
   later!: World["later"];
   async!: World["async"];
   /** What players last received of each entity, as JSON. */

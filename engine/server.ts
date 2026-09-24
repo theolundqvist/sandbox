@@ -89,14 +89,17 @@ Bun.spawnSync(["git", "commit", "-qm", "server start"], { cwd: ROOT });
 const logs: { at: number; mod: string; level: string; text: string; player?: string }[] = [];
 const clientPerf = new Map<string, { at: number } & Record<string, unknown>>();
 const feedLog: { at: number; text: string; kind: string }[] = [];
-const chatLog: { seq: number; from: string; text: string; spoken?: boolean }[] = [];
+const chatLog: { seq: number; from: string; text: string; spoken?: boolean; claudes?: boolean }[] = [];
 const chatWaiters = new Set<() => void>();
 let chatSeq = 0;
-function chat(from: string, text: string, spoken?: boolean) {
-  chatLog.push({ seq: ++chatSeq, from, text, spoken });
-  console.log(`[chat] ${from}${spoken ? " (voice)" : ""}: ${text}`);
+/** Lines to "claudes" reach only other Claudes' tool results and the Builders tab, never the players' chat. */
+function chat(from: string, text: string, how?: "spoken" | "claudes") {
+  const spoken = how === "spoken" || undefined;
+  const claudes = how === "claudes" || undefined;
+  chatLog.push({ seq: ++chatSeq, from, text, spoken, claudes });
+  console.log(`[chat] ${claudes ? "[claudes] " : ""}${from}${spoken ? " (voice)" : ""}: ${text}`);
   if (chatLog.length > 2000) chatLog.shift();
-  broadcast({ t: "chat", from, text, spoken });
+  broadcast(claudes ? { t: "talk", from, text } : { t: "chat", from, text, spoken });
   for (const wake of chatWaiters) wake();
 }
 const sockets = new Map<string, ServerWebSocket<Conn>>();
@@ -336,7 +339,7 @@ const server = Bun.serve<Conn>({
       if (!who) return new Response(null, { status: 401 });
       const audio = await req.blob();
       transcribe(audio).then(
-        (text) => text && chat(who, text.slice(0, 300), true),
+        (text) => text && chat(who, text.slice(0, 300), "spoken"),
         (error) => console.log(`[voice] ${who}: ${error.message}`),
       );
       return new Response(null, { status: 204 });
@@ -386,6 +389,7 @@ const server = Bun.serve<Conn>({
           mods: [...mods.running].filter(([, m]) => m.build.client).map(([name, m]) => ({ name, url: m.build.client })),
           feed: feedLog.slice(-8),
           claudes: Object.fromEntries([...claudes.keys()].map((name) => [name, builder(name)])),
+          talk: chatLog.filter((c) => c.claudes).map(({ from, text }) => ({ from, text })),
         }),
       );
       if (!previous) feed(`${name} joined`, "info");

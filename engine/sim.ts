@@ -82,9 +82,10 @@ world.async = (work) => {
     fault(m, m.lastError, ++m.errors >= 10);
   });
 };
+world.has = (name) => !!mods.get(name)?.mod.exports;
 world.use = (name) => {
   const target = mods.get(name);
-  if (!target?.mod.exports) throw new Error(`${name} is not loaded or exports nothing`);
+  if (!target?.mod.exports) throw new Error(`${name} is not loaded or exports nothing. If your mod works without it, check world.has("${name}") before use.`);
   return Object.fromEntries(
     Object.entries(target.mod.exports).map(([key, fn]) => [
       key,

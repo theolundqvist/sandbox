@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import type { RunningMod, SimHost } from "./simhost";
 
@@ -18,6 +19,13 @@ export const ENGINE_KEYS: Record<string, string> = { Tab: "the game menu", Enter
 /** Keys many mods read on purpose (moving, steering, closing their own window), so sharing them is not an overlap. */
 const SHARED_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Shift", "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "Escape"]);
 const TSC = join(import.meta.dir, "../node_modules/.bin/tsc");
+
+async function tsc(root: string) {
+  const proc = Bun.spawn([TSC, "-p", root, "--pretty", "false"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+  const lines = (await new Response(proc.stdout).text()).split("\n");
+  await proc.exited;
+  return lines;
+}
 
 export class Mods {
   running = new Map<string, Mod>();
@@ -60,19 +68,26 @@ export class Mods {
     writeFileSync(this.statePath, JSON.stringify(Object.fromEntries(this.running), null, 2));
   }
 
-  reload(name: string, who: string, author: string) {
-    const run = this.queue.then(() => this.doReload(name, who, author));
+  reload(name: string, who: string, author: string, force = false) {
+    const run = this.queue.then(() => this.doReload(name, who, author, force));
     this.queue = run.catch(() => {});
     return run;
   }
 
-  private async doReload(name: string, who: string, author: string): Promise<{ ok: boolean; report: string }> {
+  private async doReload(name: string, who: string, author: string, force: boolean): Promise<{ ok: boolean; report: string }> {
     if (!MOD_NAME.test(name)) return { ok: false, report: `Mod names are lowercase letters, digits and dashes: ${MOD_NAME}` };
     const dir = join(this.root, "mods", name);
     const current = this.running.get(name);
 
     if (!existsSync(dir)) {
       if (!current) return { ok: false, report: `No mod folder mods/${name}/ exists.` };
+      const users = this.users(name);
+      if (users.length && !force)
+        return this.fail(
+          name,
+          who,
+          `Live mods use ${name}: ${users.join(", ")}. So ${name} stays live, although its files are gone from disk (restore puts them back). Update or remove those mods first, or tell their owners and reload with force: true.`,
+        );
       this.running.delete(name);
       this.save();
       this.sim.send({ t: "mod", name, id: current.id, server: null });
@@ -164,14 +179,34 @@ export class Mods {
     this.save();
   }
 
-  /** Type errors in the mod itself, and in live mods that use it (a type import of its files or a use("<name>") call). */
+  /** Type errors in the mod itself, and new ones its change causes in live mods that use it (a type import of its files or a use("<name>") call). */
   private async typecheck(name: string) {
-    const proc = Bun.spawn([TSC, "-p", this.root, "--pretty", "false"], { cwd: this.root, stdout: "pipe", stderr: "pipe" });
-    const lines = (await new Response(proc.stdout).text()).split("\n");
-    await proc.exited;
     const users = this.users(name);
-    const errorsIn = (mods: string[]) => lines.filter((line) => mods.some((mod) => line.startsWith(`mods/${mod}/`))).join("\n");
-    return { own: errorsIn([name]), dependents: errorsIn(users) };
+    const errorsIn = (lines: string[], mods: string[]) => lines.filter((line) => mods.some((mod) => line.startsWith(`mods/${mod}/`)));
+    const lines = await tsc(this.root);
+    let dependents = errorsIn(lines, users);
+    // Errors those mods have without this change, like their own unfinished edits, are not this change's doing.
+    if (dependents.length) {
+      const before = await this.withoutChange(name);
+      try {
+        const old = new Set(errorsIn(await tsc(before), users));
+        dependents = dependents.filter((line) => !old.has(line));
+      } finally {
+        rmSync(before, { recursive: true, force: true });
+      }
+    }
+    return { own: errorsIn(lines, [name]).join("\n"), dependents: dependents.join("\n") };
+  }
+
+  /** A scratch copy of the tree's code with this mod as it was last accepted. */
+  private async withoutChange(name: string) {
+    const dir = mkdtempSync(join(tmpdir(), "sandbox-typecheck-"));
+    for (const file of ["api.ts", "tsconfig.json", "package.json"]) if (existsSync(join(this.root, file))) cpSync(join(this.root, file), join(dir, file));
+    if (existsSync(join(this.root, "node_modules"))) symlinkSync(join(this.root, "node_modules"), join(dir, "node_modules"));
+    for (const file of new Bun.Glob("mods/**/*.ts").scanSync(this.root)) if (!file.startsWith(`mods/${name}/`)) cpSync(join(this.root, file), join(dir, file));
+    const archive = Bun.spawn(["git", "archive", "HEAD", "--", `mods/${name}`], { cwd: this.root, stdout: "pipe", stderr: "ignore" });
+    await Bun.spawn(["tar", "-x", "-C", dir, "--wildcards", "*.ts"], { stdin: archive.stdout, stderr: "ignore" }).exited;
+    return dir;
   }
 
   users(name: string) {
