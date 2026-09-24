@@ -25,7 +25,7 @@ The main menu shows the invite link. Friends only need a browser. To play over t
 
 ## Connect your Claude
 
-Press Tab in the game and copy the `claude mcp add …` command into a terminal. It holds your personal key. Then ask Claude Code to build something: "add coins that respawn and a scoreboard", "make gravity flip every 30 seconds", "give me a grappling hook".
+Press Tab in the game and paste the command into a terminal. It holds your personal key, connects Claude Code to the world and leaves it listening to the in-game chat. Go back to the game and ask for things right there: "add coins that respawn and a scoreboard", "make gravity flip every 30 seconds", "give me a grappling hook". Your Claude answers in the chat when it's live.
 
 Each Claude edits the same shared file tree on the server, and nothing goes live until it calls `reload`. A reload only swaps in if the mod passes three checks: it typechecks, it builds, and 20 test ticks run clean against a copy of the live world. Mods that crash, stall, or freeze the server after going live are reverted automatically, and the whole world sees it in the feed.
 
