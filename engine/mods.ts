@@ -91,12 +91,13 @@ export class Mods {
     const version = (current?.version ?? 0) + 1;
     this.running.set(name, { id, author: current?.author ?? author, version, build, previous: current ? [...current.previous, current.build].slice(-5) : [] });
     this.save();
-    this.sim.send({ t: "mod", name, id, server: build.server });
+    const loadError = await this.sim.apply({ name, id, server: build.server });
     this.events.client(name, build.client);
     await this.commit(name, `${name} v${version}`, who);
     const ms = Math.round(performance.now() - started);
     this.events.feed(`${who} reloaded ${name} v${version}`, "ok");
-    return { ok: true, report: `${name} v${version} is live for everyone (${ms} ms). Watch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.` };
+    const warning = loadError ? `\nBut its load hook threw on the live world:\n${loadError}` : "";
+    return { ok: true, report: `${name} v${version} is live for everyone (${ms} ms).${warning}\nWatch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.` };
   }
 
   private fail(name: string, who: string, report: string) {

@@ -10,6 +10,7 @@ const ENGINE = import.meta.dir;
 const DATA = process.env.SANDBOX_DATA ?? join(ENGINE, "../data");
 const ROOT = join(DATA, "world");
 const BUILD = join(DATA, "build");
+const DB = join(DATA, "db");
 const PORT = Number(process.env.PORT ?? 7777);
 
 type Config = { name: string; rules: "open" | "additive"; invite: string; hostKey: string; setup: boolean };
@@ -19,7 +20,7 @@ const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 const readJson = <T>(file: string, fallback: T): T => (existsSync(join(DATA, file)) ? JSON.parse(readFileSync(join(DATA, file), "utf8")) : fallback);
 const writeJson = (file: string, value: unknown) => writeFileSync(join(DATA, file), JSON.stringify(value, null, 2));
 
-mkdirSync(DATA, { recursive: true });
+mkdirSync(DB, { recursive: true });
 const config = readJson<Config>("config.json", { name: "", rules: "open", invite: token(), hostKey: token(), setup: false });
 writeJson("config.json", config);
 const keys = readJson<Record<string, string>>("keys.json", {});
@@ -86,7 +87,7 @@ const mods = new Mods(ROOT, BUILD, join(DATA, "mods.json"), {
   client: (name, url) => broadcast({ t: "mod", name, url }),
   feed,
 });
-const sim = new SimHost(() => mods.list(), {
+const sim = new SimHost(DB, () => mods.list(), {
   delta: (d) => broadcast({ t: "delta", set: d.set, removed: d.removed }),
   log,
   fault: (mod, error) => {
@@ -122,6 +123,7 @@ const status = () => ({
 
 const mcp = createMcp({
   root: ROOT,
+  dbDir: DB,
   rules: () => config.rules,
   owners,
   saveOwners: () => writeJson("owners.json", owners),

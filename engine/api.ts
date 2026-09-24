@@ -5,9 +5,21 @@ export type Entity = Record<string, any>;
 
 export type Player = { id: string; name: string };
 
+export interface ModDb {
+  run(sql: string, ...params: any[]): { changes: number; lastInsertRowid: number | bigint };
+  all<T = any>(sql: string, ...params: any[]): T[];
+  get<T = any>(sql: string, ...params: any[]): T | null;
+  /** Runs fn atomically; nests safely. Use this instead of raw BEGIN/COMMIT. */
+  transaction<T>(fn: () => T): T;
+}
+
 export interface World {
   entities: Map<number, Entity>;
   players: Map<string, Player>;
+  /** The calling mod's own SQLite database. Writes are durable immediately. */
+  db: ModDb;
+  /** Another mod's database, read-only. */
+  dbOf(mod: string): ModDb;
   spawn(entity: Entity): number;
   remove(id: number): void;
   query(...components: string[]): [number, Entity][];

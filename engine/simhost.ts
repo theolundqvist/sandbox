@@ -10,8 +10,10 @@ export class SimHost {
   players = new Map<string, Player>();
   private worker!: Worker;
   private beat = new Int32Array(new SharedArrayBuffer(8));
+  private applying = new Map<string, (error: string | null) => void>();
 
   constructor(
+    private dbDir: string,
     private mods: () => RunningMod[],
     private on: {
       delta(d: { set: Record<number, Entity>; removed: number[] }): void;
@@ -49,6 +51,7 @@ export class SimHost {
         this.on.delta(msg);
       } else if (msg.t === "log") this.on.log(msg.mod, msg.level, msg.text);
       else if (msg.t === "fault") this.on.fault(msg.mod, msg.error);
+      else if (msg.t === "applied") this.applying.get(msg.name)?.(msg.error);
     };
     this.worker.postMessage({
       t: "init",
@@ -57,6 +60,7 @@ export class SimHost {
       nextId: this.nextId,
       players: [...this.players.values()],
       mods: this.mods(),
+      dbDir: this.dbDir,
     });
   }
 
@@ -64,6 +68,20 @@ export class SimHost {
     if (msg.t === "join") this.players.set(msg.player.id, msg.player);
     if (msg.t === "leave") this.players.delete(msg.id);
     this.worker.postMessage(msg);
+  }
+
+  /** Swaps a mod into the live simulation; resolves once its load hook ran, with that hook's error if any. */
+  apply(mod: RunningMod): Promise<string | null> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => done(null), HANG_MS);
+      const done = (error: string | null) => {
+        clearTimeout(timer);
+        this.applying.delete(mod.name);
+        resolve(error);
+      };
+      this.applying.set(mod.name, done);
+      this.send({ t: "mod", ...mod });
+    });
   }
 
   /** Runs one mod against a copy of the live world; resolves to an error message or null. */
@@ -88,6 +106,7 @@ export class SimHost {
         players: [],
         mods: [mod],
         trial: mod.name,
+        dbDir: this.dbDir,
       });
     });
   }

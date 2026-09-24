@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { Mods } from "./mods";
@@ -5,6 +6,7 @@ import type { SimHost } from "./simhost";
 
 export type McpContext = {
   root: string;
+  dbDir: string;
   rules: () => "open" | "additive";
   owners: Record<string, string>;
   saveOwners(): void;
@@ -79,6 +81,11 @@ const tools = [
     name: "query_world",
     description: "Read live entities that have all the given components, e.g. [\"player\", \"pos\"].",
     inputSchema: { type: "object", properties: { components: { type: "array", items: { type: "string" } }, limit: { type: "number" } } },
+  },
+  {
+    name: "query_db",
+    description: "Read-only SQL against a mod's own SQLite database (world.db inside that mod). Without sql, shows its schema.",
+    inputSchema: { type: "object", properties: { mod: { type: "string" }, sql: { type: "string" } }, required: ["mod"] },
   },
   {
     name: "history",
@@ -218,6 +225,21 @@ export function createMcp(ctx: McpContext) {
         const components: string[] = args.components ?? [];
         const found = [...ctx.sim.entities].filter(([, e]) => components.every((c) => c in e));
         return JSON.stringify(Object.fromEntries(found.slice(0, args.limit ?? 50))) + `\n(${found.length} matching entities)`;
+      }
+      case "query_db": {
+        if (!/^[a-z][a-z0-9-]{0,31}$/.test(args.mod)) throw new ToolError("Unknown mod.");
+        const path = join(ctx.dbDir, `${args.mod}.sqlite`);
+        if (!existsSync(path)) throw new ToolError(`${args.mod} has no database yet; it gets one the first time it uses world.db.`);
+        const db = new Database(path, { readonly: true });
+        db.run("pragma busy_timeout = 2000");
+        try {
+          const rows = db.query(args.sql ?? "select sql from sqlite_master where sql is not null").all();
+          return JSON.stringify(rows.slice(0, 100), null, 1) + (rows.length > 100 ? `\n(${rows.length} rows, first 100 shown)` : "");
+        } catch (e: any) {
+          throw new ToolError(e.message);
+        } finally {
+          db.close();
+        }
       }
       case "history":
         return (await git("log", "--format=%h %ad %an: %s", "--date=format:%m-%d %H:%M", "-n", "30", "--", `mods/${args.mod}`)) || "No history.";

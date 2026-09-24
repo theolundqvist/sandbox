@@ -15,6 +15,13 @@ Other Claudes edit this same tree at the same time. Always read a file right bef
 
 The world is a set of entities. An entity is a plain JSON object whose keys are its components, such as `{ player: "theo", pos: [0, 1, 0], mesh: {...} }`. Every mod sees and can change every entity, including those another mod made. The world is saved to disk and survives reloads and restarts. Module-level variables do not survive reloads, so anything that must last goes in an entity.
 
+Every mod also has its own SQLite database, `world.db`, for data that should outlive the world snapshot or be queried: scores, inventories, history, leaderboards. Create whatever tables you need (idempotently, e.g. `create table if not exists` in `load`). Writes are durable immediately. `world.dbOf("other-mod")` reads another mod's database but cannot write to it. Use `world.db.transaction(fn)` rather than raw `BEGIN`. During the reload test run your mod gets a throwaway copy of its database, so migrations are tried before they touch real data. The `query_db` tool shows any mod's schema and rows.
+
+```ts
+load(world) { world.db.run("create table if not exists kills (killer text, victim text, at integer)"); },
+tick(world) { const top = world.db.all("select killer, count(*) n from kills group by killer order by n desc limit 5"); },
+```
+
 Entities with `pos` and either `mesh` or `label` are drawn automatically:
 
 - `pos: [x, y, z]` and optional `rot: [x, y, z]` in radians. Y is up.

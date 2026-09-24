@@ -1,9 +1,12 @@
-import type { Player, ServerHooks, ServerMod } from "./api";
-import { GameWorld } from "./world";
+import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import type { ModDb, Player, ServerHooks, ServerMod } from "./api";
+import { GameWorld, modDb } from "./world";
 
 declare var self: Worker;
 
-type Loaded = { id: number; name: string; mod: ServerMod; errors: number; slowTicks: number };
+type Loaded = { id: number; name: string; mod: ServerMod; errors: number; slowTicks: number; lastError?: string };
 
 const world = new GameWorld();
 const mods = new Map<string, Loaded>();
@@ -12,6 +15,49 @@ let trial: string | null = null;
 let current: Loaded | null = null;
 
 const post = (msg: any) => self.postMessage(msg);
+
+let dbDir = "";
+const writers = new Map<string, ModDb>();
+const readers = new Map<string, ModDb>();
+
+function ownDb(name: string) {
+  const cached = writers.get(name);
+  if (cached) return cached;
+  const path = join(dbDir, `${name}.sqlite`);
+  let db: Database;
+  if (trial === name) {
+    const copy = existsSync(path) ? new Database(path, { readonly: true }).serialize() : null;
+    // A WAL-mode header makes the in-memory copy unopenable; bytes 18-19 switch it to rollback journaling.
+    if (copy) copy[18] = copy[19] = 1;
+    db = copy ? Database.deserialize(copy) : new Database(":memory:");
+  } else {
+    db = new Database(path, { create: true });
+    db.run("pragma journal_mode = wal");
+    db.run("pragma busy_timeout = 2000");
+  }
+  writers.set(name, modDb(db));
+  return writers.get(name)!;
+}
+
+function readDb(name: string) {
+  if (trial === name) return ownDb(name);
+  const cached = readers.get(name);
+  if (cached) return cached;
+  const path = join(dbDir, `${name}.sqlite`);
+  if (!existsSync(path)) throw new Error(`${name} has no database yet`);
+  const db = new Database(path, { readonly: true });
+  db.run("pragma busy_timeout = 2000");
+  readers.set(name, modDb(db));
+  return readers.get(name)!;
+}
+
+Object.defineProperty(world, "db", {
+  get() {
+    if (!current) throw new Error("world.db is only available inside a mod hook");
+    return ownDb(current.name);
+  },
+});
+world.dbOf = readDb;
 
 for (const level of ["log", "info", "warn", "error"] as const) {
   console[level] = (...args: any[]) =>
@@ -31,7 +77,8 @@ function guarded(m: Loaded, label: string, fn: () => void) {
   try {
     fn();
   } catch (e: any) {
-    fault(m, `${label}: ${e?.stack ?? e}`, ++m.errors >= 10);
+    m.lastError = `${label}: ${e?.stack ?? e}`;
+    fault(m, m.lastError, ++m.errors >= 10);
   } finally {
     Atomics.store(beat, 1, prevBeat);
     current = prev;
@@ -91,6 +138,7 @@ self.onmessage = async ({ data: msg }) => {
       for (const [id, e] of Object.entries(msg.entities)) world.entities.set(Number(id), e as any);
       for (const p of msg.players as Player[]) world.players.set(p.id, p);
       trial = msg.trial ?? null;
+      dbDir = msg.dbDir;
       world.delta();
       for (const m of msg.mods) {
         try {
@@ -114,8 +162,10 @@ self.onmessage = async ({ data: msg }) => {
     case "mod":
       try {
         await setMod(msg.name, msg.id, msg.server);
+        post({ t: "applied", name: msg.name, error: mods.get(msg.name)?.lastError ?? null });
       } catch (e: any) {
         post({ t: "fault", mod: msg.name, error: `import: ${e?.stack ?? e}` });
+        post({ t: "applied", name: msg.name, error: `import: ${e?.stack ?? e}` });
       }
       return;
     case "join":

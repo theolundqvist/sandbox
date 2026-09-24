@@ -1,10 +1,12 @@
 import { Database } from "bun:sqlite";
-import type { Entity, Player, World } from "./api";
+import type { Entity, ModDb, Player, World } from "./api";
 
 export class GameWorld implements World {
   entities = new Map<number, Entity>();
   players = new Map<string, Player>();
   nextId = 1;
+  declare db: ModDb;
+  dbOf!: (mod: string) => ModDb;
   private sent = new Map<number, string>();
 
   spawn(entity: Entity) {
@@ -39,6 +41,15 @@ export class GameWorld implements World {
     for (const id of removed) this.sent.delete(id);
     return { set, removed };
   }
+}
+
+export function modDb(db: Database): ModDb {
+  return {
+    run: (sql, ...params) => db.run(sql, ...params),
+    all: (sql, ...params) => db.query(sql).all(...params) as any[],
+    get: (sql, ...params) => db.query(sql).get(...params) as any,
+    transaction: (fn) => db.transaction(fn)(),
+  };
 }
 
 type Persisted = { entities: Map<number, Entity>; nextId: number };
