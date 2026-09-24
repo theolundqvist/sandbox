@@ -67,6 +67,16 @@ const tools = [
     inputSchema: { type: "object", properties: { path: { type: "string" }, base_hash: { type: "string" } }, required: ["path", "base_hash"] },
   },
   {
+    name: "add_asset",
+    description:
+      "Add a model, texture, sound or other file to mods/<mod>/assets/<name>, from a url the server downloads or from base64. It is live immediately: client code loads it from ctx.asset(\"<name>\") (or \"<other-mod>/<name>\"). Max 20 MB.",
+    inputSchema: {
+      type: "object",
+      properties: { mod: { type: "string" }, name: { type: "string", description: "File name, e.g. dragon.glb" }, url: { type: "string" }, base64: { type: "string" } },
+      required: ["mod", "name"],
+    },
+  },
+  {
     name: "reload",
     description:
       "Put a mod live for every player without disconnecting anyone: typechecks it, builds it, test-runs it against a copy of the live world, then hot-swaps server and client code. If any step fails nothing changes and you get the error.",
@@ -106,7 +116,8 @@ const tools = [
 
 export const instructions = `This is a live multiplayer game that the players build together while playing. Every player's Claude edits the same shared file tree on the game server.
 Workflow: call status, read GUIDE.md and api.ts, then write or edit files under mods/<your-mod>/ and call reload to put them live for everyone. Nothing you write affects the game until reload succeeds.
-Other Claudes are editing at the same time: always re-read a file right before changing it, and keep each feature in its own mod folder.`;
+Other Claudes are editing at the same time: always re-read a file right before changing it, and keep each feature in its own mod folder.
+Mods can hide entities per player, send one-off events, call each other's exports, fetch any HTTP or MCP API asynchronously, and load models or sounds added with add_asset; GUIDE.md shows how.`;
 
 class ToolError extends Error {}
 
@@ -177,6 +188,7 @@ export function createMcp(ctx: McpContext) {
       case "read_file": {
         const { abs, rel } = resolvePath(args.path);
         if (!existsSync(abs) || statSync(abs).isDirectory()) throw new ToolError(`${rel} does not exist.`);
+        if (/^mods\/[^/]+\/assets\//.test(rel)) return `${rel} is a binary asset (${statSync(abs).size} bytes), served at /${rel.replace(/^mods\/([^/]+)\/assets/, "assets/$1")}.`;
         const text = readFileSync(abs, "utf8");
         return `hash: ${hash(text)}\n${text}`;
       }
@@ -207,6 +219,25 @@ export function createMcp(ctx: McpContext) {
         rmSync(abs);
         if (!readdirSync(dirname(abs)).length) rmSync(dirname(abs), { recursive: true });
         return `Deleted ${rel}.`;
+      }
+      case "add_asset": {
+        if (!/^[\w.-]{1,64}$/.test(args.name ?? "") || args.name.startsWith(".")) throw new ToolError("name must be a plain file name like dragon.glb.");
+        const { abs, rel } = writable(`mods/${args.mod}/assets/${args.name}`, who);
+        let bytes: Uint8Array;
+        if (args.url) {
+          const res = await fetch(args.url).catch((e) => {
+            throw new ToolError(`Download failed: ${e.message}`);
+          });
+          if (!res.ok) throw new ToolError(`Download failed: HTTP ${res.status}`);
+          bytes = new Uint8Array(await res.arrayBuffer());
+        } else if (args.base64) bytes = Buffer.from(args.base64, "base64");
+        else throw new ToolError("Pass url or base64.");
+        if (bytes.length > 20 << 20) throw new ToolError(`${bytes.length} bytes is over the 20 MB limit.`);
+        claim(args.mod, who);
+        mkdirSync(dirname(abs), { recursive: true });
+        writeFileSync(abs, bytes);
+        announceEdit(who, rel);
+        return `Saved ${rel} (${bytes.length} bytes). Load it in client code with ctx.asset("${args.name}").`;
       }
       case "reload": {
         const mod = String(args.mod);

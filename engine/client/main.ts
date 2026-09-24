@@ -283,7 +283,7 @@ async function loadMod(name: string, url: string | null) {
     keys,
     send: (msg) => send({ t: "m", mod: name, msg }),
     use,
-    asset: (file) => `/assets/${encodeURIComponent(file)}`,
+    asset: (file) => `/assets/${file.includes("/") ? file : `${name}/${file}`}`,
   };
   const loaded: Loaded = { name, url, mod, ctx, errors: 0 };
   mods.set(name, loaded);

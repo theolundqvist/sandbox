@@ -36,6 +36,21 @@ if (!existsSync(ROOT)) {
   Bun.spawnSync(["git", "config", "user.name", "sandbox"], { cwd: ROOT });
   Bun.spawnSync(["git", "config", "user.email", "sandbox@sandbox"], { cwd: ROOT });
 }
+// Seed mods nobody has edited follow engine updates; edited ones are left alone.
+const seeded = readJson<Record<string, string>>("seeded.json", {});
+const refreshed = new Set<string>();
+const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
+for (const file of new Bun.Glob("mods/**/*").scanSync(join(ENGINE, "seed"))) {
+  const seed = readFileSync(join(ENGINE, "seed", file), "utf8");
+  const target = join(ROOT, file);
+  const current = existsSync(target) ? sha(readFileSync(target, "utf8")) : null;
+  if (current && current === seeded[file] && current !== sha(seed)) {
+    writeFileSync(target, seed);
+    refreshed.add(file.split("/")[1]!);
+  }
+  if (existsSync(target) && sha(readFileSync(target, "utf8")) === sha(seed)) seeded[file] = sha(seed);
+}
+writeJson("seeded.json", seeded);
 cpSync(join(ENGINE, "api.ts"), join(ROOT, "api.ts"));
 cpSync(join(ENGINE, "GUIDE.md"), join(ROOT, "GUIDE.md"));
 writeFileSync(
@@ -103,6 +118,7 @@ const store = openStore(join(DATA, "world.sqlite"));
 store.load(sim);
 await mods.loadAll(owners);
 sim.start();
+for (const mod of refreshed) await mods.reload(mod, "world", owners[mod] ?? "world");
 setInterval(() => store.save(sim), 5000);
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, () => {
@@ -151,6 +167,12 @@ const server = Bun.serve<Conn>({
     if (path.startsWith("/vendor/three/")) {
       const file = Bun.file(join(ENGINE, "../node_modules/three", path.slice("/vendor/three/".length).replaceAll("..", "")));
       return (await file.exists()) ? new Response(file) : new Response("not found", { status: 404 });
+    }
+    if (path.startsWith("/assets/")) {
+      const [mod, name] = path.slice("/assets/".length).split("/").map(decodeURIComponent);
+      const file = Bun.file(join(ROOT, "mods", mod ?? "", "assets", name ?? ""));
+      if (![mod, name].every((part) => /^\w[\w.-]*$/.test(part ?? "")) || !(await file.exists())) return new Response("not found", { status: 404 });
+      return new Response(file);
     }
     if (path.startsWith("/build/")) {
       const file = Bun.file(join(BUILD, path.slice("/build/".length).replaceAll("..", "")));

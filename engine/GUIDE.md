@@ -15,6 +15,10 @@ Other Claudes edit this same tree at the same time. Always read a file right bef
 
 The world is a set of entities. An entity is a plain JSON object whose keys are its components, such as `{ player: "theo", pos: [0, 1, 0], mesh: {...} }`. Every mod sees and can change every entity, including those another mod made. The world is saved to disk and survives reloads and restarts. Module-level variables do not survive reloads, so anything that must last goes in an entity.
 
+Only changed components are sent to players, 20 times a second. Reach entities through `world.query(...)` or `world.entities` in the hook that changes them; an object reference kept from an earlier tick still works, but its changes can take up to a second to reach players.
+
+Every player sees every entity unless you say otherwise: `only: ["theo", "anna"]` limits an entity to those player ids, and a `see(world, player, id, entity)` server hook returning `false` hides it from that player (re-checked every quarter second). Use this for fog of war, secret roles, private hands of cards.
+
 Every mod also has its own SQLite database, `world.db`, for data that should outlive the world snapshot or be queried: scores, inventories, history, leaderboards. Create whatever tables you need (idempotently, e.g. `create table if not exists` in `load`). Writes are durable immediately. `world.dbOf("other-mod")` reads another mod's database but cannot write to it. Use `world.db.transaction(fn)` rather than raw `BEGIN`. During the reload test run your mod gets a throwaway copy of its database, so migrations are tried before they touch real data. The `query_db` tool shows any mod's schema and rows.
 
 ```ts
@@ -63,7 +67,11 @@ object(ctx, id, entity) { if (entity.look?.model) return myLoadedModel.clone(); 
 
 `render` wraps the final draw of each frame the same way `wrap` does, with higher `order` outermost. `object` lets you replace how any entity looks; the highest `order` mod that returns something wins, and entities are rebuilt when their `mesh`, `label` or `look` component changes, so keep custom appearance data in `look`.
 
-`ctx.entities` is the live replicated world, `ctx.playerId` is this player, `ctx.keys` holds pressed key codes. The engine's own HUD takes the top 70 px, the top-right corner below it for notifications, and the bottom-left corner for chat, so put your DOM elsewhere.
+`event(ctx, name, data, from)` receives one-off happenings that a server mod sent with `world.emit(name, data)` (to everyone) or `world.emit(name, data, ["theo"])` (to some players): an explosion at one spot, a sound, a screen shake. Events are not saved and late joiners never see them; anything that must persist belongs in an entity.
+
+Models, textures and sounds: the `add_asset` tool stores a file from a url or base64 in `mods/<mod>/assets/`, live immediately. Load it with `ctx.asset("dragon.glb")` (this mod) or `ctx.asset("other-mod/dragon.glb")`, e.g. with `GLTFLoader` from `three/addons/loaders/GLTFLoader.js`.
+
+`ctx.entities` is the live replicated world (only what this player may see), `ctx.playerId` is this player, `ctx.keys` holds pressed key codes. The engine's own HUD takes the top 70 px, the top-right corner below it for notifications, and the bottom-left corner for chat, so put your DOM elsewhere.
 
 ## Power over other mods
 
@@ -85,8 +93,26 @@ export default {
 
 `basics` keeps its tunables in the entity with the `rules` component (`gravity`, `speed`, `jump`). Any mod can change them.
 
+## Mods working together
+
+A mod can offer functions to others with `exports`; they run as the exporting mod (its `world.db`, its errors):
+
+```ts
+// mods/economy/server.ts
+export default { exports: { pay(world, player: string, amount: number) { /* ... */ return balance; } } } satisfies ServerMod;
+// any other mod
+world.use<{ pay(player: string, amount: number): number }>("economy").pay("theo", 5);
+```
+
+Client mods do the same with `exports` receiving `(ctx, ...args)` and `ctx.use("mod")`.
+
+## Time and the internet
+
+Hooks must return quickly. `world.later(ms, (world) => ...)` runs something later. For slow work, `world.async(async (run) => { ... })` runs outside the tick: `fetch` any HTTP API, an MCP server, a model API, then touch the world only inside `run((world) => ...)`. If the mod is reloaded meanwhile, the stale `run` does nothing. During the reload test run, `later` and `async` do not run. Every file in this tree is readable by every player, so never put an API key in one; ask your player how they want to provide it.
+
 ## Guard rails
 
 - A server mod that throws 10 times, spends over 50 ms on every tick for 5 seconds, or freezes the server is reverted to its previous version automatically. The whole world sees that happen in the feed.
 - A client mod that keeps throwing is switched off in that player's game, and the error shows up in `logs`.
+- A reload test-runs your mod together with every live mod, so a mod that depends on another's exports is tested for real. Only errors in your mod fail the test.
 - Every accepted reload is committed. Use `history` and `restore` to go back.

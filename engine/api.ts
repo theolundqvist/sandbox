@@ -74,7 +74,7 @@ export interface ClientCtx {
   send(msg: any): void;
   /** Functions another client mod exported with `exports`. */
   use<T = any>(mod: string): T;
-  /** URL of a file added with the add_asset tool, e.g. ctx.asset("dragon.glb"). */
+  /** URL of a file added with add_asset: ctx.asset("dragon.glb") for this mod's, ctx.asset("other-mod/dragon.glb") for another's. */
   asset(name: string): string;
 }
 
