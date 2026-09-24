@@ -20,6 +20,10 @@
   #world-name { font-weight: 700; padding: 8px 14px; }
   #rules { padding: 8px 12px; color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
   #menu-button { margin-left: auto; }
+  #top > * { white-space: nowrap; } #world-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  @media (max-width: 600px) { #rules { display: none; } }
+  #claude { color: var(--claude); } #claude[data-state=listening]::before { content: "● "; } #claude[data-state=offline] { color: var(--text); border-color: var(--claude); }
+  #claude:not([data-state=offline]) { cursor: default; pointer-events: none; }
   button { font: inherit; color: var(--text); background: rgba(255,255,255,.08); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; cursor: pointer; }
   button:hover { background: rgba(255,255,255,.14); }
   button.primary { background: var(--accent); color: #1a1204; border: 0; font-weight: 700; }
@@ -64,6 +68,7 @@
   <div id="top">
     <div id="world-name" class="panel"></div>
     <div id="rules" class="panel"></div>
+    <button id="claude" class="panel"></button>
     <button id="menu-button" class="panel">Menu · Tab</button>
   </div>
   <div id="status" class="panel">Connecting…</div>

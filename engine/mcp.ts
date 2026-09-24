@@ -17,6 +17,7 @@ export type McpContext = {
   chat(from: string, text: string): void;
   chatLog: { seq: number; from: string; text: string }[];
   nextChat(): Promise<void>;
+  presence(who: string, state: "listening" | "working" | "offline"): void;
   status(): object;
   screenshot(who: string): Promise<string>;
 };
@@ -374,8 +375,42 @@ export function createMcp(ctx: McpContext) {
   return async (req: Request, who: string | null) => {
     if (req.method !== "POST") return new Response(null, { status: 405 });
     const body = await req.json();
-    const replies = (await Promise.all((Array.isArray(body) ? body : [body]).map((m) => handle(m, who)))).filter(Boolean);
-    if (!replies.length) return new Response(null, { status: 202 });
-    return Response.json(Array.isArray(body) ? replies : replies[0]);
+    const messages: any[] = Array.isArray(body) ? body : [body];
+    const listening = messages.some((m) => m.params?.name === "wait_for_chat");
+    if (who) {
+      ctx.presence(who, listening ? "listening" : "working");
+      // A Claude that quits mid-wait drops the request; one that finishes waiting goes on to work on what it heard.
+      if (listening) req.signal.addEventListener("abort", () => ctx.presence(who, "offline"));
+    }
+    const answer = async () => {
+      const replies = (await Promise.all(messages.map((m) => handle(m, who)))).filter(Boolean);
+      if (who && listening && !req.signal.aborted) ctx.presence(who, "working");
+      return Array.isArray(body) ? replies : replies[0];
+    };
+    if (messages.every((m) => m.id === undefined)) {
+      await answer();
+      return new Response(null, { status: 202 });
+    }
+    if (!req.headers.get("accept")?.includes("text/event-stream")) return Response.json(await answer());
+    // Tunnels drop responses that stay silent for about 100 s, so slow calls like wait_for_chat stream keepalives until done.
+    const encoder = new TextEncoder();
+    let keepalive: Timer | undefined;
+    return new Response(
+      new ReadableStream({
+        async start(stream) {
+          keepalive = setInterval(() => stream.enqueue(encoder.encode(": keepalive\n\n")), 15_000);
+          const reply = await answer();
+          if (!keepalive) return;
+          clearInterval(keepalive);
+          stream.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify(reply)}\n\n`));
+          stream.close();
+        },
+        cancel() {
+          clearInterval(keepalive);
+          keepalive = undefined;
+        },
+      }),
+      { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } },
+    );
   };
 }

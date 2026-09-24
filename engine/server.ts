@@ -95,6 +95,18 @@ function chat(from: string, text: string) {
   for (const wake of chatWaiters) wake();
 }
 const sockets = new Map<string, ServerWebSocket<Conn>>();
+
+/** Whether each player's Claude is waiting on the chat, busy, or gone, so players know if anyone hears them. */
+type Presence = "listening" | "working" | "offline";
+const claudes = new Map<string, { state: Presence; at: number }>();
+function presence(name: string, state: Presence) {
+  const changed = claudes.get(name)?.state !== state;
+  claudes.set(name, { state, at: Date.now() });
+  if (changed) broadcast({ t: "claude", name, state });
+}
+setInterval(() => {
+  for (const [name, c] of claudes) if (c.state === "working" && Date.now() - c.at > 120_000) presence(name, "offline");
+}, 15_000);
 const broadcast = (msg: object) => {
   const text = JSON.stringify(msg);
   for (const ws of sockets.values()) ws.send(text);
@@ -166,6 +178,7 @@ const mcp = createMcp({
   feed,
   chat,
   chatLog,
+  presence,
   nextChat: () => new Promise<void>((resolve) => chatWaiters.add(function wake() { chatWaiters.delete(wake); resolve(); })),
   status,
   screenshot: (who) =>
@@ -188,6 +201,7 @@ const bearer = (req: Request) => req.headers.get("authorization")?.replace(/^Bea
 
 const server = Bun.serve<Conn>({
   port: PORT,
+  idleTimeout: 255,
   async fetch(req, server) {
     const url = new URL(req.url);
     const path = url.pathname;
@@ -279,6 +293,7 @@ const server = Bun.serve<Conn>({
           invite: config.invite,
           mods: [...mods.running].filter(([, m]) => m.build.client).map(([name, m]) => ({ name, url: m.build.client })),
           feed: feedLog.slice(-8),
+          claudes: Object.fromEntries([...claudes].map(([name, c]) => [name, c.state])),
         }),
       );
       if (!previous) feed(`${name} joined`, "info");

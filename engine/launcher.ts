@@ -19,6 +19,7 @@ saveState();
 type Pipe = { target: string; upstream?: WebSocket; queue: string[] };
 let running: { id: string; proc: Subprocess; port: number } | null = null;
 let tunnel: { proc: Subprocess; url: string | null } | null = null;
+let tunnelError: string | null = null;
 const players = new Set<ServerWebSocket<Pipe>>();
 
 const readJson = (path: string) => (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {});
@@ -94,18 +95,26 @@ function share(on: boolean) {
     return;
   }
   if (tunnel) return;
+  tunnelError = null;
   if (!Bun.which("cloudflared")) throw new Error("Sharing over the internet needs cloudflared: brew install cloudflared (or see developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads).");
   const proc = Bun.spawn(["cloudflared", "tunnel", "--no-autoupdate", "--protocol", "http2", "--url", `http://localhost:${PORT}`], { stdout: "ignore", stderr: "pipe" });
   const current = (tunnel = { proc, url: null as string | null });
+  let last = "";
   (async () => {
     let url: string | undefined;
     for await (const chunk of proc.stderr) {
       const text = new TextDecoder().decode(chunk);
+      last = text.trim().split("\n").at(-1) ?? last;
       url ??= text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)?.[0];
       if (url && text.includes("Registered tunnel connection")) current.url = url;
     }
   })();
-  proc.exited.then(() => tunnel === current && (tunnel = null));
+  proc.exited.then(() => {
+    if (tunnel !== current) return;
+    tunnel = null;
+    tunnelError = `The tunnel stopped: ${last.replace(/^\S+ (ERR|INF|WRN) /, "")}`;
+    console.error(tunnelError);
+  });
 }
 
 const lan = Object.values(networkInterfaces())
@@ -135,6 +144,7 @@ async function menuState() {
         : null,
     lan: lan ? `http://${lan}:${PORT}` : null,
     tunnel: tunnel ? { url: tunnel.url } : null,
+    tunnelError,
   };
 }
 
@@ -169,6 +179,7 @@ const page = (file: string) => new Response(Bun.file(join(ENGINE, "client", file
 
 Bun.serve<Pipe>({
   port: PORT,
+  idleTimeout: 255,
   async fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname === "/menu") return page("menu.html");

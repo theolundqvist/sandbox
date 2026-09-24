@@ -129,6 +129,7 @@
       $("hosting-name").textContent = r.name;
       $("link-lan").textContent = `${s.lan ?? location.origin}/#invite=${r.invite}`;
       $("share").checked = !!s.tunnel;
+      if (s.tunnelError) $("share-error").textContent = s.tunnelError;
       $("public").hidden = !s.tunnel;
       $("link-public").textContent = s.tunnel?.url ? `${s.tunnel.url}/#invite=${r.invite}` : "Opening a tunnel…";
       $("players").replaceChildren(...(r.players.length ? r.players.map((p) => {

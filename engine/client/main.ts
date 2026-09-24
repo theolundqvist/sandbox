@@ -330,12 +330,16 @@ function connect() {
         $("rules").textContent = msg.rules === "additive" ? "additive" : "open";
         $("status").hidden = true;
         welcomedAt = performance.now();
+        showClaude(msg.claudes[me] ?? "offline");
         const wanted = new Map<string, string>(msg.mods.map((m: any) => [m.name, m.url]));
         for (const name of mods.keys()) if (!wanted.has(name)) await loadMod(name, null);
         for (const [name, url] of wanted) await loadMod(name, url);
         for (const f of msg.feed) addLine(f.text, f.kind);
         return;
       }
+      case "claude":
+        if (msg.name === me) showClaude(msg.state);
+        return;
       case "tick":
         return applyTick(msg);
       case "mod":
@@ -431,6 +435,13 @@ chat.addEventListener("keydown", (e: KeyboardEvent) => {
   e.stopPropagation();
 });
 $("menu-button").onclick = () => openMenu();
+
+const claudeLabels = { listening: "Claude listening", working: "Claude working…", offline: "Connect your Claude" };
+function showClaude(state: keyof typeof claudeLabels) {
+  $("claude").textContent = claudeLabels[state];
+  $("claude").dataset.state = state;
+}
+$("claude").onclick = () => $("claude").dataset.state === "offline" && openMenu();
 
 // Touch screens drive the same key codes as a keyboard, so every mod that reads ctx.keys works on phones.
 function enableTouch() {
