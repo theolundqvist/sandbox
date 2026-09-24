@@ -77,8 +77,14 @@ export class Mods {
     }
 
     const started = performance.now();
-    const typeErrors = await this.typecheck(name);
-    if (typeErrors) return this.fail(name, who, `Type errors, nothing changed:\n${typeErrors}`);
+    const { own, dependents } = await this.typecheck(name);
+    if (own) return this.fail(name, who, `Type errors, nothing changed:\n${own}`);
+    if (dependents)
+      return this.fail(
+        name,
+        who,
+        `This change breaks live mods that use ${name}, nothing changed. Keep ${name}'s exports compatible, or fix those mods in the same change and reload them after this one:\n${dependents}`,
+      );
     const build = await this.build(name);
     if (typeof build === "string") return this.fail(name, who, `Build failed, nothing changed:\n${build}`);
 
@@ -125,14 +131,22 @@ export class Mods {
     this.save();
   }
 
+  /** Type errors in the mod itself, and in live mods that use it (a type import of its files or a use("<name>") call). */
   private async typecheck(name: string) {
     const proc = Bun.spawn([TSC, "-p", this.root, "--pretty", "false"], { cwd: this.root, stdout: "pipe", stderr: "pipe" });
-    const out = await new Response(proc.stdout).text();
+    const lines = (await new Response(proc.stdout).text()).split("\n");
     await proc.exited;
-    return out
-      .split("\n")
-      .filter((line) => line.startsWith(`mods/${name}/`))
-      .join("\n");
+    const users = this.users(name);
+    const errorsIn = (mods: string[]) => lines.filter((line) => mods.some((mod) => line.startsWith(`mods/${mod}/`))).join("\n");
+    return { own: errorsIn([name]), dependents: errorsIn(users) };
+  }
+
+  users(name: string) {
+    const uses = new RegExp(`\\buse(?:<.*?>)?\\(\\s*["'\`]${name}["'\`]|["'\`]\\.\\./${name}/`);
+    return [...this.running.keys()].filter((other) => {
+      const dir = join(this.root, "mods", other);
+      return other !== name && existsSync(dir) && readdirSync(dir).some((f) => f.endsWith(".ts") && uses.test(readFileSync(join(dir, f), "utf8")));
+    });
   }
 
   private async build(name: string): Promise<Build | string> {

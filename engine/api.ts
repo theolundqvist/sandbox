@@ -101,3 +101,9 @@ export interface ClientMod extends ClientHooks {
   /** Called as ctx.use("<this mod>").fn(...args); they receive (ctx, ...args). */
   exports?: Record<string, (ctx: ClientCtx, ...args: any[]) => any>;
 }
+
+/** Another mod's exports as callers see them, typed from its source so a breaking change fails your typecheck and its reload:
+ *  `world.use<Exports<typeof import("../economy/server").default>>("economy").pay("theo", 5)`. */
+export type Exports<M extends { exports?: Record<string, (first: any, ...args: any[]) => any> }> = {
+  [K in keyof NonNullable<M["exports"]>]: NonNullable<M["exports"]>[K] extends (first: any, ...args: infer A) => infer R ? (...args: A) => R : never;
+};

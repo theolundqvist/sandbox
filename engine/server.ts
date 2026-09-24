@@ -197,7 +197,7 @@ const status = () => ({
   online: [...sockets.keys()],
   mods: [...mods.running].map(([name, m]) => {
     const v = votes.get(name)?.version === m.version ? votes.get(name) : undefined;
-    return { name, author: m.author, version: m.version, server: !!m.build.server, client: !!m.build.client, about: about[name], love: v?.love.size ?? 0, undo: v?.undo.size ?? 0 };
+    return { name, author: m.author, version: m.version, server: !!m.build.server, client: !!m.build.client, about: about[name], usedBy: mods.users(name), love: v?.love.size ?? 0, undo: v?.undo.size ?? 0 };
   }),
   undoNeeded: Math.floor(sockets.size / 2) + 1,
   entities: sim.entities.size,

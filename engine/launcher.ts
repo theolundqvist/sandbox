@@ -88,7 +88,7 @@ function create(body: any) {
   return id;
 }
 
-const RELAY = process.env.SANDBOX_RELAY ?? "https://play.lundqvistliss.com";
+const RELAY = process.env.SANDBOX_RELAY ?? "https://sandbox-relay.lundqvistliss.com";
 
 /** Makes this machine reachable through the public relay, which forwards players' requests and sockets over one outbound connection. */
 function share(on: boolean) {

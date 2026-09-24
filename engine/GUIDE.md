@@ -29,17 +29,22 @@ Players' microphones stay on, and what they say reaches chat as `(said aloud)` l
 - Delight ("haha this is amazing") tells you what to build more of; boredom or silence means it is time for something new.
 - Talk between players stays theirs. Answer with a short `say` only when it helps, and never quote someone's words back to mock them.
 
-## Make it look and sound great
+## Build it like a real game
 
-Players compare every build to a real game. Boxes and flat colours read as a placeholder; spend real effort on how things look, move and sound.
+Players compare every build to a shipped game, so aim there and think about every part of the experience, not just the object you were asked for. Before building, ask what would make this feel great, and cover whatever applies:
 
-- Start from a real asset, every time. Before modelling anything by hand, search the web for a free CC0 or CC-BY glTF (a site's search and preview pages help you choose, but many, like Poly Pizza and Sketchfab, block direct downloads) and fetch it with `add_asset`, then load it with `GLTFLoader`. `add_asset` needs a direct file link, not a zip or a web page. Sources with direct links: `.glb` and `.gltf` files in public GitHub repositories (raw links; search GitHub for the object plus `glb`), the Khronos glTF sample models and the three.js example models, Poly Haven textures and HDR skies (`dl.polyhaven.org`), and freesound previews (`cdn.freesound.org/previews/...mp3`) or OpenGameArt files for sounds. Model by hand only when nothing fits, and then use real geometry: curves, bevels, several parts, not one box.
-- Every object gets a sound. Engines hum, impacts thud, pickups chime. Use a downloaded sound or synthesise one with the Web Audio API, and set its volume by distance.
-- Use materials and shaders: `MeshStandardMaterial` with textures, normal maps and roughness, emissive glow, and a `ShaderMaterial` or `onBeforeCompile` for water, fire, force fields, grass sway and outlines. Post effects (bloom, colour grading) go in a `render` hook.
-- Animate. Play a model's own animations with `AnimationMixer`, and ease scale, tilt and bob so nothing snaps.
-- Credit what you download: put the author and licence in a `CREDITS.md` inside the mod.
-- Keep it fast: reuse loaded models with `clone()`, use `InstancedMesh` for many copies, pick low-poly versions, and add at most a couple of shadow-casting lights. `perf` shows what your mod costs.
-- Split the work. For anything bigger than a tweak, start subagents in parallel, one per part, each with the same MCP tools: one finds, downloads and fits the model, one finds or makes the sounds, one writes the gameplay code, one does effects and shaders. Give each the mod folder and file names it owns. Then put the pieces together, reload once, and check it with `screenshot`.
+- Looks: a model that reads well and fits the world's style. Download one or build your own; either way use real shapes, proportions, materials and detail, never a stack of boxes. Textures, normal maps, emissive glow and shaders (water, fire, wind, outlines) do a lot.
+- Feel: responsive controls, acceleration and weight, a camera that frames the action, and feedback for every action: sound, particles, screen shake, hit pause.
+- Motion: animation and easing so nothing snaps or floats.
+- Sound: effects that follow position and speed, and music or ambience when it sets the mood.
+- Atmosphere: lighting, sky, fog, time of day and post effects that make a place memorable.
+- Play: a goal, stakes, progression, a reason to come back, and fairness when several players use it at once.
+- Presentation: clear in-world UI and an `announce` that tells players what to try.
+- Speed: reuse geometry with `clone()` or `InstancedMesh`, keep shadow-casting lights few, and check `perf`.
+
+Assets from the web: `add_asset` needs a direct file link, not a zip or a web page. Many sites (Poly Pizza, Sketchfab) block direct downloads; raw links to `.glb`/`.gltf` files in public GitHub repositories, the Khronos and three.js sample models, Poly Haven (`dl.polyhaven.org`) textures and HDR skies, freesound previews (`cdn.freesound.org/previews/...mp3`) and OpenGameArt files work. Load models with `GLTFLoader`, and put the author and licence of anything downloaded in the mod's `CREDITS.md`.
+
+Split the work. For anything bigger than a tweak, start subagents in parallel, one per part the build actually has (say the model, the sound, the gameplay code, the effects), each with the same MCP tools and its own files in the mod folder. Then put the pieces together, reload, and check the result with `screenshot` before you call it done.
 
 ## The world
 
@@ -139,6 +144,8 @@ world.use<{ pay(player: string, amount: number): number }>("economy").pay("theo"
 ```
 
 Client mods do the same with `exports` receiving `(ctx, ...args)` and `ctx.use("mod")`.
+
+Build on each other: before writing something from scratch, check `status` for mods that already do part of it and use their exports, or extend them with `wrap`. Type the call from the other mod's source, `world.use<Exports<typeof import("../economy/server").default>>("economy")`, so your typecheck knows its real signature. That also makes the dependency binding: a reload that would break a live mod using yours is rejected with those mods' errors, so keep exports compatible or update your users in the same change. `status` lists who uses each mod.
 
 ## Packages
 
