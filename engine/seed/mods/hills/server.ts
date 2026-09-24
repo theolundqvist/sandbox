@@ -1,7 +1,7 @@
-import type { Entity, ServerMod, World } from "../../api";
+import type { Entity, ServerMod } from "../../api";
+import { groundOf } from "./ground";
 
 const SIZE = 90;
-const HEIGHT = 1.6;
 const hash = (x: number, z: number) => (((Math.sin(x * 127.1 + z * 311.7) * 43758.5) % 1) + 1) % 1;
 
 function generate(): Entity {
@@ -18,48 +18,18 @@ function generate(): Entity {
   return { terrain: { size: SIZE, heights, trees } };
 }
 
-/** Top of the solid ground (blocks and tree trunks) under x, z. */
-function floor(t: Entity["terrain"], blocked: Map<number, number>, x: number, z: number) {
-  const i = Math.round(x) + t.size / 2, k = Math.round(z) + t.size / 2;
-  if (i < 0 || k < 0 || i >= t.size || k >= t.size) return 0;
-  return blocked.get(i * t.size + k) ?? t.heights[i * t.size + k];
-}
-
-function terrain(world: World) {
-  const t = world.query("terrain")[0]?.[1].terrain;
-  if (!t) return null;
-  const blocked = new Map<number, number>();
-  for (const [x, z, h] of t.trees) {
-    const i = (x + t.size / 2) * t.size + z + t.size / 2;
-    blocked.set(i, t.heights[i] + h);
-  }
-  return (x: number, z: number) => floor(t, blocked, x, z);
-}
+let cached: { t: unknown; at: (x: number, z: number) => number | null } = { t: null, at: () => null };
 
 export default {
   order: 10,
   load(world) {
-    if (!world.query("terrain").length) world.spawn(generate());
-  },
-  wrap: {
-    basics: {
-      // basics walks on y = 0, so it runs in height-above-ground and hills lifts the result back up.
-      tick(next, world, dt) {
-        const ground = terrain(world);
-        if (!ground) return next(dt);
-        const before = new Map<number, [number, number, number]>();
-        for (const [id, e] of world.query("player", "pos")) {
-          const f = ground(e.pos[0], e.pos[2]);
-          before.set(id, [e.pos[0], e.pos[2], f]);
-          e.pos[1] -= f;
-        }
-        next(dt);
-        for (const [id, e] of world.query("player", "pos")) {
-          const [x, z, f] = before.get(id) ?? [e.pos[0], e.pos[2], 0];
-          e.pos[1] += f;
-          if (ground(e.pos[0], e.pos[2]) > e.pos[1] - HEIGHT / 2 + 1.01) [e.pos[0], e.pos[2]] = [x, z];
-        }
-      },
-    },
+    const terrain = world.query("terrain")[0]?.[1] ?? world.entities.get(world.spawn(generate()))!;
+    // Terrain blocks are 1 m tall, so bodies step up whole blocks.
+    const rules = world.query("rules")[0]?.[1];
+    if (rules) rules.step = Math.max(rules.step ?? 0, 1.05);
+    world.physics.ground((x, z) => {
+      if (cached.t !== terrain.terrain) cached = { t: terrain.terrain, at: groundOf(terrain.terrain) };
+      return cached.at(x, z);
+    });
   },
 } satisfies ServerMod;

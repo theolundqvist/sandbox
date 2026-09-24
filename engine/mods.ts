@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import type { RunningMod, SimHost } from "./simhost";
 
@@ -8,6 +9,7 @@ type Mod = { id: number; author: string; version: number; build: Build; previous
 export type ModEvents = {
   client(name: string, url: string | null): void;
   feed(text: string, kind?: "ok" | "error" | "info"): void;
+  record(kind: "reload" | "error", who: string | null, data: object): void;
 };
 
 const MOD_NAME = /^[a-z][a-z0-9-]{0,31}$/;
@@ -18,6 +20,20 @@ export const ENGINE_KEYS: Record<string, string> = { Tab: "the game menu", Enter
 /** Keys many mods read on purpose (moving, steering, closing their own window), so sharing them is not an overlap. */
 const SHARED_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Shift", "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "Escape"]);
 const TSC = join(import.meta.dir, "../node_modules/.bin/tsc");
+
+/** Checks only these mods' files and what they import, which reports the same errors in them as checking the whole tree. */
+async function tsc(root: string, mods: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), "sandbox-tsconfig-"));
+  try {
+    writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ extends: join(root, "tsconfig.json"), include: mods.map((mod) => join(root, "mods", mod, "**/*.ts")) }));
+    const proc = Bun.spawn([TSC, "-p", join(dir, "tsconfig.json"), "--pretty", "false"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+    const lines = (await new Response(proc.stdout).text()).split("\n");
+    await proc.exited;
+    return lines;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 export class Mods {
   running = new Map<string, Mod>();
@@ -60,19 +76,26 @@ export class Mods {
     writeFileSync(this.statePath, JSON.stringify(Object.fromEntries(this.running), null, 2));
   }
 
-  reload(name: string, who: string, author: string) {
-    const run = this.queue.then(() => this.doReload(name, who, author));
+  reload(name: string, who: string, author: string, force = false) {
+    const run = this.queue.then(() => this.doReload(name, who, author, force));
     this.queue = run.catch(() => {});
     return run;
   }
 
-  private async doReload(name: string, who: string, author: string): Promise<{ ok: boolean; report: string }> {
+  private async doReload(name: string, who: string, author: string, force: boolean): Promise<{ ok: boolean; report: string }> {
     if (!MOD_NAME.test(name)) return { ok: false, report: `Mod names are lowercase letters, digits and dashes: ${MOD_NAME}` };
     const dir = join(this.root, "mods", name);
     const current = this.running.get(name);
 
     if (!existsSync(dir)) {
       if (!current) return { ok: false, report: `No mod folder mods/${name}/ exists.` };
+      const users = this.users(name);
+      if (users.length && !force)
+        return this.fail(
+          name,
+          who,
+          `Live mods use ${name}: ${users.join(", ")}. So ${name} stays live, although its files are gone from disk (restore puts them back). Update or remove those mods first, or tell their owners and reload with force: true.`,
+        );
       this.running.delete(name);
       this.save();
       this.sim.send({ t: "mod", name, id: current.id, server: null });
@@ -83,21 +106,35 @@ export class Mods {
     }
 
     const started = performance.now();
+    const ms: Record<string, number> = {};
+    let mark = started;
+    const lap = (stage: string) => {
+      const now = performance.now();
+      ms[stage] = Math.round(now - mark);
+      mark = now;
+    };
+    const reject = (stage: string, report: string) => {
+      lap(stage);
+      this.events.record("reload", who, { mod: name, ok: false, stage, ms: { ...ms, total: Math.round(performance.now() - started) }, report: report.slice(0, 500) });
+      return this.fail(name, who, report);
+    };
     const { own, dependents } = await this.typecheck(name);
-    if (own) return this.fail(name, who, `Type errors, nothing changed:\n${own}`);
+    if (own) return reject("typecheck", `Type errors, nothing changed:\n${own}`);
     if (dependents)
-      return this.fail(
-        name,
-        who,
+      return reject(
+        "typecheck",
         `This change breaks live mods that use ${name}, nothing changed. Keep ${name}'s exports compatible, or fix those mods in the same change and reload them after this one:\n${dependents}`,
       );
+    lap("typecheck");
     const build = await this.build(name);
-    if (typeof build === "string") return this.fail(name, who, `Build failed, nothing changed:\n${build}`);
+    if (typeof build === "string") return reject("build", `Build failed, nothing changed:\n${build}`);
+    lap("build");
 
     const id = current?.id ?? this.nextId++;
     if (build.server) {
       const error = await this.sim.trial({ name, id, server: build.server });
-      if (error) return this.fail(name, who, `Test run against a copy of the live world failed, nothing changed:\n${error}`);
+      if (error) return reject("trial", `Test run against a copy of the live world failed, nothing changed:\n${error}`);
+      lap("trial");
     }
 
     const version = (current?.version ?? 0) + 1;
@@ -105,11 +142,14 @@ export class Mods {
     this.save();
     const loadError = await this.sim.apply({ name, id, server: build.server });
     this.events.client(name, build.client);
+    lap("apply");
     await this.commit(name, `${name} v${version}`, who);
-    const ms = Math.round(performance.now() - started);
+    lap("commit");
+    const total = Math.round(performance.now() - started);
+    this.events.record("reload", who, { mod: name, ok: true, version, ms: { ...ms, total }, loadError: loadError?.slice(0, 500) });
     this.events.feed(`${who} reloaded ${name} v${version}`, "ok");
     const warning = loadError ? `\nBut its load hook threw on the live world:\n${loadError}` : "";
-    return { ok: true, report: `${name} v${version} is live for everyone (${ms} ms).${warning}${this.overlaps(name)}\nWatch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.` };
+    return { ok: true, report: `${name} v${version} is live for everyone (${total} ms).${warning}${this.overlaps(name)}\nWatch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.` };
   }
 
   /** Which live mods read which keys and fill which menu tabs, found in their client code. */
@@ -148,6 +188,7 @@ export class Mods {
   revert(name: string, error: string) {
     const mod = this.running.get(name);
     if (!mod) return;
+    this.events.record("error", null, { mod: name, revert: true, text: error.slice(0, 500) });
     const previous = mod.previous.pop();
     if (previous) {
       mod.build = previous;
@@ -164,14 +205,34 @@ export class Mods {
     this.save();
   }
 
-  /** Type errors in the mod itself, and in live mods that use it (a type import of its files or a use("<name>") call). */
+  /** Type errors in the mod itself, and new ones its change causes in live mods that use it (a type import of its files or a use("<name>") call). */
   private async typecheck(name: string) {
-    const proc = Bun.spawn([TSC, "-p", this.root, "--pretty", "false"], { cwd: this.root, stdout: "pipe", stderr: "pipe" });
-    const lines = (await new Response(proc.stdout).text()).split("\n");
-    await proc.exited;
     const users = this.users(name);
-    const errorsIn = (mods: string[]) => lines.filter((line) => mods.some((mod) => line.startsWith(`mods/${mod}/`))).join("\n");
-    return { own: errorsIn([name]), dependents: errorsIn(users) };
+    const errorsIn = (lines: string[], mods: string[]) => lines.filter((line) => mods.some((mod) => line.startsWith(`mods/${mod}/`)));
+    const lines = await tsc(this.root, [name, ...users]);
+    let dependents = errorsIn(lines, users);
+    // Errors those mods have without this change, like their own unfinished edits, are not this change's doing.
+    if (dependents.length) {
+      const before = await this.withoutChange(name);
+      try {
+        const old = new Set(errorsIn(await tsc(before, users), users));
+        dependents = dependents.filter((line) => !old.has(line));
+      } finally {
+        rmSync(before, { recursive: true, force: true });
+      }
+    }
+    return { own: errorsIn(lines, [name]).join("\n"), dependents: dependents.join("\n") };
+  }
+
+  /** A scratch copy of the tree's code with this mod as it was last accepted. */
+  private async withoutChange(name: string) {
+    const dir = mkdtempSync(join(tmpdir(), "sandbox-typecheck-"));
+    for (const file of ["api.ts", "tsconfig.json", "package.json"]) if (existsSync(join(this.root, file))) cpSync(join(this.root, file), join(dir, file));
+    if (existsSync(join(this.root, "node_modules"))) symlinkSync(join(this.root, "node_modules"), join(dir, "node_modules"));
+    for (const file of new Bun.Glob("mods/**/*.ts").scanSync(this.root)) if (!file.startsWith(`mods/${name}/`)) cpSync(join(this.root, file), join(dir, file));
+    const archive = Bun.spawn(["git", "archive", "HEAD", "--", `mods/${name}`], { cwd: this.root, stdout: "pipe", stderr: "ignore" });
+    await Bun.spawn(["tar", "-x", "-C", dir, "--wildcards", "*.ts"], { stdin: archive.stdout, stderr: "ignore" }).exited;
+    return dir;
   }
 
   users(name: string) {

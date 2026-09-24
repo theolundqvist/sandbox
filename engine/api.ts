@@ -5,6 +5,29 @@ export type Entity = Record<string, any>;
 
 export type Player = { id: string; name: string };
 
+/** A solid entity's box: centre, half extents and yaw. */
+export type SolidBox = { readonly id: number; readonly x: number; readonly y: number; readonly z: number; readonly hx: number; readonly hy: number; readonly hz: number; readonly yaw: number };
+
+/** An upright cylinder standing on its feet position. Defaults: radius 0.35, height 1.8, step 0.45 (the highest ledge it walks up). */
+export type Body = { radius?: number; height?: number; step?: number };
+
+/** `id` is the solid entity hit, or null for ground from a `ground` provider. */
+export type RayHit = { distance: number; point: number[]; id: number | null };
+
+/** Collision against terrain from `ground` and entities with `pos` and `solid`: a box centred on pos, turned by rot[1], sized by `solid: { size: [x, y, z] }`, `solid: n` or, for `solid: true`, mesh.size. */
+export interface Physics {
+  /** Solid boxes whose footprint comes within radius of (x, z). */
+  boxes(x: number, z: number, radius: number): SolidBox[];
+  /** Height of the highest surface under (x, z) at or just above fromY (default: any height), or null if there is none. */
+  groundAt(x: number, z: number, fromY?: number): number | null;
+  /** Moves a body with its feet at pos by vel for dt seconds: slides along boxes, steps up ledges, lands on floors. Returns new arrays. */
+  move(pos: number[], vel: number[], dt: number, body?: Body): { pos: number[]; vel: number[]; grounded: boolean };
+  /** First box or ground surface along dir from origin, within maxDistance (finite). Boxes the origin is inside are ignored. */
+  ray(origin: number[], dir: number[], maxDistance: number): RayHit | null;
+  /** Adds terrain: fn gives the ground height under a body at (x, fromY, z), or null; higher than the body can step is a wall. Reloading removes it. */
+  ground(fn: (x: number, z: number, fromY: number) => number | null): () => void;
+}
+
 export interface ModDb {
   run(sql: string, ...params: any[]): { changes: number; lastInsertRowid: number | bigint };
   all<T = any>(sql: string, ...params: any[]): T[];
@@ -22,12 +45,16 @@ export interface World {
   dbOf(mod: string): ModDb;
   /** One-off event for client mods' `event` hook (explosions, sounds, screen shake). `to` limits it to those player ids. */
   emit(name: string, data?: any, to?: string[]): void;
-  /** Functions another mod exported with `exports`. They run as that mod (its world.db, its errors). */
+  /** Functions another mod exported with `exports`. They run as that mod (its world.db, its errors). Throws if that mod is not live. */
   use<T = any>(mod: string): T;
+  /** Whether that mod is live with exports: check it before use() when your mod works without the other one. */
+  has(mod: string): boolean;
   /** Runs fn as this mod after ms milliseconds. */
   later(ms: number, fn: (world: World) => void): void;
   /** Runs async work (fetch, APIs, MCP servers); touch the world only inside run(fn), which runs as this mod. */
   async(work: (run: (fn: (world: World) => void) => void) => Promise<void>): void;
+  /** Collision queries against solid entities and terrain. */
+  physics: Physics;
   spawn(entity: Entity): number;
   remove(id: number): void;
   query(...components: string[]): [number, Entity][];
@@ -67,13 +94,17 @@ export interface ClientCtx {
   entities: Map<number, Entity>;
   /** Scene objects the default renderer made, by entity id. */
   objects: Map<number, THREE.Object3D>;
+  /** The same collision queries as the server's world.physics, over the replicated entities. */
+  physics: Physics;
   playerId: string;
   /** Currently held keys, as KeyboardEvent.code (e.g. "KeyW", "Space"). */
   keys: Set<string>;
   /** Sends a message to this mod's server half. */
   send(msg: any): void;
-  /** Functions another client mod exported with `exports`. */
+  /** Functions another client mod exported with `exports`. Throws if that mod is not live. */
   use<T = any>(mod: string): T;
+  /** Whether that client mod is live with exports: check it before use() when your mod works without the other one. */
+  has(mod: string): boolean;
   /** URL of a file added with add_asset: ctx.asset("dragon.glb") for this mod's, ctx.asset("other-mod/dragon.glb") for another's. */
   asset(name: string): string;
   /** Your block in the game menu (Tab) tab with this title, which is created if no tab has it. Extend the engine's "Game", "Builders", "Mods" and "Help" tabs or another mod's tab by using its title. Removed when this mod reloads. */

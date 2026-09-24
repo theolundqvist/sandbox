@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { ServerWebSocket, Subprocess } from "bun";
+import { latencies, openRecord, route, type Recorder } from "./record";
 import type { Config } from "./server";
 
 const ENGINE = import.meta.dir;
@@ -17,7 +18,14 @@ const saveState = () => writeFileSync(STATE, JSON.stringify(state, null, 2));
 saveState();
 
 type Pipe = { target: string; upstream?: WebSocket; queue: string[] };
-let running: { id: string; proc: Subprocess; port: number } | null = null;
+let running: { id: string; proc: Subprocess; port: number; record: Recorder } | null = null;
+/** How long requests take through this launcher, and through the relay end to end; the running world's record keeps it. */
+const proxy = latencies();
+const sampleProxy = (record: Recorder) => {
+  const sample = proxy.take();
+  if (Object.keys(sample).length) record.add("proxy", null, sample);
+};
+setInterval(() => running && sampleProxy(running.record), 10_000);
 let tunnel: { ws: WebSocket; url: string | null } | null = null;
 let tunnelError: string | null = null;
 const players = new Set<ServerWebSocket<Pipe>>();
@@ -59,17 +67,27 @@ async function host(id: string) {
   if (!existsSync(join(WORLDS, id, "config.json"))) throw new Error("That world doesn't exist.");
   await stop();
   let reportPort!: (port: number) => void;
+  const started = Date.now();
+  const record = openRecord(join(WORLDS, id, "record.sqlite"));
   const proc = Bun.spawn([process.execPath, join(ENGINE, "server.ts")], {
     env: { ...process.env, SANDBOX_DATA: join(WORLDS, id), PORT: "0" },
     stdout: "inherit",
     stderr: "inherit",
     ipc: (msg) => reportPort(msg.port),
   });
+  proc.exited.then(() => {
+    const stopped = running?.proc !== proc;
+    const how = proc.signalCode ?? `code ${proc.exitCode}`;
+    console.log(`[launcher] world ${id} exited with ${how} after ${Math.round((Date.now() - started) / 1000)} s${stopped ? "" : " without being stopped"}`);
+    sampleProxy(record);
+    record.add("exit", null, { code: proc.exitCode, signal: proc.signalCode, stopped, seconds: Math.round((Date.now() - started) / 1000) });
+    record.close();
+  });
   const port = await new Promise<number>((resolve, reject) => {
     reportPort = resolve;
     proc.exited.then(() => reject(new Error("The world crashed while starting; the terminal shows why.")));
   });
-  running = { id, proc, port };
+  running = { id, proc, port, record };
   state.hosting = id;
   saveState();
   await publish();
@@ -117,6 +135,7 @@ function share(on: boolean) {
   ws.onmessage = async ({ data }) => {
     const msg = JSON.parse(String(data));
     if (msg.t === "req") {
+      const started = performance.now();
       try {
         const res = await fetch(`http://127.0.0.1:${PORT}${msg.path}`, { method: msg.method, headers: msg.headers, body: msg.body && Buffer.from(msg.body, "base64"), redirect: "manual", decompress: false });
         const headers = Object.fromEntries([...res.headers].filter(([k]) => !["content-length", "transfer-encoding", "connection"].includes(k)));
@@ -127,6 +146,7 @@ function share(on: boolean) {
         reply({ t: "chunk", id: msg.id, data: Buffer.from(String(e?.message ?? e)).toString("base64") });
       }
       reply({ t: "end", id: msg.id });
+      proxy.add(`relay ${msg.method} ${route(msg.path.split("?")[0])}`, performance.now() - started);
     } else if (msg.t === "open") {
       const upstream = new WebSocket(`ws://127.0.0.1:${PORT}${msg.path}`, { headers: msg.headers } as any);
       const pipe = { ws: upstream, queue: [] as string[] };
@@ -241,7 +261,10 @@ Bun.serve<Pipe>({
     if (req.headers.get("upgrade") === "websocket")
       return server.upgrade(req, { data: { target: `ws://127.0.0.1:${running.port}${url.pathname}${url.search}`, queue: [] } }) ? undefined : new Response("upgrade failed", { status: 400 });
     // Pass compressed bodies through as they are: decompressing here would leave a gzip header on plain bytes.
-    return fetch(`http://127.0.0.1:${running.port}${url.pathname}${url.search}`, { method: req.method, headers: req.headers, body: req.body, redirect: "manual", decompress: false });
+    const started = performance.now();
+    const res = await fetch(`http://127.0.0.1:${running.port}${url.pathname}${url.search}`, { method: req.method, headers: req.headers, body: req.body, redirect: "manual", decompress: false });
+    proxy.add(`${req.method} ${route(url.pathname)}`, performance.now() - started);
+    return res;
   },
   websocket: {
     open(ws) {

@@ -2,14 +2,17 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Entity, ModDb, Player, ServerHooks, ServerMod } from "./api";
+import { PhysicsIndex } from "./physics";
 import { GameWorld, modDb, type Diff, type Tick } from "./world";
 
 declare var self: Worker;
 
-type Loaded = { id: number; name: string; mod: ServerMod; errors: number; slowTicks: number; ms: number; lastError?: string };
+type Ground = (x: number, z: number, fromY: number) => number | null;
+type Loaded = { id: number; name: string; mod: ServerMod; errors: number; slowTicks: number; ms: number; lastError?: string; grounds: Set<Ground> };
 type Event = { from: string; name: string; data: any; to?: string[] };
 
 const world = new GameWorld();
+const physics = new PhysicsIndex();
 const mods = new Map<string, Loaded>();
 let ordered: Loaded[] = [];
 let beat: Int32Array;
@@ -82,9 +85,23 @@ world.async = (work) => {
     fault(m, m.lastError, ++m.errors >= 10);
   });
 };
+world.physics = {
+  boxes: (x, z, radius) => physics.boxes(x, z, radius),
+  groundAt: (x, z, fromY) => physics.groundAt(x, z, fromY),
+  move: (pos, vel, dt, body) => physics.move(pos, vel, dt, body),
+  ray: (origin, dir, maxDistance) => physics.ray(origin, dir, maxDistance),
+  ground(fn) {
+    const m = caller("world.physics.ground");
+    const g: Ground = (x, z, fromY) => guarded(m, "ground", () => fn(x, z, fromY)) ?? null;
+    m.grounds.add(g);
+    reorder();
+    return () => void (m.grounds.delete(g) && reorder());
+  },
+};
+world.has = (name) => !!mods.get(name)?.mod.exports;
 world.use = (name) => {
   const target = mods.get(name);
-  if (!target?.mod.exports) throw new Error(`${name} is not loaded or exports nothing`);
+  if (!target?.mod.exports) throw new Error(`${name} is not loaded or exports nothing. If your mod works without it, check world.has("${name}") before use.`);
   return Object.fromEntries(
     Object.entries(target.mod.exports).map(([key, fn]) => [
       key,
@@ -106,6 +123,7 @@ world.use = (name) => {
 // ---------- hooks ----------
 function reorder() {
   ordered = [...mods.values()].sort((a, b) => (a.mod.order ?? 0) - (b.mod.order ?? 0) || a.name.localeCompare(b.name));
+  physics.grounds = ordered.flatMap((m) => [...m.grounds]);
   fullPass = true;
 }
 
@@ -165,7 +183,7 @@ async function setMod(name: string, id: number, path: string | null) {
     mods.delete(name);
     return reorder();
   }
-  const loaded: Loaded = { id, name, mod: (await import(path)).default ?? {}, errors: 0, slowTicks: 0, ms: 0 };
+  const loaded: Loaded = { id, name, mod: (await import(path)).default ?? {}, errors: 0, slowTicks: 0, ms: 0, grounds: new Set() };
   mods.set(name, loaded);
   reorder();
   call(loaded, "load");
@@ -213,6 +231,9 @@ function stream(p: Player, d: Diff, full: boolean): Out {
 
 function flush() {
   const d = world.delta();
+  for (const id in d.set) physics.update(+id, world.entities.peek(+id));
+  for (const id in d.unset) physics.update(+id, world.entities.peek(+id));
+  for (const id of d.removed) physics.update(id, undefined);
   const full = fullPass || (tickCount % 5 === 0 && ordered.some((m) => m.mod.see));
   const outs: Record<string, string> = {};
   for (const p of world.players.values()) {
@@ -241,6 +262,7 @@ self.onmessage = async ({ data: msg }) => {
       trial = msg.trial ?? null;
       dbDir = msg.dbDir;
       world.delta();
+      for (const [id, e] of world.entities.raw()) physics.update(id, e);
       for (const m of msg.mods) {
         try {
           await setMod(m.name, m.id, m.server);
@@ -251,19 +273,21 @@ self.onmessage = async ({ data: msg }) => {
       }
       if (trial) return runTrial();
       let last = performance.now();
-      let busy = 0;
-      let ticks = 0;
+      let times: number[] = [];
       setInterval(() => {
         const now = performance.now();
         tick(Math.min((now - last) / 1000, 0.25));
         last = now;
         flush();
-        busy += performance.now() - now;
-        if (++ticks < 40) return;
+        times.push(performance.now() - now);
+        if (times.length < 40) return;
+        const ticks = times.length;
         const cost = Object.fromEntries(ordered.filter((m) => m.ms).sort((a, b) => b.ms - a.ms).map((m) => [m.name, +(m.ms / ticks).toFixed(2)]));
-        post({ t: "perf", msPerTick: +(busy / ticks).toFixed(2), mods: cost });
+        const sorted = times.sort((a, b) => a - b);
+        const at = (p: number) => +sorted[Math.floor(ticks * p)].toFixed(2);
+        post({ t: "perf", msPerTick: +(sorted.reduce((a, b) => a + b, 0) / ticks).toFixed(2), p50: at(0.5), p95: at(0.95), max: +sorted[ticks - 1].toFixed(2), mods: cost });
         for (const m of ordered) m.ms = 0;
-        busy = ticks = 0;
+        times = [];
       }, 50);
       return post({ t: "ready" });
     }
@@ -333,6 +357,7 @@ self.onmessage = async ({ data: msg }) => {
 
 /** Every live mod runs with the candidate swapped in, but only the candidate's errors fail the test. */
 function runTrial() {
+  post({ t: "ticking" });
   const bot: Player = { id: "trial-bot", name: "trial-bot" };
   world.players.set(bot.id, bot);
   for (const m of ordered) call(m, "join", bot);

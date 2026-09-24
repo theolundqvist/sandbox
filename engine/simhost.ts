@@ -5,11 +5,13 @@ import type { Diff, Tick } from "./world";
 export type RunningMod = { name: string; id: number; server: string | null };
 
 const HANG_MS = 2000;
+/** Starting a trial loads every server mod, which takes seconds on a busy machine; only its ticks count as hanging. */
+const TRIAL_START_MS = 15_000;
 
 export class SimHost {
   entities = new Map<number, Entity>();
   nextId = 1;
-  perf: { msPerTick: number; mods: Record<string, number> } | null = null;
+  perf: { msPerTick: number; p50: number; p95: number; max: number; mods: Record<string, number> } | null = null;
   players = new Map<string, Player>();
   private worker!: Worker;
   private beat = new Int32Array(new SharedArrayBuffer(8));
@@ -123,7 +125,7 @@ export class SimHost {
   trial(mod: RunningMod): Promise<string | null> {
     const worker = new Worker(new URL("./sim.ts", import.meta.url));
     return new Promise((resolve) => {
-      const timer = setTimeout(() => done(`did not finish 20 test ticks within ${HANG_MS / 1000} s (infinite loop?)`), HANG_MS);
+      let timer = setTimeout(() => done(`did not load within ${TRIAL_START_MS / 1000} s (infinite loop at import?)`), TRIAL_START_MS);
       const done = (error: string | null) => {
         clearTimeout(timer);
         worker.terminate();
@@ -131,6 +133,10 @@ export class SimHost {
       };
       worker.onmessage = ({ data: msg }) => {
         if (msg.t === "trial") done(msg.error);
+        else if (msg.t === "ticking") {
+          clearTimeout(timer);
+          timer = setTimeout(() => done(`did not finish 20 test ticks within ${HANG_MS / 1000} s (infinite loop?)`), HANG_MS);
+        }
       };
       worker.onerror = (e) => done(String(e.message));
       worker.postMessage({
