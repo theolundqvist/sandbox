@@ -3,102 +3,200 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sandbox</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='5' y='5' width='22' height='22' rx='5' fill='%23ffb547'/></svg>">
+<title>Sandbox · Live multiplayer game builder</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='6' y='6' width='20' height='20' fill='%23ffb547'/></svg>">
 <style>
-  :root { --line: rgba(255,255,255,.12); --text: #eef2f7; --dim: #9aa6b5; --accent: #ffb547; --err: #ff6b6b; --ok: #5fd68a; --card: rgba(255,255,255,.04); }
+  :root { --text: #f3f1ec; --dim: #8f8c86; --line: rgba(255,255,255,.1); --accent: #ffb547; --err: #ff6b5b; --ok: #7fe0a0; --veil: rgba(8,9,11,.84); }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  html { background: #0b0f16 radial-gradient(circle at 30% 10%, #1d2a3d, #0b0f16 70%) fixed; }
-  body { margin: 0; min-height: 100vh; padding: 48px 16px; color: var(--text); font: 15px/1.45 Inter, system-ui, sans-serif; }
-  main { width: min(760px, 100%); margin: 0 auto; display: grid; gap: 28px; }
-  h1 { font-size: 40px; margin: 0; letter-spacing: -.02em; } .lead { color: var(--dim); margin: 6px 0 0; }
-  h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 22px; }
-  input[type=text] { width: 100%; font: inherit; font-size: 17px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.06); color: var(--text); outline: none; }
-  input[type=text]:focus { border-color: var(--accent); }
-  .choices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
-  @media (max-width: 560px) { .choices { grid-template-columns: 1fr; } }
-  label.choice { padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
-  label.choice:has(input:checked) { border-color: var(--accent); background: rgba(255,181,71,.08); }
-  label.choice input { margin: 0 8px 0 0; accent-color: var(--accent); } label.choice span { display: block; color: var(--dim); font-size: 13px; margin: 4px 0 0 22px; }
-  .setting { margin-top: 18px; }
-  button { font: inherit; color: var(--text); background: rgba(255,255,255,.08); border: 1px solid var(--line); border-radius: 10px; padding: 9px 16px; cursor: pointer; white-space: nowrap; }
-  button:hover { background: rgba(255,255,255,.14); } button:disabled { opacity: .45; cursor: default; }
-  button.primary { background: var(--accent); color: #1a1204; border: 0; font-weight: 700; }
-  button.danger { color: var(--err); }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  html, body { margin: 0; height: 100%; background: #16181b; color: var(--text); font: 15px/1.45 "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif; }
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  main { position: fixed; top: 0; bottom: 0; left: 0; width: min(560px, 100%); background: var(--veil); backdrop-filter: blur(8px); border-right: 1px solid var(--line); overflow-y: auto; padding: 72px 56px 48px; display: flex; flex-direction: column; }
+  @media (max-width: 600px) { main { padding: 40px 16px 32px; border: 0; } }
+  .wordmark { margin: 0; font: 800 56px/1 "SF Pro Display", "Segoe UI", Inter, system-ui, sans-serif; letter-spacing: .14em; text-transform: uppercase; }
+  .tagline { margin: 14px 0 0; color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .24em; text-transform: uppercase; }
+  .lead { margin: 10px 0 0; color: var(--dim); max-width: 40ch; }
+  nav { display: flex; gap: 28px; margin: 48px 0 8px; border-bottom: 1px solid var(--line); }
+  nav button { background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 0 0 12px; color: var(--dim); font-family: inherit; font-weight: 700; font-size: 13px; line-height: 1; letter-spacing: .16em; text-transform: uppercase; cursor: pointer; }
+  nav button:hover { color: var(--text); }
+  nav button[aria-selected=true] { color: var(--text); border-color: var(--accent); }
+  h2 { margin: 28px 0 6px; color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; }
+  .row { display: flex; gap: 12px; align-items: center; min-height: 52px; border-bottom: 1px solid var(--line); }
   .grow { flex: 1; min-width: 0; }
-  .error { color: var(--err); min-height: 1.4em; margin-top: 10px; }
-  .world { display: flex; gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
-  .world:first-of-type { border-top: 0; }
-  .world b { display: block; font-size: 16px; } .meta { color: var(--dim); font-size: 13px; }
+  .meta { color: var(--dim); font-size: 13px; }
+  .note { color: var(--dim); font-size: 13px; margin: 10px 0 0; }
+  .btn, button.danger, button.quiet { font-family: inherit; font-weight: 700; font-size: 12px; line-height: 1; letter-spacing: .14em; text-transform: uppercase; color: var(--text); background: transparent; border: 1px solid rgba(255,255,255,.28); border-radius: 2px; padding: 11px 16px; cursor: pointer; white-space: nowrap; }
+  .btn:hover { background: var(--text); color: #0b0b0c; border-color: var(--text); }
+  .btn.primary { background: var(--text); color: #0b0b0c; border-color: var(--text); }
+  .btn.primary:hover { background: var(--accent); border-color: var(--accent); }
+  .btn.big { width: 100%; padding: 18px; font-size: 14px; margin-top: 28px; }
+  button.danger, button.quiet { border-color: transparent; padding: 11px 8px; color: var(--dim); }
+  button.danger:hover { color: var(--err); } button.quiet:hover { color: var(--text); }
+  button:disabled { opacity: .35; pointer-events: none; }
+  input[type=text] { width: 100%; background: none; border: 0; border-bottom: 1px solid rgba(255,255,255,.28); border-radius: 0; color: var(--text); font-family: inherit; font-weight: 600; font-size: 26px; line-height: 1.2; padding: 10px 0; outline: none; }
+  input[type=text]::placeholder { color: rgba(255,255,255,.25); }
+  input[type=text]:focus { border-color: var(--accent); }
+  .pick { display: flex; align-items: center; gap: 4px; }
+  .pick input { position: absolute; opacity: 0; pointer-events: none; }
+  .pick label { display: none; min-width: 150px; text-align: center; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; font-size: 13px; }
+  .pick input:checked + label { display: block; }
+  .pick button { background: none; border: 0; color: var(--dim); font-family: inherit; font-weight: 400; font-size: 22px; line-height: 1; padding: 4px 10px; cursor: pointer; }
+  .pick button:hover { color: var(--accent); }
+  .setting .row { border-bottom: 0; }
+  .setting { border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+  .setting .label { font-weight: 600; }
+  .setting .desc { color: var(--dim); font-size: 13px; margin-top: -6px; }
+  .error { color: var(--err); min-height: 1.4em; margin-top: 12px; font-size: 13px; }
+  .world b { display: block; font-size: 17px; font-weight: 600; }
   .live { color: var(--ok); font-weight: 700; }
-  .link { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
-  .link span { width: 110px; color: var(--dim); font-size: 13px; flex: none; }
-  code { flex: 1; min-width: 0; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(0,0,0,.35); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; overflow-x: auto; white-space: nowrap; }
-  select { font: inherit; color: var(--text); background: #1a2230; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
-  .player { display: flex; gap: 10px; align-items: center; padding: 6px 0; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; } .dot.on { background: var(--ok); }
-  .toggle { display: flex; gap: 10px; align-items: center; margin-top: 14px; cursor: pointer; } .toggle input { accent-color: var(--accent); width: 18px; height: 18px; }
+  code { display: block; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d9d6cf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .link span { width: 92px; flex: none; color: var(--dim); font-size: 13px; }
+  .switch { cursor: pointer; }
+  .switch input { position: absolute; opacity: 0; }
+  .switch .state { font-weight: 700; font-size: 12px; letter-spacing: .14em; color: var(--dim); }
+  .switch .state::after { content: "Off"; text-transform: uppercase; }
+  .switch:has(input:checked) .state { color: var(--accent); }
+  .switch:has(input:checked) .state::after { content: "On"; }
+  .dot { width: 7px; height: 7px; background: #55524c; flex: none; } .dot.on { background: var(--ok); }
+  select { font-family: inherit; font-weight: 600; font-size: 14px; line-height: 1; color: var(--text); background: transparent; border: 0; padding: 10px 0; outline: none; }
+  select option { background: #111; }
+  .title { font: 800 30px/1.1 "SF Pro Display", "Segoe UI", Inter, system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; margin: 28px 0 0; overflow-wrap: anywhere; }
+  .actions { display: flex; gap: 8px; margin-top: 18px; }
+  .actions .btn { flex: 1; padding: 16px; }
 </style>
 </head>
 <body>
+<canvas id="scene"></canvas>
 <main>
   <header>
-    <h1>Sandbox</h1>
-    <p class="lead">Start with an empty world. Your friends' Claudes build the game live while everyone plays.</p>
+    <h1 class="wordmark">Sandbox</h1>
+    <p class="tagline">Live multiplayer game builder</p>
+    <p class="lead">Start from nothing. Every player's Claude hot-reloads new rules, weapons and worlds while you play, together or against each other.</p>
   </header>
 
   <section id="guest" hidden>
-    <h2>No game running</h2>
-    <p class="meta">The host starts a world from their main menu. This page joins it as soon as it's up.</p>
+    <p class="title">No game running</p>
+    <p class="note">The host starts a world from their main menu. This page joins it as soon as it's up.</p>
   </section>
 
+  <nav id="tabs" hidden>
+    <button data-tab="hosting">Hosting</button>
+    <button data-tab="new">New world</button>
+    <button data-tab="saved">Worlds</button>
+  </nav>
+
   <section id="hosting" hidden>
-    <h2>Now hosting</h2>
-    <div class="row"><b id="hosting-name" class="grow" style="font-size:20px"></b><button id="stop" class="danger">Stop</button><button id="play" class="primary">Play</button></div>
-    <h2 style="margin-top:20px">Invite friends</h2>
-    <div class="link"><span>Same Wi-Fi</span><code id="link-lan"></code><button data-copy="link-lan">Copy</button></div>
-    <label class="toggle"><input type="checkbox" id="share"> Share over the internet (free Cloudflare tunnel, no port forwarding)</label>
-    <div class="link" id="public" hidden><span>Internet</span><code id="link-public"></code><button data-copy="link-public">Copy</button></div>
+    <p class="title" id="hosting-name"></p>
+    <p class="meta"><span class="live">Live</span> · friends can join now</p>
+    <div class="actions"><button id="play" class="btn primary">Play</button><button id="stop" class="btn">Stop</button></div>
+    <h2>Invite</h2>
+    <div class="row link"><span>Same Wi-Fi</span><code id="link-lan" class="grow"></code><button class="quiet" data-copy="link-lan">Copy</button></div>
+    <label class="row switch"><input type="checkbox" id="share"><span class="grow">Share over the internet</span><span class="state"></span></label>
+    <div class="row link" id="public" hidden><span>Internet</span><code id="link-public" class="grow"></code><button class="quiet" data-copy="link-public">Copy</button></div>
     <div id="share-error" class="error"></div>
-    <div class="row"><span class="meta grow">Anyone with an invite link can join and run code on this computer.</span><button id="new-invite">New invite link</button></div>
-    <h2 style="margin-top:20px">Players</h2>
+    <div class="row"><span class="meta grow">Anyone with an invite link can join and run code on this computer.</span><button id="new-invite" class="quiet">New link</button></div>
+    <h2>Players</h2>
     <div id="players"></div>
-    <h2 style="margin-top:20px">Rewind</h2>
-    <div class="row"><select id="snapshots" class="grow"></select><button id="rewind">Rewind</button></div>
-    <p class="meta">Puts every entity back to how it was then. Mods and their databases stay as they are.</p>
+    <h2>Rewind</h2>
+    <div class="row"><select id="snapshots" class="grow"></select><button id="rewind" class="quiet">Rewind</button></div>
+    <p class="note">Puts every entity back to how it was then. Mods and their databases stay as they are.</p>
     <div id="host-error" class="error"></div>
   </section>
 
   <section id="new" hidden>
-    <h2>New game</h2>
     <form id="new-form">
-      <input type="text" id="name" placeholder="World name" maxlength="40" autocomplete="off">
-      <div class="setting"><h2>House rules</h2>
-        <div class="choices">
-          <label class="choice"><input type="radio" name="rules" value="open" checked><b>Open</b><span>Anyone's Claude can change or remove any mod.</span></label>
-          <label class="choice"><input type="radio" name="rules" value="additive"><b>Additive</b><span>You can only add. Answer an attack with a counter-mod.</span></label>
-        </div>
+      <h2>World name</h2>
+      <input type="text" id="name" placeholder="Untitled world" maxlength="40" autocomplete="off">
+      <h2>Settings</h2>
+      <div class="setting">
+        <div class="row"><span class="label grow">House rules</span><div class="pick">
+          <button type="button" data-step="-1">‹</button>
+          <input type="radio" name="rules" value="open" id="r-open" checked><label for="r-open" data-desc="Anyone's Claude can change or remove any mod.">Open</label>
+          <input type="radio" name="rules" value="additive" id="r-add"><label for="r-add" data-desc="You can only add. Answer an attack with a counter-mod.">Additive</label>
+          <button type="button" data-step="1">›</button>
+        </div></div>
+        <div class="desc"></div>
       </div>
-      <div class="setting"><h2>Start with</h2>
-        <div class="choices">
-          <label class="choice"><input type="radio" name="start" value="basics" checked><b>An empty field</b><span>Ground, sky and walking. Everything else is up to you.</span></label>
-          <label class="choice"><input type="radio" name="start" value="blank"><b>Nothing at all</b><span>Not even ground. Your Claudes build physics too.</span></label>
-        </div>
+      <div class="setting">
+        <div class="row"><span class="label grow">Start with</span><div class="pick">
+          <button type="button" data-step="-1">‹</button>
+          <input type="radio" name="start" value="basics" id="s-field" checked><label for="s-field" data-desc="Ground, sky and walking. Everything else is up to you.">Empty field</label>
+          <input type="radio" name="start" value="blank" id="s-blank"><label for="s-blank" data-desc="Not even ground. Your Claudes build physics too.">Nothing</label>
+          <button type="button" data-step="1">›</button>
+        </div></div>
+        <div class="desc"></div>
       </div>
-      <div class="row" style="margin-top:20px"><button class="primary" type="submit">Create and host</button></div>
+      <button class="btn primary big" type="submit">Create and host</button>
       <div id="new-error" class="error"></div>
     </form>
   </section>
 
   <section id="saved" hidden>
-    <h2>Your worlds</h2>
     <div id="worlds"></div>
     <div id="worlds-error" class="error"></div>
   </section>
 </main>
+<script type="module">
+  import * as THREE from "/vendor/three/build/three.module.js";
+  const canvas = document.getElementById("scene");
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+  const scene = new THREE.Scene();
+  const sky = new THREE.Color(0xb7cad6);
+  scene.background = sky;
+  scene.fog = new THREE.Fog(sky, 40, 150);
+  scene.add(new THREE.HemisphereLight(0xe8f1ff, 0x4a3b2a, 1.5));
+  const sun = new THREE.DirectionalLight(0xffd29a, 2.2);
+  sun.position.set(-40, 30, -20);
+  scene.add(sun);
+  const size = 90;
+  const blocks = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial(), size * size);
+  const m = new THREE.Matrix4(), c = new THREE.Color();
+  const palette = [0xc9a877, 0x8fa35c, 0x6f8a4a, 0x7d7468, 0xece6da].map((h) => new THREE.Color(h));
+  let i = 0;
+  for (let x = 0; x < size; x++)
+    for (let z = 0; z < size; z++) {
+      const px = x - size / 2, pz = z - size / 2;
+      const h = Math.max(1, Math.round(3 + 3 * Math.sin(px * 0.13) * Math.cos(pz * 0.11) + 2.5 * Math.sin((px + pz) * 0.07) + (Math.hypot(px - 12, pz + 6) < 5 ? 9 - Math.hypot(px - 12, pz + 6) : 0)));
+      m.makeScale(1, h, 1).setPosition(px, h / 2, pz);
+      blocks.setMatrixAt(i, m);
+      blocks.setColorAt(i++, c.copy(palette[Math.min(4, Math.floor(h / 2.6))]));
+    }
+  scene.add(blocks);
+  const trees = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial(), 900);
+  let n = 0;
+  const hash = (x, z) => ((Math.sin(x * 127.1 + z * 311.7) * 43758.5) % 1 + 1) % 1;
+  for (let j = 0; j < size * size && n < 880; j++) {
+    const x = (j % size) - size / 2, z = Math.floor(j / size) - size / 2;
+    blocks.getMatrixAt(j, m);
+    const h = new THREE.Vector3().setFromMatrixScale(m).y;
+    if (h < 3 || h > 7 || hash(x, z) > 0.06) continue;
+    const t = 2 + Math.floor(hash(z, x) * 3);
+    trees.setMatrixAt(n, m.makeScale(0.4, t, 0.4).setPosition(x, h + t / 2, z));
+    trees.setColorAt(n++, c.set(0x5a3f2a));
+    trees.setMatrixAt(n, m.makeScale(2, 2, 2).setPosition(x, h + t + 0.6, z));
+    trees.setColorAt(n++, c.set(hash(x + 1, z) > 0.5 ? 0x3f6b35 : 0x547d3a));
+  }
+  trees.count = n;
+  scene.add(trees);
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 400);
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function resize() {
+    const w = innerWidth, h = innerHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.setViewOffset(w, h, w > 900 ? -Math.min(280, w * 0.18) : 0, 0, w, h);
+    camera.updateProjectionMatrix();
+  }
+  addEventListener("resize", resize);
+  resize();
+  renderer.setAnimationLoop((t) => {
+    const a = still ? 0.8 : 0.8 + t * 0.00003;
+    camera.position.set(Math.cos(a) * 44, 20, Math.sin(a) * 44);
+    camera.lookAt(Math.cos(a) * 4, 6, Math.sin(a) * 4);
+    renderer.render(scene, camera);
+  });
+</script>
 <script>
   const $ = (id) => document.getElementById(id);
   const hashKey = new URLSearchParams(location.hash.slice(1)).get("key");
@@ -108,6 +206,7 @@
   }
   const key = localStorage.getItem("sandbox-menu");
   let state = null;
+  let tab = null;
 
   async function api(action, body) {
     const res = await fetch(`/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) });
@@ -121,10 +220,21 @@
     const m = Math.round((Date.now() - ms) / 60000);
     return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
   };
+  const el = (tag, props) => Object.assign(document.createElement(tag), props);
+
+  function show(next) {
+    tab = next;
+    for (const b of document.querySelectorAll("#tabs button")) b.setAttribute("aria-selected", b.dataset.tab === tab);
+    for (const id of ["hosting", "new", "saved"]) $(id).hidden = id !== tab;
+  }
+  for (const b of document.querySelectorAll("#tabs button")) b.onclick = () => show(b.dataset.tab);
 
   function render(s) {
     const r = s.running;
-    $("hosting").hidden = !r;
+    $("tabs").hidden = false;
+    document.querySelector("[data-tab=hosting]").hidden = !r;
+    document.querySelector("[data-tab=saved]").hidden = !s.worlds.length;
+    if (!tab || (tab === "hosting" && !r) || (tab === "saved" && !s.worlds.length)) show(r ? "hosting" : s.worlds.length ? "saved" : "new");
     if (r) {
       $("hosting-name").textContent = r.name;
       $("link-lan").textContent = `${s.lan ?? location.origin}/#invite=${r.invite}`;
@@ -133,38 +243,36 @@
       $("public").hidden = !s.tunnel;
       $("link-public").textContent = s.tunnel?.url ? `${s.tunnel.url}/#invite=${r.invite}` : "Opening a tunnel…";
       $("players").replaceChildren(...(r.players.length ? r.players.map((p) => {
-        const row = Object.assign(document.createElement("div"), { className: "player" });
-        const remove = Object.assign(document.createElement("button"), { className: "danger", textContent: "Remove" });
-        const link = Object.assign(document.createElement("button"), { textContent: "Copy their link", title: "Their personal link, to get back in as themselves on a new address" });
+        const row = el("div", { className: "row" });
+        const remove = el("button", { className: "danger", textContent: "Remove" });
+        const link = el("button", { className: "quiet", textContent: "Copy link", title: "Their personal link, to get back in as themselves on a new address" });
         link.onclick = async () => {
           await navigator.clipboard.writeText(`${s.tunnel?.url ?? s.lan ?? location.origin}/#key=${p.key}`);
           link.textContent = "Copied";
         };
         remove.onclick = () => confirm(`Remove ${p.name}? Their game and their Claude lose access. Make a new invite link too if they shouldn't rejoin.`) && hostAction("remove", { name: p.name });
-        row.append(Object.assign(document.createElement("span"), { className: p.online ? "dot on" : "dot" }), Object.assign(document.createElement("span"), { className: "grow", textContent: p.name }), link, remove);
+        row.append(el("span", { className: p.online ? "dot on" : "dot" }), el("span", { className: "grow", textContent: p.name }), link, remove);
         return row;
-      }) : [Object.assign(document.createElement("p"), { className: "meta", textContent: "Nobody has joined yet." })]));
+      }) : [el("p", { className: "note", textContent: "Nobody has joined yet." })]));
       const picked = $("snapshots").value;
-      $("snapshots").replaceChildren(...r.snapshots.map((at) => Object.assign(document.createElement("option"), { value: at, textContent: `${new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (${ago(at)})` })));
+      $("snapshots").replaceChildren(...r.snapshots.map((at) => el("option", { value: at, textContent: `${new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (${ago(at)})` })));
       if (picked) $("snapshots").value = picked;
       $("rewind").disabled = !r.snapshots.length;
     }
-    $("saved").hidden = !s.worlds.length;
     $("worlds").replaceChildren(...s.worlds.map((w) => {
-      const row = document.createElement("div");
-      row.className = "world";
+      const row = el("div", { className: "row world" });
       const isLive = r?.id === w.id;
       const mods = w.mods === 1 ? "1 mod" : `${w.mods} mods`;
       const players = w.players === 1 ? "1 player" : `${w.players} players`;
-      row.innerHTML = `<div class="grow"><b></b><div class="meta"></div></div>`;
-      row.querySelector("b").textContent = w.name;
-      row.querySelector(".meta").textContent = `${w.rules} · ${mods} · ${players} · ${isLive ? "" : `played ${ago(w.played)}`}`.replace(/ · $/, "");
-      if (isLive) row.querySelector(".meta").prepend(Object.assign(document.createElement("span"), { className: "live", textContent: "Hosting now · " }));
-      const del = Object.assign(document.createElement("button"), { className: "danger", textContent: "Delete", disabled: isLive, title: isLive ? "Stop it first" : "" });
+      const info = el("div", { className: "grow" });
+      const meta = el("div", { className: "meta", textContent: `${w.rules} · ${mods} · ${players}${isLive ? "" : ` · played ${ago(w.played)}`}` });
+      if (isLive) meta.prepend(el("span", { className: "live", textContent: "Live · " }));
+      info.append(el("b", { textContent: w.name }), meta);
+      const del = el("button", { className: "danger", textContent: "Delete", disabled: isLive, title: isLive ? "Stop it first" : "" });
       del.onclick = () => confirm(`Delete ${w.name} forever? Its mods, database and history are removed.`) && api("delete", { id: w.id }).catch((e) => ($("worlds-error").textContent = e.message));
-      const play = Object.assign(document.createElement("button"), { className: isLive ? "" : "primary", textContent: isLive ? "Play" : "Host" });
+      const play = el("button", { className: isLive ? "btn" : "btn primary", textContent: isLive ? "Play" : "Host" });
       play.onclick = () => hostWorld(w.id);
-      row.append(del, play);
+      row.append(info, del, play);
       return row;
     }));
   }
@@ -179,6 +287,19 @@
     }
   }
   const play = (s) => location.assign(`/#invite=${s.running.hostKey}`);
+
+  for (const pick of document.querySelectorAll(".pick")) {
+    const radios = [...pick.querySelectorAll("input")];
+    const desc = pick.closest(".setting").querySelector(".desc");
+    const sync = () => (desc.textContent = pick.querySelector("input:checked + label").dataset.desc);
+    for (const b of pick.querySelectorAll("button"))
+      b.onclick = () => {
+        const at = radios.findIndex((r) => r.checked);
+        radios[(at + Number(b.dataset.step) + radios.length) % radios.length].checked = true;
+        sync();
+      };
+    sync();
+  }
 
   const hostAction = (action, body) => api(action, body).catch((e) => ($("host-error").textContent = e.message));
   $("new-invite").onclick = () => confirm("Make a new invite link? Old links stop working; people who already joined stay in.") && hostAction("invite", {});
@@ -195,6 +316,7 @@
       $("share-error").textContent = err.message;
     });
   };
+  $("name").onkeydown = (e) => e.key === "Enter" && (e.preventDefault(), e.target.blur());
   $("new-form").onsubmit = async (e) => {
     e.preventDefault();
     if (state.running && !confirm(`Stop ${state.running.name} for everyone playing it?`)) return;
@@ -216,7 +338,6 @@
     $("guest").hidden = false;
     setInterval(async () => (await fetch("/api/info")).ok && location.assign("/"), 2000);
   } else {
-    $("new").hidden = false;
     api("state").catch((e) => {
       localStorage.removeItem("sandbox-menu");
       location.reload();

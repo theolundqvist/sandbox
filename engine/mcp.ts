@@ -18,6 +18,7 @@ export type McpContext = {
   chatLog: { seq: number; from: string; text: string }[];
   nextChat(): Promise<void>;
   presence(who: string, state: "listening" | "working" | "offline"): void;
+  announce(a: { mod: string; by: string; title: string; text: string; color: string }): void;
   status(): object;
   screenshot(who: string): Promise<string>;
 };
@@ -83,8 +84,24 @@ const tools = [
   {
     name: "reload",
     description:
-      "Put a mod live for every player without disconnecting anyone: typechecks it, builds it, test-runs it against a copy of the live world, then hot-swaps server and client code. If any step fails nothing changes and you get the error.",
-    inputSchema: { type: "object", properties: { mod: { type: "string" } }, required: ["mod"] },
+      "Put a mod live for every player without disconnecting anyone: typechecks it, builds it, test-runs it against a copy of the live world, then hot-swaps server and client code. If any step fails nothing changes and you get the error. Pass announce to introduce what changed to every player with an on-screen banner; new mods get a banner with their name if you leave it out, updates without it only show in the feed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mod: { type: "string" },
+        announce: {
+          type: "object",
+          description: "The banner every player sees when this goes live.",
+          properties: {
+            title: { type: "string", description: "1 to 4 words, like a game mode name: LOW GRAVITY, THE FLOOR IS LAVA." },
+            text: { type: "string", description: "One short line telling players what to try or watch out for." },
+            color: { type: "string", description: "A #hex colour that fits the mod's mood." },
+          },
+          required: ["title"],
+        },
+      },
+      required: ["mod"],
+    },
   },
   {
     name: "logs",
@@ -265,8 +282,18 @@ export function createMcp(ctx: McpContext) {
         const owner = ctx.owners[mod];
         if (ctx.rules() === "additive" && owner && owner !== who && owner !== "world") throw new ToolError(`This world is additive: ${mod} belongs to ${owner}.`);
         claim(mod, who);
+        const isNew = !ctx.mods.running.has(mod);
         const result = await ctx.mods.reload(mod, who, ctx.owners[mod]!);
         if (!result.ok) throw new ToolError(result.report);
+        const a = args.announce;
+        if (a || isNew)
+          ctx.announce({
+            mod,
+            by: who,
+            title: String(a?.title ?? mod).slice(0, 40),
+            text: String(a?.text ?? "").slice(0, 160),
+            color: /^#[0-9a-f]{3,8}$/i.test(a?.color) ? a.color : "#ffb547",
+          });
         return result.report;
       }
       case "logs": {

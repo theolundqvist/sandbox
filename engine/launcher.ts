@@ -185,6 +185,10 @@ Bun.serve<Pipe>({
     const url = new URL(req.url);
     if (url.pathname === "/menu") return page("menu.html");
     if (url.pathname.startsWith("/api/menu/")) return menuApi(req, url.pathname.slice("/api/menu/".length));
+    if (url.pathname.startsWith("/vendor/three/")) {
+      const file = Bun.file(join(ENGINE, "../node_modules/three", url.pathname.slice("/vendor/three/".length).replaceAll("..", "")));
+      return (await file.exists()) ? new Response(file) : new Response("not found", { status: 404 });
+    }
     if (!running) return url.pathname === "/" ? page("menu.html") : Response.json({ error: "No world is running right now." }, { status: 503 });
     if (req.headers.get("upgrade") === "websocket")
       return server.upgrade(req, { data: { target: `ws://127.0.0.1:${running.port}${url.pathname}${url.search}`, queue: [] } }) ? undefined : new Response("upgrade failed", { status: 400 });

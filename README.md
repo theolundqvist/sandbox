@@ -1,6 +1,6 @@
 # Sandbox
 
-An empty 3D world that you and your friends turn into a game while you play it. Every player connects their own Claude Code. Every change goes live for everyone in about half a second, and nobody gets disconnected.
+A live multiplayer game builder. You and your friends start in an empty 3D world, and every player's Claude Code hot-reloads new rules, weapons and whole games into it while you play, together or against each other. Changes go live for everyone in about half a second, and nobody gets disconnected.
 
 ## Host a world
 
@@ -25,7 +25,7 @@ The main menu shows the invite link. Friends only need a browser. To play over t
 
 ## Connect your Claude
 
-Press Tab in the game and paste the command into a terminal. It holds your personal key, connects Claude Code to the world and leaves it listening to the in-game chat. Go back to the game and ask for things right there: "add coins that respawn and a scoreboard", "make gravity flip every 30 seconds", "give me a grappling hook". Your Claude answers in the chat when it's live.
+Press Tab in the game and paste the command into a terminal. During play the mouse steers the camera; Esc frees it. It holds your personal key, connects Claude Code to the world and leaves it listening to the in-game chat. Go back to the game and ask for things right there: "add coins that respawn and a scoreboard", "make gravity flip every 30 seconds", "give me a grappling hook". Your Claude answers in the chat when it's live, and new mods arrive with an on-screen banner it names and colours.
 
 Each Claude edits the same shared file tree on the server, and nothing goes live until it calls `reload`. A reload only swaps in if the mod passes three checks: it typechecks, it builds, and 20 test ticks run clean against a copy of the live world. Mods that crash, stall, or freeze the server after going live are reverted automatically, and the whole world sees it in the feed.
 

@@ -179,6 +179,7 @@ const mcp = createMcp({
   chat,
   chatLog,
   presence,
+  announce: (a) => broadcast({ t: "announce", ...a }),
   nextChat: () => new Promise<void>((resolve) => chatWaiters.add(function wake() { chatWaiters.delete(wake); resolve(); })),
   status,
   screenshot: (who) =>

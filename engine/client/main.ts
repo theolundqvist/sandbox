@@ -348,8 +348,12 @@ function connect() {
         return send({ t: "shot", id: msg.id, data: await screenshot() });
       case "feed":
         addLine(msg.text, msg.kind);
-        if (msg.kind !== "info") toast(msg.text, msg.kind);
+        if (msg.kind === "error") toast(msg.text, msg.kind);
         return;
+      case "announce":
+        addLine(`${msg.title}${msg.text ? ` · ${msg.text}` : ""}  (${msg.by}'s Claude)`, "mod").style.setProperty("--c", msg.color);
+        banners.push(msg);
+        return nextBanner();
       case "chat":
         return addLine(`${msg.from}: ${msg.text}`, msg.from.endsWith("'s Claude") ? "claude" : "chat");
     }
@@ -394,6 +398,25 @@ function addLine(text: string, kind = "info") {
   $("feed").append(line);
   while ($("feed").children.length > 40) $("feed").firstElementChild!.remove();
   $("feed").scrollTop = 1e9;
+  return line;
+}
+
+const banners: { mod: string; by: string; title: string; text: string; color: string }[] = [];
+function nextBanner() {
+  const el = $("announce");
+  const a = el.hidden && banners.shift();
+  if (!a) return;
+  el.style.setProperty("--c", a.color);
+  const [kicker, title, text] = el.children as unknown as HTMLElement[];
+  kicker!.textContent = `${a.mod} · by ${a.by}'s Claude`;
+  title!.textContent = a.title;
+  text!.textContent = a.text;
+  text!.hidden = !a.text;
+  el.hidden = false;
+  el.onanimationend = () => {
+    el.hidden = true;
+    nextBanner();
+  };
 }
 
 function toast(text: string, kind = "info") {
@@ -406,18 +429,45 @@ function toast(text: string, kind = "info") {
 
 const chat = $<HTMLInputElement>("chat");
 const menu = $("menu");
+const howto = $("howto");
 const typing = () => document.activeElement instanceof HTMLInputElement;
 
+/** During play the mouse steers the camera; the cursor is free only while chat, the menu or an overlay is open. */
+function capture() {
+  if (!document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && !document.pointerLockElement) renderer.domElement.requestPointerLock();
+}
+document.addEventListener("pointerlockchange", () => {
+  if (!document.pointerLockElement && menu.hidden && chat.hidden && howto.hidden) openMenu();
+});
+renderer.domElement.addEventListener("click", capture);
+function openChat() {
+  chat.hidden = false;
+  chat.focus();
+  if (document.pointerLockElement) document.exitPointerLock();
+}
+function closeMenu() {
+  menu.hidden = true;
+  capture();
+}
+function play() {
+  howto.hidden = true;
+  capture();
+}
+$("howto-play").onclick = play;
+
 addEventListener("keydown", (e: KeyboardEvent) => {
+  if (!howto.hidden) {
+    if (e.code === "Enter" || e.code === "Space") play();
+    return;
+  }
   if (e.code === "Enter" && !typing() && menu.hidden) {
-    chat.hidden = false;
-    chat.focus();
+    openChat();
     e.preventDefault();
     return;
   }
   if ((e.code === "Escape" || e.code === "Tab") && !typing()) {
     e.preventDefault();
-    return menu.hidden ? openMenu() : (menu.hidden = true);
+    return menu.hidden ? openMenu() : closeMenu();
   }
   if (!typing()) keys.add(e.code);
 });
@@ -431,12 +481,13 @@ chat.addEventListener("keydown", (e: KeyboardEvent) => {
   if (e.key === "Enter" || e.key === "Escape") {
     chat.blur();
     chat.hidden = true;
+    capture();
   }
   e.stopPropagation();
 });
 $("menu-button").onclick = () => openMenu();
 
-const claudeLabels = { listening: "Claude listening", working: "Claude working…", offline: "Connect your Claude" };
+const claudeLabels = { listening: "Claude listening", working: "Claude working…", offline: "Connect Claude" };
 function showClaude(state: keyof typeof claudeLabels) {
   $("claude").textContent = claudeLabels[state];
   $("claude").dataset.state = state;
@@ -449,10 +500,7 @@ function enableTouch() {
   $("stick").hidden = $("jump").hidden = false;
   $("menu-button").textContent = "Menu";
   $("hint").textContent = "Chat";
-  $("hint").onclick = () => {
-    chat.hidden = false;
-    chat.focus();
-  };
+  $("hint").onclick = openChat;
   const stick = $("stick");
   const knob = stick.firstElementChild as HTMLElement;
   const steer = (e: PointerEvent) => {
@@ -483,7 +531,7 @@ function enableTouch() {
 }
 if (matchMedia("(pointer: coarse)").matches) enableTouch();
 else addEventListener("touchstart", enableTouch, { once: true });
-$("menu-close").onclick = () => (menu.hidden = true);
+$("menu-close").onclick = closeMenu;
 $("main-menu").hidden = !localStorage.getItem("sandbox-menu");
 $("main-menu").onclick = () => location.assign("/menu");
 
@@ -492,6 +540,7 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
 async function openMenu() {
   keys.clear();
   menu.hidden = false;
+  if (document.pointerLockElement) document.exitPointerLock();
   $("invite-link").textContent = `${location.origin}/#invite=${invite}`;
   const name = slug(world);
   const prompt = `We are playing ${world.replace(/['"`$\\]/g, "")} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through the ${name} MCP tools, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat: call wait_for_chat with seconds 600, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`;
@@ -551,4 +600,6 @@ function draw(dt: number) {
 
 await start();
 $("hud").hidden = false;
+$("howto-world").textContent = info.name;
+howto.hidden = false;
 connect();

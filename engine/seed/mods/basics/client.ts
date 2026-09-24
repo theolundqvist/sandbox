@@ -16,6 +16,11 @@ const onUp = (e: PointerEvent) => {
   if (e.pointerId === drag?.id) drag = null;
 };
 const onMove = (e: PointerEvent) => {
+  if (document.pointerLockElement) {
+    yaw -= e.movementX * 0.003;
+    pitch = Math.min(1.4, Math.max(0.05, pitch + e.movementY * 0.003));
+    return;
+  }
   if (e.pointerId !== drag?.id) return;
   yaw -= (e.clientX - drag.x) * 0.005;
   pitch = Math.min(1.4, Math.max(0.05, pitch + (e.clientY - drag.y) * 0.005));
