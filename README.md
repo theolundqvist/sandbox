@@ -6,7 +6,7 @@ An empty 3D world that you and your friends turn into a game while you play it. 
 
 ```sh
 curl -fsSL https://bun.sh/install | bash
-git clone <this repo> sandbox && cd sandbox
+git clone https://github.com/theolundqvist/sandbox && cd sandbox
 bun install
 bun start
 ```
@@ -21,7 +21,7 @@ Every world is saved. Host any of them again from the menu later.
 
 ## Let friends in
 
-The main menu shows the invite link. Friends only need a browser. To play over the internet without opening ports, tick **Share over the internet**: the menu opens a free Cloudflare tunnel (install `cloudflared` first) and shows a public invite link. The tunnel's address changes each time sharing starts, so the menu's player list has each friend's personal link to get back in as themselves. It also lets you remove players, make a new invite link, and rewind the world to any minute of the last hour.
+The main menu shows the invite link. Friends only need a browser. To play over the internet without opening ports, tick **Share over the internet**: the menu opens a free Cloudflare tunnel (install it once with `brew install cloudflared`) and shows a public invite link. The tunnel's address changes each time sharing starts, so the menu's player list has each friend's personal link to get back in as themselves. It also lets you remove players, make a new invite link, and rewind the world to any minute of the last hour.
 
 ## Connect your Claude
 
