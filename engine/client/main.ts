@@ -549,7 +549,7 @@ function play() {
 /** Push to talk: hold T (or the mic button) and the phrase goes to chat, transcribed by the host, so everyone and every Claude hears it. */
 let voiceAvailable = false;
 let micStream: Promise<MediaStream> | null = null;
-let talking: { recorder: Promise<MediaRecorder>; began: number } | null = null;
+let talking: { recorder: Promise<MediaRecorder> } | null = null;
 function startTalking() {
   if (!voiceAvailable || talking) return;
   // The stream stays open after the first press so later presses record from the first word.
@@ -558,7 +558,12 @@ function startTalking() {
     const r = new MediaRecorder(stream);
     const chunks: Blob[] = [];
     r.ondataavailable = (e) => chunks.push(e.data);
-    r.onstop = () => void fetch("/api/voice", { method: "POST", headers: { authorization: `Bearer ${key}` }, body: new Blob(chunks, { type: r.mimeType }) });
+    const began = performance.now();
+    // Presses shorter than 300 ms of actual recording are accidental taps, and a press released before the mic was ready recorded nothing.
+    r.onstop = () => {
+      const audio = new Blob(chunks, { type: r.mimeType });
+      if (audio.size && performance.now() - began > 300) void fetch("/api/voice", { method: "POST", headers: { authorization: `Bearer ${key}` }, body: audio });
+    };
     r.start();
     return r;
   });
@@ -566,17 +571,17 @@ function startTalking() {
     micStream = null;
     toast("The microphone is blocked. Allow it in the browser's address bar, then try again.", "error");
   });
-  talking = { recorder, began: performance.now() };
+  talking = { recorder };
   showMic();
 }
 /** keep is false when the player typed instead or cancelled, so only what they meant to say is sent. */
 function stopTalking(keep: boolean) {
   if (!talking) return;
-  const { recorder, began } = talking;
+  const { recorder } = talking;
   talking = null;
   showMic();
   recorder.then((r) => {
-    if (!keep || performance.now() - began < 300) r.onstop = null;
+    if (!keep) r.onstop = null;
     r.stop();
   }, () => {});
 }
