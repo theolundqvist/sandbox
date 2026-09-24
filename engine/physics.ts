@@ -111,9 +111,11 @@ export class PhysicsIndex implements Omit<Physics, "ground"> {
     const v = [vel[0]!, vel[1]!, vel[2]!] as [number, number, number];
     // A body already inside provided ground is lifted out instead of walled in.
     const embedded = this.grounds.length > 0 && this.provided(pos[0]!, pos[2]!, pos[1]!, pos[1]! + step).wall;
-    if (this.grounds.length && !embedded && this.provided(p[0], p[2], p[1], p[1] + step).wall) {
-      if (!this.provided(p[0], pos[2]!, p[1], p[1] + step).wall) [p[2], v[2]] = [pos[2]!, 0];
-      else if (!this.provided(pos[0]!, p[2], p[1], p[1] + step).wall) [p[0], v[0]] = [pos[0]!, 0];
+    // A fall can drop more than step in one tick: a top it started above is floor, not wall.
+    const reach = Math.max(p[1] + step, pos[1]!);
+    if (this.grounds.length && !embedded && this.provided(p[0], p[2], p[1], reach).wall) {
+      if (!this.provided(p[0], pos[2]!, p[1], reach).wall) [p[2], v[2]] = [pos[2]!, 0];
+      else if (!this.provided(pos[0]!, p[2], p[1], reach).wall) [p[0], v[0]] = [pos[0]!, 0];
       else [p[0], p[2], v[0], v[2]] = [pos[0]!, pos[2]!, 0, 0];
     }
     let floor = -Infinity;
@@ -122,7 +124,7 @@ export class PhysicsIndex implements Omit<Physics, "ground"> {
       const lx = dx * b.cos - dz * b.sin, lz = dx * b.sin + dz * b.cos;
       const top = b.y + b.hy;
       if (Math.abs(lx) >= b.hx + radius || Math.abs(lz) >= b.hz + radius) continue;
-      if (p[1] >= top - step && Math.abs(lx) < b.hx + radius * 0.5 && Math.abs(lz) < b.hz + radius * 0.5) {
+      if (reach >= top && Math.abs(lx) < b.hx + radius * 0.5 && Math.abs(lz) < b.hz + radius * 0.5) {
         floor = Math.max(floor, top);
         continue;
       }
@@ -147,7 +149,7 @@ export class PhysicsIndex implements Omit<Physics, "ground"> {
       const into = v[0] * gx + v[2] * gz;
       if (into < 0) [v[0], v[2]] = [v[0] - into * gx, v[2] - into * gz];
     }
-    if (this.grounds.length) floor = Math.max(floor, this.provided(p[0], p[2], p[1], embedded ? Infinity : p[1] + step).floor ?? -Infinity);
+    if (this.grounds.length) floor = Math.max(floor, this.provided(p[0], p[2], p[1], embedded ? Infinity : reach).floor ?? -Infinity);
     let grounded = p[1] <= floor + EDGE && v[1] <= 0;
     if (p[1] <= floor) {
       p[1] = floor;
@@ -158,6 +160,7 @@ export class PhysicsIndex implements Omit<Physics, "ground"> {
   }
 
   ray(origin: number[], dir: number[], maxDistance: number): RayHit | null {
+    if (!finite(maxDistance)) throw new Error("physics.ray needs a finite maxDistance");
     const [ox, oy, oz] = origin as [number, number, number];
     const len = Math.hypot(dir[0]!, dir[1]!, dir[2]!);
     if (!len) return null;

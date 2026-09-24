@@ -18,7 +18,7 @@ function generate(): Entity {
   return { terrain: { size: SIZE, heights, trees } };
 }
 
-let cached: { t: unknown; at: (x: number, z: number) => number | null } | null = null;
+let cached: { t: unknown; at: (x: number, z: number) => number | null } = { t: null, at: () => null };
 
 export default {
   order: 10,
@@ -28,7 +28,7 @@ export default {
     const rules = world.query("rules")[0]?.[1];
     if (rules) rules.step = Math.max(rules.step ?? 0, 1.05);
     world.physics.ground((x, z) => {
-      if (cached?.t !== terrain.terrain) cached = { t: terrain.terrain, at: groundOf(terrain.terrain) };
+      if (cached.t !== terrain.terrain) cached = { t: terrain.terrain, at: groundOf(terrain.terrain) };
       return cached.at(x, z);
     });
   },

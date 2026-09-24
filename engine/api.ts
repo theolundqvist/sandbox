@@ -22,7 +22,7 @@ export interface Physics {
   groundAt(x: number, z: number, fromY?: number): number | null;
   /** Moves a body with its feet at pos by vel for dt seconds: slides along boxes, steps up ledges, lands on floors. Returns new arrays. */
   move(pos: number[], vel: number[], dt: number, body?: Body): { pos: number[]; vel: number[]; grounded: boolean };
-  /** First box or ground surface along dir from origin, within maxDistance. Boxes the origin is inside are ignored. */
+  /** First box or ground surface along dir from origin, within maxDistance (finite). Boxes the origin is inside are ignored. */
   ray(origin: number[], dir: number[], maxDistance: number): RayHit | null;
   /** Adds terrain: fn gives the ground height under a body at (x, fromY, z), or null; higher than the body can step is a wall. Reloading removes it. */
   ground(fn: (x: number, z: number, fromY: number) => number | null): () => void;
