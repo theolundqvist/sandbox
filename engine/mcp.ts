@@ -125,7 +125,7 @@ const tools = [
   {
     name: "wait_for_chat",
     description:
-      "Wait until someone says something in the in-game chat, then return it. Call it whenever you have nothing else to do: players ask their Claudes for things in chat. New chat is also appended to every other tool result.",
+      "Wait until your player says something in the in-game chat, or someone mentions your player's name, then return all chat since your last call. Call it whenever you have nothing else to do: players ask their Claudes for things in chat. New chat is also appended to every other tool result.",
     inputSchema: { type: "object", properties: { seconds: { type: "number", description: "How long to wait, default 60, max 600." } } },
   },
   {
@@ -324,8 +324,9 @@ export function createMcp(ctx: McpContext) {
       }
       case "wait_for_chat": {
         const until = Date.now() + Math.min(Number(args.seconds) || 60, 600) * 1000;
-        while (!unseenChat(who).length && Date.now() < until) await Promise.race([ctx.nextChat(), Bun.sleep(until - Date.now())]);
-        return unseenChat(who).length ? "New chat:" : "Nobody said anything.";
+        const forMe = () => unseenChat(who).some((c) => c.from === who || c.text.toLowerCase().includes(who));
+        while (!forMe() && Date.now() < until) await Promise.race([ctx.nextChat(), Bun.sleep(until - Date.now())]);
+        return forMe() ? "New chat:" : `Nothing for you from ${who} yet.`;
       }
       case "say":
         ctx.chat(`${who}'s Claude`, String(args.text).slice(0, 300));
