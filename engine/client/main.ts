@@ -555,6 +555,8 @@ const readPref = (name: string) => {
 };
 let micOn = false;
 let micRecognizer: any = null;
+let micStream: MediaStream | null = null;
+let micFailures = 0;
 function setMic(on: boolean) {
   micOn = on && !!Recognition;
   try {
@@ -562,24 +564,41 @@ function setMic(on: boolean) {
   } catch {}
   showMic();
   if (micOn && !micRecognizer) {
+    // Holding our own capture keeps the browser's recording indicator steady while recognition restarts between phrases.
+    navigator.mediaDevices?.getUserMedia({ audio: true }).then(
+      (stream) => (micOn && !micStream ? (micStream = stream) : stream.getTracks().forEach((t) => t.stop())),
+      () => {},
+    );
     const r = (micRecognizer = new Recognition());
     r.continuous = true;
+    r.interimResults = false;
     r.lang = navigator.language;
     r.onresult = (e: any) => {
+      micFailures = 0;
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const text = e.results[i].isFinal ? e.results[i][0].transcript.trim() : "";
         if (text) send({ t: "voice", text });
       }
     };
-    // Browsers end recognition after a stretch of silence; keep listening until the player mutes.
-    r.onend = () => (micOn ? r.start() : (micRecognizer = null));
+    // Browsers end recognition after silence or a minute of talk; restart until the player mutes, backing off when it keeps failing.
+    r.onend = () => {
+      if (!micOn) return void (micRecognizer = null);
+      setTimeout(() => micOn && micRecognizer === r && r.start(), Math.min(250 * 2 ** micFailures, 10_000) - 250);
+    };
     r.onerror = (e: any) => {
-      if (e.error !== "not-allowed" && e.error !== "service-not-allowed") return;
-      setMic(false);
-      toast("The microphone is blocked. Allow it in the browser's address bar, then turn the mic on.", "error");
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        setMic(false);
+        toast("The microphone is blocked. Allow it in the browser's address bar, then turn the mic on.", "error");
+      } else if (e.error !== "no-speech" && e.error !== "aborted") {
+        if (!micFailures++) toast(e.error === "network" ? "Voice can't reach the browser's speech service. Chrome and Edge transcribe; Brave, Arc and Firefox don't." : `Voice stopped: ${e.error}`, "error");
+      }
     };
     r.start();
-  } else if (!micOn) micRecognizer?.stop();
+  } else if (!micOn) {
+    micRecognizer?.stop();
+    micStream?.getTracks().forEach((t) => t.stop());
+    micStream = null;
+  }
 }
 function showMic() {
   $("mic").textContent = !Recognition ? "No voice here" : micOn ? "Mic on" : "Mic off";
