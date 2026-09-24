@@ -1,10 +1,11 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import type { Entity } from "./api";
 import { basename, join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { createMcp, GAME_MASTER, type Task } from "./mcp";
 import { Mods } from "./mods";
 import { SimHost } from "./simhost";
-import { openStore } from "./world";
+import { changes, openStore } from "./world";
 
 const ENGINE = import.meta.dir;
 const DATA = process.env.SANDBOX_DATA ?? join(ENGINE, "../data");
@@ -182,6 +183,7 @@ for (const mod of refreshed) await mods.reload(mod, "world", owners[mod] ?? "wor
 setInterval(() => store.save(sim), 5000);
 store.snapshot(sim);
 setInterval(() => store.snapshot(sim), 60_000);
+setInterval(() => store.record(sim), 2000);
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, () => {
     store.save(sim);
@@ -264,6 +266,10 @@ async function transcribe(audio: Blob) {
   return /\p{L}/u.test(text.replace(/\[[^\]]*\]|\([^)]*\)/g, "")) ? text.trim() : "";
 }
 
+/** Timelapse frames as ticks: the first in full, then only what changed, since most of a world stands still. */
+const asTicks = (frames: { at: number; entities: Record<string, Entity> }[]) =>
+  frames.map(({ at, entities }, i) => (i === 0 ? { at, reset: true, set: entities, unset: {}, removed: [] } : { at, ...changes(frames[i - 1]!.entities, entities) }));
+
 const html = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });
 const bearer = (req: Request) => req.headers.get("authorization")?.replace(/^Bearer /, "") ?? new URL(req.url).searchParams.get("key");
 
@@ -325,7 +331,7 @@ const server = Bun.serve<Conn>({
     }
     if (path === "/api/timelapse") {
       const who = nameByKey(bearer(req));
-      return who ? Response.json(await sim.visibleTo(who, store.frames(40))) : new Response(null, { status: 401 });
+      return who ? Response.json(asTicks(await sim.visibleTo(who, store.frames(600)))) : new Response(null, { status: 401 });
     }
     if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json({ ...status(), gameMaster: { key: gameMasterKey, ...builder(GAME_MASTER) } }) : new Response(null, { status: 401 });
     if (path === "/api/voice" && req.method === "POST") {

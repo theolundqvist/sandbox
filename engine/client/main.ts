@@ -468,22 +468,23 @@ function react(kind: string) {
 }
 for (const b of $("react").querySelectorAll<HTMLElement>("button")) b.onclick = () => react(b.dataset.kind!);
 
-/** Replays the last hour from saved moments, then returns to the live world. */
+/** Replays the last three hours from moments recorded every two seconds, then returns to the live world. */
 let replaying = false;
 let orbit = 30;
 $("timelapse").onclick = async () => {
   closeMenu();
-  const frames: { at: number; entities: Record<string, Entity> }[] = await (await fetch("/api/timelapse", { headers: { authorization: `Bearer ${key}` } })).json();
-  if (!frames.length) return toast("Nothing to replay yet: the world saves a moment every minute.");
+  const frames: (Tick & { at: number })[] = await (await fetch("/api/timelapse", { headers: { authorization: `Bearer ${key}` } })).json();
+  if (!frames.length) return toast("Nothing to replay yet: the world records a moment every two seconds.");
   replaying = true;
   $("replay").hidden = false;
+  const step = Math.min(400, Math.max(50, 40_000 / frames.length));
   for (const f of frames) {
     if (!replaying) break;
     $("replay-time").textContent = new Date(f.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    const spots = Object.values(f.entities).flatMap((e) => (Array.isArray(e.pos) ? [Math.hypot(e.pos[0] ?? 0, e.pos[2] ?? 0)] : []));
+    applyTick(f);
+    const spots = [...entities.values()].flatMap((e) => (Array.isArray(e.pos) ? [Math.hypot(e.pos[0] ?? 0, e.pos[2] ?? 0)] : []));
     orbit = Math.min(150, Math.max(20, spots.sort((a, b) => a - b)[Math.floor(spots.length * 0.9)] ?? 20));
-    applyTick({ reset: true, set: f.entities, unset: {}, removed: [] });
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, step));
   }
   replaying = false;
   $("replay").hidden = true;

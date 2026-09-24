@@ -139,6 +139,9 @@ export function openStore(path: string) {
   db.run("pragma busy_timeout = 5000");
   db.run("create table if not exists world (id integer primary key check (id = 1), next_id integer, entities text)");
   db.run("create table if not exists snapshots (at integer primary key, next_id integer, entities text)");
+  db.run("create table if not exists timelapse (at integer primary key, full integer, data blob)");
+  let last: Record<string, Entity> | null = null;
+  let sinceFull = 0;
   const read = (row: { next_id: number; entities: string } | null, world: Persisted) => {
     if (!row) return false;
     world.nextId = row.next_id;
@@ -156,13 +159,47 @@ export function openStore(path: string) {
       db.run("insert or replace into snapshots values (?, ?, ?)", [Date.now(), world.nextId, JSON.stringify(Object.fromEntries(world.entities))]);
       db.run("delete from snapshots where at < ?", [Date.now() - 3_600_000]);
     },
-    /** Up to `limit` saved moments of the last hour, oldest first, evenly spread. */
+    /** A timelapse moment: what changed since the last one, with the whole world every 150th so old moments can be dropped. */
+    record(world: Persisted) {
+      const now: Record<string, Entity> = JSON.parse(JSON.stringify(Object.fromEntries(world.entities)));
+      const full = !last || ++sinceFull >= 150;
+      if (full) sinceFull = 0;
+      db.run("insert or replace into timelapse values (?, ?, ?)", [Date.now(), full ? 1 : 0, Bun.gzipSync(JSON.stringify(full ? now : changes(last!, now)))]);
+      last = now;
+      db.run("delete from timelapse where at < ?", [Date.now() - 3 * 3_600_000]);
+    },
+    /** Up to `limit` recorded moments, oldest first, evenly spread. */
     frames(limit: number) {
-      const all = db.query("select at from snapshots order by at").all() as { at: number }[];
-      const picked = all.filter((_, i) => i % Math.ceil(all.length / limit) === 0);
-      return picked.map(({ at }) => ({ at, entities: JSON.parse((db.query("select entities from snapshots where at = ?").get(at) as { entities: string }).entities) as Record<string, Entity> }));
+      const rows = db.query("select at, full, data from timelapse order by at").all() as { at: number; full: number; data: Uint8Array<ArrayBuffer> }[];
+      const usable = rows.slice(Math.max(0, rows.findIndex((r) => r.full)));
+      const every = Math.ceil(usable.length / limit);
+      let state: Record<string, Entity> = {};
+      const frames: { at: number; entities: Record<string, Entity> }[] = [];
+      usable.forEach((row, i) => {
+        const data = JSON.parse(new TextDecoder().decode(Bun.gunzipSync(row.data)));
+        if (row.full) state = data;
+        else {
+          state = { ...state, ...data.set };
+          for (const id of data.removed) delete state[id];
+        }
+        if (i % every === 0) frames.push({ at: row.at, entities: state });
+      });
+      return frames;
     },
     snapshots: () => (db.query("select at from snapshots order by at desc").all() as { at: number }[]).map((r) => r.at),
     rewind: (at: number, world: Persisted) => read(db.query("select next_id, entities from snapshots where at = ?").get(at) as any, world),
   };
+}
+
+/** What differs between two moments; changed entities are sent whole, with the keys they lost. */
+export function changes(before: Record<string, Entity>, after: Record<string, Entity>) {
+  const set: Record<string, Entity> = {};
+  const unset: Record<string, string[]> = {};
+  for (const [id, e] of Object.entries(after)) {
+    const was = before[id];
+    if (JSON.stringify(e) === JSON.stringify(was)) continue;
+    set[id] = e;
+    if (was) unset[id] = Object.keys(was).filter((k) => !(k in e));
+  }
+  return { set, unset, removed: Object.keys(before).filter((id) => !(id in after)).map(Number) };
 }
