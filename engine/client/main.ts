@@ -7,7 +7,7 @@ const hashParams = new URLSearchParams(location.hash.slice(1));
 
 const info = await (await fetch("/api/info")).json();
 const keyName = `sandbox-key:${info.id}`;
-let key = localStorage.getItem(keyName);
+let key = hashParams.get("key") ?? localStorage.getItem(keyName);
 let me = "";
 let world = "";
 let invite = "";

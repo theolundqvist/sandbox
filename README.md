@@ -21,7 +21,7 @@ Every world is saved. Host any of them again from the menu later.
 
 ## Let friends in
 
-The main menu shows the invite link. Friends only need a browser. To play over the internet without opening ports, tick **Share over the internet**: the menu opens a free Cloudflare tunnel (install `cloudflared` first) and shows a public invite link.
+The main menu shows the invite link. Friends only need a browser. To play over the internet without opening ports, tick **Share over the internet**: the menu opens a free Cloudflare tunnel (install `cloudflared` first) and shows a public invite link. The tunnel's address changes each time sharing starts, so the menu's player list has each friend's personal link to get back in as themselves. It also lets you remove players, make a new invite link, and rewind the world to any minute of the last hour.
 
 ## Connect your Claude
 

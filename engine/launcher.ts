@@ -12,7 +12,7 @@ const STATE = join(DATA, "launcher.json");
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 mkdirSync(WORLDS, { recursive: true });
-const state: { hostKey: string; hosting: string | null } = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : { hostKey: token(), hosting: null };
+const state: { hostKey: string; hosting: string | null; sharing?: boolean } = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : { hostKey: token(), hosting: null };
 const saveState = () => writeFileSync(STATE, JSON.stringify(state, null, 2));
 saveState();
 
@@ -152,7 +152,11 @@ async function menuApi(req: Request, action: string) {
       if (running?.id === body.id) throw new Error("Stop the world before deleting it.");
       if (!/^[a-z0-9-]+$/.test(body.id ?? "")) throw new Error("That world doesn't exist.");
       rmSync(join(WORLDS, body.id), { recursive: true, force: true });
-    } else if (action === "share") share(!!body.on);
+    } else if (action === "share") {
+      share(!!body.on);
+      state.sharing = !!body.on;
+      saveState();
+    }
     else if (["remove", "invite", "rewind"].includes(action)) await world(action, body);
     else if (action !== "state") return Response.json({ error: "Unknown action" }, { status: 404 });
     return Response.json(await menuState());
@@ -206,6 +210,12 @@ for (const signal of ["SIGINT", "SIGTERM"] as const)
   });
 
 if (state.hosting && existsSync(join(WORLDS, state.hosting))) await host(state.hosting).catch((e) => console.error(e.message));
+if (state.sharing)
+  try {
+    share(true);
+  } catch (e: any) {
+    console.error(e.message);
+  }
 const menuLink = `http://localhost:${PORT}/menu#key=${state.hostKey}`;
 console.log(`\n  Main menu (keep private): ${menuLink}\n`);
 if (process.platform === "darwin" && !process.env.SANDBOX_NO_OPEN) Bun.spawn(["open", menuLink]);

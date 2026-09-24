@@ -134,8 +134,13 @@
       $("players").replaceChildren(...(r.players.length ? r.players.map((p) => {
         const row = Object.assign(document.createElement("div"), { className: "player" });
         const remove = Object.assign(document.createElement("button"), { className: "danger", textContent: "Remove" });
+        const link = Object.assign(document.createElement("button"), { textContent: "Copy their link", title: "Their personal link, to get back in as themselves on a new address" });
+        link.onclick = async () => {
+          await navigator.clipboard.writeText(`${s.tunnel?.url ?? s.lan ?? location.origin}/#key=${p.key}`);
+          link.textContent = "Copied";
+        };
         remove.onclick = () => confirm(`Remove ${p.name}? Their game and their Claude lose access. Make a new invite link too if they shouldn't rejoin.`) && hostAction("remove", { name: p.name });
-        row.append(Object.assign(document.createElement("span"), { className: p.online ? "dot on" : "dot" }), Object.assign(document.createElement("span"), { className: "grow", textContent: p.name }), remove);
+        row.append(Object.assign(document.createElement("span"), { className: p.online ? "dot on" : "dot" }), Object.assign(document.createElement("span"), { className: "grow", textContent: p.name }), link, remove);
         return row;
       }) : [Object.assign(document.createElement("p"), { className: "meta", textContent: "Nobody has joined yet." })]));
       const picked = $("snapshots").value;
