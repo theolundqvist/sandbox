@@ -1,21 +1,30 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { ModDb, Player, ServerHooks, ServerMod } from "./api";
-import { GameWorld, modDb } from "./world";
+import type { Entity, ModDb, Player, ServerHooks, ServerMod } from "./api";
+import { GameWorld, modDb, type Diff } from "./world";
 
 declare var self: Worker;
 
 type Loaded = { id: number; name: string; mod: ServerMod; errors: number; slowTicks: number; lastError?: string };
+type Event = { from: string; name: string; data: any; to?: string[] };
 
 const world = new GameWorld();
 const mods = new Map<string, Loaded>();
+let ordered: Loaded[] = [];
 let beat: Int32Array;
 let trial: string | null = null;
 let current: Loaded | null = null;
+let events: Event[] = [];
 
 const post = (msg: any) => self.postMessage(msg);
 
+for (const level of ["log", "info", "warn", "error"] as const) {
+  console[level] = (...args: any[]) =>
+    post({ t: "log", mod: current?.name ?? "engine", level, text: args.map((a) => (typeof a === "string" ? a : Bun.inspect(a))).join(" ") });
+}
+
+// ---------- databases ----------
 let dbDir = "";
 const writers = new Map<string, ModDb>();
 const readers = new Map<string, ModDb>();
@@ -25,7 +34,7 @@ function ownDb(name: string) {
   if (cached) return cached;
   const path = join(dbDir, `${name}.sqlite`);
   let db: Database;
-  if (trial === name) {
+  if (trial) {
     const copy = existsSync(path) ? new Database(path, { readonly: true }).serialize() : null;
     // A WAL-mode header makes the in-memory copy unopenable; bytes 18-19 switch it to rollback journaling.
     if (copy) copy[18] = copy[19] = 1;
@@ -40,7 +49,7 @@ function ownDb(name: string) {
 }
 
 function readDb(name: string) {
-  if (trial === name) return ownDb(name);
+  if (trial) return ownDb(name);
   const cached = readers.get(name);
   if (cached) return cached;
   const path = join(dbDir, `${name}.sqlite`);
@@ -51,31 +60,61 @@ function readDb(name: string) {
   return readers.get(name)!;
 }
 
-Object.defineProperty(world, "db", {
-  get() {
-    if (!current) throw new Error("world.db is only available inside a mod hook");
-    return ownDb(current.name);
-  },
-});
-world.dbOf = readDb;
-
-for (const level of ["log", "info", "warn", "error"] as const) {
-  console[level] = (...args: any[]) =>
-    post({ t: "log", mod: current?.name ?? "engine", level, text: args.map((a) => (typeof a === "string" ? a : Bun.inspect(a))).join(" ") });
+function caller(what: string) {
+  if (!current) throw new Error(`${what} is only available inside a mod hook, later() or run()`);
+  return current;
 }
 
-let ordered: Loaded[] = [];
+Object.defineProperty(world, "db", { get: () => ownDb(caller("world.db").name) });
+world.dbOf = readDb;
+world.emit = (name, data, to) => void events.push({ from: caller("world.emit").name, name, data, to });
+world.later = (ms, fn) => {
+  const m = caller("world.later");
+  if (!trial) setTimeout(() => mods.get(m.name) === m && guarded(m, "later", () => fn(world)), ms);
+};
+world.async = (work) => {
+  const m = caller("world.async");
+  if (trial) return;
+  const run = (fn: (w: typeof world) => void) => void (mods.get(m.name) === m && guarded(m, "async run", () => fn(world)));
+  work(run).catch((e: any) => {
+    if (mods.get(m.name) !== m) return;
+    m.lastError = `async: ${e?.stack ?? e}`;
+    fault(m, m.lastError, ++m.errors >= 10);
+  });
+};
+world.use = (name) => {
+  const target = mods.get(name);
+  if (!target?.mod.exports) throw new Error(`${name} is not loaded or exports nothing`);
+  return Object.fromEntries(
+    Object.entries(target.mod.exports).map(([key, fn]) => [
+      key,
+      (...args: any[]) => {
+        const [prev, prevBeat] = [current, Atomics.load(beat, 1)];
+        current = target;
+        Atomics.store(beat, 1, target.id);
+        try {
+          return fn.call(target.mod.exports, world, ...args);
+        } finally {
+          Atomics.store(beat, 1, prevBeat);
+          current = prev;
+        }
+      },
+    ]),
+  ) as any;
+};
 
+// ---------- hooks ----------
 function reorder() {
   ordered = [...mods.values()].sort((a, b) => (a.mod.order ?? 0) - (b.mod.order ?? 0) || a.name.localeCompare(b.name));
+  fullPass = true;
 }
 
-function guarded(m: Loaded, label: string, fn: () => void) {
+function guarded<T>(m: Loaded, label: string, fn: () => T): T | undefined {
   const [prev, prevBeat] = [current, Atomics.load(beat, 1)];
   current = m;
   Atomics.store(beat, 1, m.id);
   try {
-    fn();
+    return fn();
   } catch (e: any) {
     m.lastError = `${label}: ${e?.stack ?? e}`;
     fault(m, m.lastError, ++m.errors >= 10);
@@ -85,12 +124,12 @@ function guarded(m: Loaded, label: string, fn: () => void) {
   }
 }
 
-function call(m: Loaded, hook: keyof ServerHooks, ...args: any[]) {
-  const base = m.mod[hook] as ((...a: any[]) => void) | undefined;
+function call(m: Loaded, hook: keyof ServerHooks, ...args: any[]): any {
+  const base = m.mod[hook] as ((...a: any[]) => any) | undefined;
   let next = (...a: any[]) => guarded(m, hook, () => base?.call(m.mod, world, ...a));
   let wrapped = false;
   for (const w of ordered) {
-    const fn = w !== m ? (w.mod.wrap?.[m.name]?.[hook] as ((...a: any[]) => void) | undefined) : undefined;
+    const fn = w !== m ? (w.mod.wrap?.[m.name]?.[hook] as ((...a: any[]) => any) | undefined) : undefined;
     if (!fn) continue;
     const inner = next;
     next = (...a: any[]) => guarded(w, `wrap ${m.name}.${hook}`, () => fn.call(w.mod, inner, world, ...a));
@@ -98,16 +137,21 @@ function call(m: Loaded, hook: keyof ServerHooks, ...args: any[]) {
   }
   if (!base && !wrapped) return;
   const started = performance.now();
-  next(...args);
-  if (hook !== "tick") return;
-  m.slowTicks = performance.now() - started > 50 ? m.slowTicks + 1 : 0;
-  if (m.slowTicks >= 100) fault(m, "every tick took over 50 ms for 5 s", true);
+  const result = next(...args);
+  if (hook === "tick") {
+    m.slowTicks = performance.now() - started > 50 ? m.slowTicks + 1 : 0;
+    if (m.slowTicks >= 100) fault(m, "every tick took over 50 ms for 5 s", true);
+  }
+  return result;
 }
 
 function fault(m: Loaded, error: string, fatal: boolean) {
-  if (trial === m.name) post({ t: "trial", error });
-  else post({ t: "log", mod: m.name, level: "error", text: error });
-  if (fatal && trial !== m.name && mods.get(m.name) === m) {
+  if (trial) {
+    if (trial === m.name) post({ t: "trial", error });
+    return;
+  }
+  post({ t: "log", mod: m.name, level: "error", text: error });
+  if (fatal && mods.get(m.name) === m) {
     mods.delete(m.name);
     reorder();
     post({ t: "fault", mod: m.name, error });
@@ -125,8 +169,63 @@ async function setMod(name: string, id: number, path: string | null) {
   call(loaded, "load");
 }
 
+// ---------- per-player streams ----------
+const known = new Map<string, Set<number>>();
+const resync = new Set<string>();
+let fullPass = true;
+let tickCount = 0;
+
+function visible(p: Player, id: number, e: Entity) {
+  if (Array.isArray(e.only) && !e.only.includes(p.id)) return false;
+  for (const m of ordered) if (m.mod.see && call(m, "see", p, id, e) === false) return false;
+  return true;
+}
+
+type Out = { reset?: true; set: Record<number, Entity>; unset: Record<number, string[]>; removed: number[]; events?: Omit<Event, "to">[] };
+
+function stream(p: Player, d: Diff, full: boolean): Out {
+  const out: Out = { set: {}, unset: {}, removed: [] };
+  let seen = known.get(p.id);
+  if (!seen || resync.has(p.id)) {
+    known.set(p.id, (seen = new Set()));
+    full = out.reset = true;
+  }
+  const show = (id: number, e: Entity) => {
+    if (!visible(p, id, e)) {
+      if (seen.delete(id)) out.removed.push(id);
+    } else if (!seen.has(id)) {
+      seen.add(id);
+      out.set[id] = e;
+    } else {
+      if (d.set[id]) out.set[id] = d.set[id];
+      if (d.unset[id]) out.unset[id] = d.unset[id];
+    }
+  };
+  if (full) for (const [id, e] of world.entities.raw()) show(id, e);
+  else for (const id of new Set([...Object.keys(d.set), ...Object.keys(d.unset)].map(Number))) show(id, world.entities.peek(id)!);
+  for (const id of full ? [...seen].filter((id) => !world.entities.has(id)) : d.removed) if (seen.delete(id)) out.removed.push(id);
+  const mine = events.filter((ev) => !ev.to || ev.to.includes(p.id)).map(({ from, name, data }) => ({ from, name, data }));
+  if (mine.length) out.events = mine;
+  return out;
+}
+
+function flush() {
+  const d = world.delta();
+  const full = fullPass || (tickCount % 5 === 0 && ordered.some((m) => m.mod.see));
+  const outs: Record<string, string> = {};
+  for (const p of world.players.values()) {
+    const out = stream(p, d, full);
+    if (out.reset || Object.keys(out.set).length || Object.keys(out.unset).length || out.removed.length || out.events) outs[p.id] = JSON.stringify({ t: "tick", ...out });
+  }
+  fullPass = false;
+  resync.clear();
+  events = [];
+  if (Object.keys(d.set).length || Object.keys(d.unset).length || d.removed.length || Object.keys(outs).length) post({ t: "tick", diff: d, nextId: world.nextId, outs });
+}
+
 function tick(dt: number) {
   for (const m of ordered) call(m, "tick", dt);
+  tickCount++;
   Atomics.add(beat, 0, 1);
 }
 
@@ -145,17 +244,16 @@ self.onmessage = async ({ data: msg }) => {
           await setMod(m.name, m.id, m.server);
         } catch (e: any) {
           if (trial === m.name) return post({ t: "trial", error: `import: ${e?.stack ?? e}` });
-          post({ t: "fault", mod: m.name, error: `import: ${e?.stack ?? e}` });
+          if (!trial) post({ t: "fault", mod: m.name, error: `import: ${e?.stack ?? e}` });
         }
       }
-      if (trial) return runTrial(trial);
+      if (trial) return runTrial();
       let last = performance.now();
       setInterval(() => {
         const now = performance.now();
         tick(Math.min((now - last) / 1000, 0.25));
         last = now;
-        const d = world.delta();
-        if (Object.keys(d.set).length || d.removed.length) post({ t: "delta", ...d, nextId: world.nextId });
+        flush();
       }, 50);
       return post({ t: "ready" });
     }
@@ -172,11 +270,14 @@ self.onmessage = async ({ data: msg }) => {
       world.players.set(msg.player.id, msg.player);
       for (const m of ordered) call(m, "join", msg.player);
       return;
+    case "resync":
+      return void resync.add(msg.id);
     case "leave": {
       const p = world.players.get(msg.id);
       if (!p) return;
       for (const m of ordered) call(m, "leave", p);
       world.players.delete(msg.id);
+      known.delete(msg.id);
       return;
     }
     case "msg": {
@@ -188,19 +289,20 @@ self.onmessage = async ({ data: msg }) => {
   }
 };
 
-function runTrial(name: string) {
+/** Every live mod runs with the candidate swapped in, but only the candidate's errors fail the test. */
+function runTrial() {
   const bot: Player = { id: "trial-bot", name: "trial-bot" };
-  const m = mods.get(name);
-  if (m) {
-    world.players.set(bot.id, bot);
-    call(m, "join", bot);
-    for (let i = 0; i < 20; i++) call(m, "tick", 0.05);
-    call(m, "leave", bot);
-    try {
-      JSON.stringify(world.snapshot());
-    } catch (e: any) {
-      return post({ t: "trial", error: `world is not JSON-serializable: ${e?.message ?? e}` });
-    }
+  world.players.set(bot.id, bot);
+  for (const m of ordered) call(m, "join", bot);
+  for (let i = 0; i < 20; i++) {
+    tick(0.05);
+    flush();
+  }
+  for (const m of ordered) call(m, "leave", bot);
+  try {
+    JSON.stringify(world.snapshot());
+  } catch (e: any) {
+    return post({ t: "trial", error: `world is not JSON-serializable: ${e?.message ?? e}` });
   }
   post({ t: "trial", error: null });
 }

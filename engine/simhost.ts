@@ -1,4 +1,5 @@
 import type { Entity, Player } from "./api";
+import type { Diff } from "./world";
 
 export type RunningMod = { name: string; id: number; server: string | null };
 
@@ -16,7 +17,7 @@ export class SimHost {
     private dbDir: string,
     private mods: () => RunningMod[],
     private on: {
-      delta(d: { set: Record<number, Entity>; removed: number[] }): void;
+      tick(outs: Record<string, string>): void;
       log(mod: string, level: string, text: string): void;
       fault(mod: string, error: string): void;
     },
@@ -44,11 +45,16 @@ export class SimHost {
     this.worker = new Worker(new URL("./sim.ts", import.meta.url));
     this.worker.onerror = (e) => this.on.log("engine", "error", `simulation worker: ${e.message}`);
     this.worker.onmessage = ({ data: msg }) => {
-      if (msg.t === "delta") {
-        for (const [id, e] of Object.entries(msg.set)) this.entities.set(Number(id), e as Entity);
-        for (const id of msg.removed) this.entities.delete(id);
+      if (msg.t === "tick") {
+        const d: Diff = msg.diff;
+        for (const [id, set] of Object.entries(d.set)) this.entities.set(Number(id), { ...this.entities.get(Number(id)), ...set });
+        for (const [id, keys] of Object.entries(d.unset)) {
+          const e = this.entities.get(Number(id));
+          if (e) for (const k of keys) delete e[k];
+        }
+        for (const id of d.removed) this.entities.delete(id);
         this.nextId = msg.nextId;
-        this.on.delta(msg);
+        this.on.tick(msg.outs);
       } else if (msg.t === "log") this.on.log(msg.mod, msg.level, msg.text);
       else if (msg.t === "fault") this.on.fault(msg.mod, msg.error);
       else if (msg.t === "applied") this.applying.get(msg.name)?.(msg.error);
@@ -62,6 +68,10 @@ export class SimHost {
       mods: this.mods(),
       dbDir: this.dbDir,
     });
+  }
+
+  resync(id: string) {
+    this.worker.postMessage({ t: "resync", id });
   }
 
   send(msg: any) {
@@ -84,7 +94,7 @@ export class SimHost {
     });
   }
 
-  /** Runs one mod against a copy of the live world; resolves to an error message or null. */
+  /** Runs every live mod, with the candidate swapped in, against a copy of the world; resolves to the candidate's error or null. */
   trial(mod: RunningMod): Promise<string | null> {
     const worker = new Worker(new URL("./sim.ts", import.meta.url));
     return new Promise((resolve) => {
@@ -104,7 +114,7 @@ export class SimHost {
         entities: Object.fromEntries(this.entities),
         nextId: this.nextId,
         players: [],
-        mods: [mod],
+        mods: [...this.mods().filter((m) => m.name !== mod.name), mod],
         trial: mod.name,
         dbDir: this.dbDir,
       });

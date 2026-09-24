@@ -88,7 +88,9 @@ const mods = new Mods(ROOT, BUILD, join(DATA, "mods.json"), {
   feed,
 });
 const sim = new SimHost(DB, () => mods.list(), {
-  delta: (d) => broadcast({ t: "delta", set: d.set, removed: d.removed }),
+  tick: (outs) => {
+    for (const [id, text] of Object.entries(outs)) sockets.get(id)?.send(text);
+  },
   log,
   fault: (mod, error) => {
     log(mod, "error", error);
@@ -200,6 +202,7 @@ const server = Bun.serve<Conn>({
       const previous = sockets.get(name);
       sockets.set(name, ws);
       if (previous) previous.close(4000, "Opened in another tab");
+      if (previous) sim.resync(name);
       else sim.send({ t: "join", player: { id: name, name } });
       ws.send(
         JSON.stringify({
@@ -208,7 +211,6 @@ const server = Bun.serve<Conn>({
           world: config.name,
           rules: config.rules,
           invite: config.invite,
-          entities: Object.fromEntries(sim.entities),
           mods: [...mods.running].filter(([, m]) => m.build.client).map(([name, m]) => ({ name, url: m.build.client })),
           feed: feedLog.slice(-8),
         }),

@@ -1,13 +1,66 @@
 import { Database } from "bun:sqlite";
 import type { Entity, ModDb, Player, World } from "./api";
 
+export type Diff = { set: Record<number, Entity>; unset: Record<number, string[]>; removed: number[] };
+
+/** Records which entities mods reach, so a tick only diffs what could have changed. */
+class TrackedMap extends Map<number, Entity> {
+  touched = new Set<number>();
+  deleted = new Set<number>();
+  private tracking = false;
+
+  track() {
+    this.tracking = true;
+    return this;
+  }
+  override get(id: number) {
+    if (this.tracking) this.touched.add(id);
+    return super.get(id);
+  }
+  override set(id: number, e: Entity) {
+    if (this.tracking) this.touched.add(id);
+    return super.set(id, e);
+  }
+  override delete(id: number) {
+    if (this.tracking) this.deleted.add(id);
+    return super.delete(id);
+  }
+  override forEach(fn: (e: Entity, id: number, map: Map<number, Entity>) => void) {
+    for (const [id, e] of this) fn(e, id, this);
+  }
+  override *entries(): MapIterator<[number, Entity]> {
+    for (const pair of super.entries()) {
+      if (this.tracking) this.touched.add(pair[0]);
+      yield pair;
+    }
+  }
+  override *values(): MapIterator<Entity> {
+    for (const [, e] of this.entries()) yield e;
+  }
+  override [Symbol.iterator]() {
+    return this.entries();
+  }
+  /** Reads without marking anything touched. */
+  raw() {
+    return super.entries();
+  }
+  peek(id: number) {
+    return super.get(id);
+  }
+}
+
 export class GameWorld implements World {
-  entities = new Map<number, Entity>();
+  entities = new TrackedMap().track();
   players = new Map<string, Player>();
   nextId = 1;
   declare db: ModDb;
   dbOf!: (mod: string) => ModDb;
-  private sent = new Map<number, string>();
+  emit!: World["emit"];
+  use!: World["use"];
+  later!: World["later"];
+  async!: World["async"];
+  private sent = new Map<number, Map<string, string>>();
+  private cursor: number[] = [];
 
   spawn(entity: Entity) {
     const id = this.nextId++;
@@ -20,26 +73,58 @@ export class GameWorld implements World {
   }
 
   query(...components: string[]): [number, Entity][] {
-    return [...this.entities].filter(([, e]) => components.every((c) => c in e));
+    const found: [number, Entity][] = [];
+    for (const [id, e] of this.entities.raw()) {
+      if (components.every((c) => c in e)) {
+        this.entities.touched.add(id);
+        found.push([id, e]);
+      }
+    }
+    return found;
   }
 
   snapshot() {
-    return Object.fromEntries(this.entities);
+    return Object.fromEntries(this.entities.raw());
   }
 
-  // Diffing serialized entities catches direct mutation, so mods never have to mark anything dirty.
-  delta() {
-    const set: Record<number, Entity> = {};
-    for (const [id, e] of this.entities) {
-      const json = JSON.stringify(e);
-      if (this.sent.get(id) !== json) {
-        this.sent.set(id, json);
-        set[id] = e;
+  /**
+   * Component-level changes since the last call. Entities mods reached this tick are diffed; a rolling 5% scan
+   * catches mutations through references a mod kept from an earlier tick, so those arrive within a second.
+   */
+  delta(): Diff {
+    const { touched, deleted } = this.entities;
+    if (!this.cursor.length) this.cursor = [...new Set([...this.sent.keys(), ...[...this.entities.raw()].map(([id]) => id)])];
+    const scan = this.cursor.splice(0, Math.max(64, Math.ceil(this.entities.size / 20)));
+    const diff: Diff = { set: {}, unset: {}, removed: [] };
+    for (const id of new Set([...touched, ...deleted, ...scan])) {
+      const e = this.entities.peek(id);
+      const prev = this.sent.get(id);
+      if (!e) {
+        if (prev) {
+          diff.removed.push(id);
+          this.sent.delete(id);
+        }
+        continue;
+      }
+      const seen = prev ?? new Map<string, string>();
+      if (!prev) this.sent.set(id, seen);
+      let changed: Entity | undefined;
+      for (const key in e) {
+        const json = JSON.stringify(e[key]);
+        if (seen.get(key) === json) continue;
+        seen.set(key, json);
+        (changed ??= {})[key] = e[key];
+      }
+      if (changed) diff.set[id] = changed;
+      for (const key of seen.keys()) {
+        if (key in e) continue;
+        seen.delete(key);
+        (diff.unset[id] ??= []).push(key);
       }
     }
-    const removed = [...this.sent.keys()].filter((id) => !this.entities.has(id));
-    for (const id of removed) this.sent.delete(id);
-    return { set, removed };
+    touched.clear();
+    deleted.clear();
+    return diff;
   }
 }
 

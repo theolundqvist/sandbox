@@ -112,8 +112,7 @@ function labelSprite(text: string) {
 function build(id: number, e: Entity) {
   for (const m of [...ordered].reverse()) {
     if (!m.mod.object) continue;
-    let made: THREE.Object3D | null | undefined | void;
-    guarded(m, "object", () => (made = m.mod.object!(m.ctx, id, e)));
+    const made: THREE.Object3D | null | undefined = call(m, "object", id, e);
     if (made) {
       custom.add(made);
       return made;
@@ -186,15 +185,27 @@ function rebuildAll() {
   }
 }
 
-function applyEntities(set: Record<string, Entity>, removed: number[] = []) {
-  for (const [id, e] of Object.entries(set)) {
-    entities.set(Number(id), e);
-    syncObject(Number(id), e, false);
+type Tick = { reset?: true; set: Record<string, Entity>; unset: Record<string, string[]>; removed: number[]; events?: { from: string; name: string; data: any }[] };
+
+function applyTick({ reset, set, unset, removed, events }: Tick) {
+  if (reset) for (const id of [...entities.keys()]) if (!(id in set)) removed.push(id);
+  for (const [key, changes] of Object.entries(set)) {
+    const id = Number(key);
+    const e = reset ? changes : Object.assign(entities.get(id) ?? {}, changes);
+    entities.set(id, e);
+    syncObject(id, e, !!reset);
+  }
+  for (const [key, gone] of Object.entries(unset)) {
+    const e = entities.get(Number(key));
+    if (!e) continue;
+    for (const k of gone) delete e[k];
+    syncObject(Number(key), e, false);
   }
   for (const id of removed) {
     entities.delete(id);
     syncObject(id, undefined, false);
   }
+  for (const ev of events ?? []) for (const m of ordered) if (m.mod.event) call(m, "event", ev.name, ev.data, ev.from);
 }
 
 // ---------- mods ----------
@@ -209,9 +220,9 @@ function reorder() {
   ordered = [...mods.values()].sort((a, b) => (a.mod.order ?? 0) - (b.mod.order ?? 0) || a.name.localeCompare(b.name));
 }
 
-function guarded(m: Loaded, label: string, fn: () => void) {
+function guarded<T>(m: Loaded, label: string, fn: () => T): T | undefined {
   try {
-    fn();
+    return fn();
   } catch (e: any) {
     console.error(`[${m.name}] ${label}`, e);
     send({ t: "error", mod: m.name, text: `${label}: ${e?.stack ?? e}` });
@@ -223,16 +234,22 @@ function guarded(m: Loaded, label: string, fn: () => void) {
   }
 }
 
-function call(m: Loaded, hook: keyof ClientHooks, ...args: any[]) {
-  const base = m.mod[hook] as ((...a: any[]) => void) | undefined;
+function call(m: Loaded, hook: keyof ClientHooks, ...args: any[]): any {
+  const base = m.mod[hook] as ((...a: any[]) => any) | undefined;
   let next = (...a: any[]) => guarded(m, hook, () => base?.call(m.mod, m.ctx, ...a));
   for (const w of ordered) {
-    const fn = w !== m ? (w.mod.wrap?.[m.name]?.[hook] as ((...a: any[]) => void) | undefined) : undefined;
+    const fn = w !== m ? (w.mod.wrap?.[m.name]?.[hook] as ((...a: any[]) => any) | undefined) : undefined;
     if (!fn) continue;
     const inner = next;
     next = (...a: any[]) => guarded(w, `wrap ${m.name}.${hook}`, () => fn.call(w.mod, inner, w.ctx, ...a));
   }
-  next(...args);
+  return next(...args);
+}
+
+function use(name: string) {
+  const target = mods.get(name);
+  if (!target?.mod.exports) throw new Error(`${name} is not loaded or exports nothing`);
+  return Object.fromEntries(Object.entries(target.mod.exports).map(([k, fn]) => [k, (...a: any[]) => fn.call(target.mod.exports, target.ctx, ...a)])) as any;
 }
 
 async function loadMod(name: string, url: string | null) {
@@ -255,7 +272,19 @@ async function loadMod(name: string, url: string | null) {
     reorder();
     return rebuildAll();
   }
-  const ctx: ClientCtx = { THREE, scene, camera, renderer, entities, objects, playerId: me, keys, send: (msg) => send({ t: "m", mod: name, msg }) };
+  const ctx: ClientCtx = {
+    THREE,
+    scene,
+    camera,
+    renderer,
+    entities,
+    objects,
+    playerId: me,
+    keys,
+    send: (msg) => send({ t: "m", mod: name, msg }),
+    use,
+    asset: (file) => `/assets/${encodeURIComponent(file)}`,
+  };
   const loaded: Loaded = { name, url, mod, ctx, errors: 0 };
   mods.set(name, loaded);
   reorder();
@@ -277,17 +306,14 @@ function connect() {
         $("world-name").textContent = world;
         $("rules").textContent = msg.rules === "additive" ? "additive" : "open";
         $("status").hidden = true;
-        for (const id of [...entities.keys()]) if (!(id in msg.entities)) applyEntities({}, [id]);
-        applyEntities(msg.entities);
-        for (const [id, e] of entities) syncObject(id, e, true);
         const wanted = new Map<string, string>(msg.mods.map((m: any) => [m.name, m.url]));
         for (const name of mods.keys()) if (!wanted.has(name)) await loadMod(name, null);
         for (const [name, url] of wanted) await loadMod(name, url);
         for (const f of msg.feed) addLine(f.text, f.kind);
         return;
       }
-      case "delta":
-        return applyEntities(msg.set, msg.removed);
+      case "tick":
+        return applyTick(msg);
       case "mod":
         return loadMod(msg.name, msg.url);
       case "feed":
@@ -409,7 +435,7 @@ renderer.setAnimationLoop(() => {
   for (const m of ordered) {
     if (!m.mod.render) continue;
     const inner = draw;
-    draw = () => guarded(m, "render", () => m.mod.render!(m.ctx, inner, dt));
+    draw = () => call(m, "render", inner, dt);
   }
   draw();
 });

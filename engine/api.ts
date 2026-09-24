@@ -20,6 +20,14 @@ export interface World {
   db: ModDb;
   /** Another mod's database, read-only. */
   dbOf(mod: string): ModDb;
+  /** One-off event for client mods' `event` hook (explosions, sounds, screen shake). `to` limits it to those player ids. */
+  emit(name: string, data?: any, to?: string[]): void;
+  /** Functions another mod exported with `exports`. They run as that mod (its world.db, its errors). */
+  use<T = any>(mod: string): T;
+  /** Runs fn as this mod after ms milliseconds. */
+  later(ms: number, fn: (world: World) => void): void;
+  /** Runs async work (fetch, APIs, MCP servers); touch the world only inside run(fn), which runs as this mod. */
+  async(work: (run: (fn: (world: World) => void) => void) => Promise<void>): void;
   spawn(entity: Entity): number;
   remove(id: number): void;
   query(...components: string[]): [number, Entity][];
@@ -33,15 +41,21 @@ export interface ServerHooks {
   leave?(world: World, player: Player): void;
   /** A message a client mod sent with ctx.send. */
   message?(world: World, player: Player, msg: any): void;
+  /** Return false to hide an entity from a player (fog of war, hidden roles). Entities with `only: [playerIds]` are hidden from everyone else without a hook. */
+  see?(world: World, player: Player, id: number, entity: Entity): boolean | void;
 }
 
-type Wrapped<H> = { [K in keyof H]?: H[K] extends ((world: World, ...args: infer A) => void) | undefined ? (next: (...args: A) => void, world: World, ...args: A) => void : never };
+type Wrapped<H> = {
+  [K in keyof H]?: H[K] extends ((world: World, ...args: infer A) => infer R) | undefined ? (next: (...args: A) => R, world: World, ...args: A) => R : never;
+};
 
 export interface ServerMod extends ServerHooks {
   /** Mods run in ascending order (default 0), then by name. */
   order?: number;
   /** Intercept another mod's hooks by its folder name: call next(...) to let it run, change the args, or skip it. */
   wrap?: Record<string, Wrapped<ServerHooks>>;
+  /** Functions other mods call as world.use("<this mod>").fn(...args); they receive (world, ...args). */
+  exports?: Record<string, (world: World, ...args: any[]) => any>;
 }
 
 export interface ClientCtx {
@@ -58,6 +72,10 @@ export interface ClientCtx {
   keys: Set<string>;
   /** Sends a message to this mod's server half. */
   send(msg: any): void;
+  /** Functions another client mod exported with `exports`. */
+  use<T = any>(mod: string): T;
+  /** URL of a file added with the add_asset tool, e.g. ctx.asset("dragon.glb"). */
+  asset(name: string): string;
 }
 
 export interface ClientHooks {
@@ -69,11 +87,15 @@ export interface ClientHooks {
   render?(ctx: ClientCtx, draw: () => void, dt: number): void;
   /** Return your own Object3D to draw this entity, or nothing to leave it to others. Highest `order` asks first. */
   object?(ctx: ClientCtx, id: number, entity: Entity): THREE.Object3D | null | undefined | void;
+  /** A one-off event a server mod sent with world.emit. `from` is the emitting mod. */
+  event?(ctx: ClientCtx, name: string, data: any, from: string): void;
 }
 
-type ClientWrapped = { [K in keyof ClientHooks]?: (next: (...args: any[]) => void, ctx: ClientCtx, ...args: any[]) => void };
+type ClientWrapped = { [K in keyof ClientHooks]?: (next: (...args: any[]) => any, ctx: ClientCtx, ...args: any[]) => any };
 
 export interface ClientMod extends ClientHooks {
   order?: number;
   wrap?: Record<string, ClientWrapped>;
+  /** Called as ctx.use("<this mod>").fn(...args); they receive (ctx, ...args). */
+  exports?: Record<string, (ctx: ClientCtx, ...args: any[]) => any>;
 }
