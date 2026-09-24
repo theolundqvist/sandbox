@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New world</title>
+<style>
+  :root { --line: rgba(255,255,255,.12); --text: #eef2f7; --dim: #9aa6b5; --accent: #ffb547; --err: #ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: radial-gradient(circle at 30% 20%, #1d2a3d, #0b0f16 70%); color: var(--text); font: 15px/1.45 Inter, system-ui, sans-serif; }
+  form { width: min(560px, 100%); }
+  h1 { font-size: 32px; margin: 0 0 6px; } p { color: var(--dim); margin: 0 0 24px; }
+  h2 { margin: 24px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+  input[type=text] { width: 100%; font: inherit; font-size: 17px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.06); color: var(--text); outline: none; }
+  input[type=text]:focus { border-color: var(--accent); }
+  label { display: block; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 8px; cursor: pointer; background: rgba(255,255,255,.03); }
+  label:has(input:checked) { border-color: var(--accent); background: rgba(255,181,71,.08); }
+  label input { margin-right: 8px; accent-color: var(--accent); } label b { font-size: 16px; } label span { display: block; color: var(--dim); margin: 4px 0 0 24px; }
+  button { margin-top: 20px; font: inherit; font-weight: 700; padding: 12px 20px; border: 0; border-radius: 10px; background: var(--accent); color: #1a1204; cursor: pointer; }
+  .error { color: var(--err); min-height: 1.4em; margin-top: 10px; }
+</style>
+</head>
+<body>
+<form id="form">
+  <h1>A new, empty world</h1>
+  <p>You and your friends start with nothing. Each of your Claudes builds the game live while everyone plays.</p>
+  <h2>World name</h2>
+  <input type="text" id="name" placeholder="Sandbox" maxlength="40" autocomplete="off" autofocus>
+  <h2>House rules</h2>
+  <label><input type="radio" name="rules" value="open" checked><b>Open</b><span>Anyone's Claude can change or remove anyone's mod.</span></label>
+  <label><input type="radio" name="rules" value="additive"><b>Additive</b><span>You can only add. Nobody can edit or remove a mod they didn't make, so you answer an attack by building a counter-mod.</span></label>
+  <button type="submit">Create world</button>
+  <div id="error" class="error"></div>
+</form>
+<script>
+  const hostKey = new URLSearchParams(location.hash.slice(1)).get("host");
+  if (!hostKey) document.getElementById("error").textContent = "Open the setup link printed in the server terminal.";
+  document.getElementById("form").onsubmit = async (e) => {
+    e.preventDefault();
+    const res = await fetch("/api/setup", {
+      method: "POST",
+      body: JSON.stringify({ hostKey, name: document.getElementById("name").value, rules: new FormData(e.target).get("rules") }),
+    });
+    const data = await res.json();
+    if (!res.ok) return (document.getElementById("error").textContent = data.error);
+    location.replace(`/#invite=${hostKey}`);
+    location.reload();
+  };
+</script>
+</body>
+</html>
