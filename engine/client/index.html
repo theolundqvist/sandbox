@@ -49,6 +49,7 @@
   ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
   li { padding: 8px 12px; background: rgba(255,255,255,.05); border-radius: 8px; display: flex; justify-content: space-between; gap: 12px; }
   li span { color: var(--dim); }
+  #top, #status, #chat, #hint, #toasts, #stick, #jump { z-index: 1000; } .overlay { z-index: 1001; }
   body.touch canvas { touch-action: none; }
   body.touch #feed { top: 70px; bottom: auto; mask-image: none; max-height: 24vh; }
   body.touch #chat { top: 70px; bottom: auto; }
