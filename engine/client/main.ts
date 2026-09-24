@@ -352,6 +352,8 @@ function connect() {
         world = msg.world;
         invite = msg.invite;
         publicUrl = msg.publicUrl;
+        voiceAvailable = msg.voice;
+        showMic();
         me = msg.playerId;
         $("world-name").textContent = world;
         $("rules").textContent = msg.rules === "additive" ? "additive" : "open";
@@ -541,11 +543,11 @@ function closeMenu() {
 function play() {
   howto.hidden = true;
   capture();
-  if (!micRecognizer && readPref("sandbox-mic") !== "off") setMic(true);
+  if (!mic && readPref("sandbox-mic") !== "off") setMic(true);
 }
 
-/** The mic stays on and every finished sentence goes to chat, so everyone and every Claude hears how players feel. */
-const Recognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+/** The mic stays on and every phrase goes to chat, transcribed by the host, so everyone and every Claude hears how players feel. */
+let voiceAvailable = false;
 const readPref = (name: string) => {
   try {
     return localStorage.getItem(name);
@@ -554,59 +556,72 @@ const readPref = (name: string) => {
   }
 };
 let micOn = false;
-let micRecognizer: any = null;
-let micStream: MediaStream | null = null;
-let micFailures = 0;
+let mic: { stop(): void } | null = null;
+const LOUD = 0.02;
+async function startMic() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  const audio = new AudioContext();
+  const analyser = audio.createAnalyser();
+  analyser.fftSize = 1024;
+  audio.createMediaStreamSource(stream).connect(analyser);
+  const samples = new Float32Array(analyser.fftSize);
+  let phrase: { recorder: MediaRecorder; spoken: number } | null = null;
+  let began = 0;
+  let lastLoud = 0;
+  // A phrase starts when the level rises and ends after a short pause, so only speech is sent for transcription.
+  const timer = setInterval(() => {
+    analyser.getFloatTimeDomainData(samples);
+    const level = Math.sqrt(samples.reduce((sum, v) => sum + v * v, 0) / samples.length);
+    const now = performance.now();
+    if (level > LOUD) {
+      lastLoud = now;
+      if (phrase) return;
+      const chunks: Blob[] = [];
+      const r = new MediaRecorder(stream);
+      const current = (phrase = { recorder: r, spoken: 0 });
+      began = now;
+      r.ondataavailable = (e) => chunks.push(e.data);
+      r.onstop = () => {
+        if (current.spoken > 300) void fetch("/api/voice", { method: "POST", headers: { authorization: `Bearer ${key}` }, body: new Blob(chunks, { type: r.mimeType }) });
+      };
+      r.start();
+    } else if (phrase && now - lastLoud > 900) {
+      phrase.spoken = lastLoud - began;
+      phrase.recorder.stop();
+      phrase = null;
+    }
+  }, 50);
+  return {
+    stop() {
+      clearInterval(timer);
+      phrase?.recorder.stop();
+      stream.getTracks().forEach((t) => t.stop());
+      void audio.close();
+    },
+  };
+}
 function setMic(on: boolean) {
-  micOn = on && !!Recognition;
+  micOn = on && voiceAvailable;
   try {
     localStorage.setItem("sandbox-mic", on ? "on" : "off");
   } catch {}
   showMic();
-  if (micOn && !micRecognizer) {
-    // Holding our own capture keeps the browser's recording indicator steady while recognition restarts between phrases.
-    navigator.mediaDevices?.getUserMedia({ audio: true }).then(
-      (stream) => (micOn && !micStream ? (micStream = stream) : stream.getTracks().forEach((t) => t.stop())),
-      () => {},
-    );
-    const r = (micRecognizer = new Recognition());
-    r.continuous = true;
-    r.interimResults = false;
-    r.lang = navigator.language;
-    const report = (text: string) => send({ t: "mic", text });
-    r.onstart = () => report(`listening (${navigator.userAgent.match(/(Edg|Chrome|Safari|Firefox)\/[\d.]+/g)?.join(" ") ?? navigator.userAgent})`);
-    r.onresult = (e: any) => {
-      micFailures = 0;
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const text = e.results[i].isFinal ? e.results[i][0].transcript.trim() : "";
-        if (text) send({ t: "voice", text });
-      }
-    };
-    // Browsers end recognition after silence or a minute of talk; restart until the player mutes, backing off when it keeps failing.
-    r.onend = () => {
-      report("ended");
-      if (!micOn) return void (micRecognizer = null);
-      setTimeout(() => micOn && micRecognizer === r && r.start(), Math.min(250 * 2 ** micFailures, 10_000) - 250);
-    };
-    r.onerror = (e: any) => {
-      report(`error ${e.error}${e.message ? `: ${e.message}` : ""}`);
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+  if (micOn && !mic)
+    startMic().then(
+      (started) => (micOn ? (mic = started) : started.stop()),
+      () => {
         setMic(false);
         toast("The microphone is blocked. Allow it in the browser's address bar, then turn the mic on.", "error");
-      } else if (e.error !== "no-speech" && e.error !== "aborted") {
-        if (!micFailures++) toast(e.error === "network" ? "Voice can't reach the browser's speech service. Chrome and Edge transcribe; Brave, Arc and Firefox don't." : `Voice stopped: ${e.error}`, "error");
-      }
-    };
-    r.start();
-  } else if (!micOn) {
-    micRecognizer?.stop();
-    micStream?.getTracks().forEach((t) => t.stop());
-    micStream = null;
+      },
+    );
+  else if (!micOn) {
+    mic?.stop();
+    mic = null;
   }
 }
 function showMic() {
-  $("mic").textContent = !Recognition ? "No voice here" : micOn ? "Mic on" : "Mic off";
-  $("mic").dataset.state = !Recognition ? "none" : micOn ? "on" : "off";
+  $("mic").textContent = !voiceAvailable ? "No voice here" : micOn ? "Mic on" : "Mic off";
+  $("mic").dataset.state = !voiceAvailable ? "none" : micOn ? "on" : "off";
 }
 $("mic").onclick = () => setMic(!micOn);
 showMic();

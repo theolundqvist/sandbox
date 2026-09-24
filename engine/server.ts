@@ -250,6 +250,19 @@ const mcp = createMcp({
     }),
 });
 
+/** Whisper on Groq; segments it judges to be silence are dropped, since Whisper invents words for noise. */
+async function transcribe(audio: Blob) {
+  const form = new FormData();
+  form.append("file", audio, audio.type.includes("mp4") ? "speech.mp4" : "speech.webm");
+  form.append("model", "whisper-large-v3-turbo");
+  form.append("response_format", "verbose_json");
+  const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", { method: "POST", headers: { authorization: `Bearer ${process.env.GROQ_API_KEY}` }, body: form });
+  if (!res.ok) throw new Error(`transcription failed: ${res.status} ${await res.text()}`);
+  const { segments } = (await res.json()) as { segments: { text: string; no_speech_prob: number }[] };
+  const text = segments.filter((s) => s.no_speech_prob < 0.5).map((s) => s.text.trim()).join(" ");
+  return /\p{L}/u.test(text) ? text : "";
+}
+
 const html = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });
 const bearer = (req: Request) => req.headers.get("authorization")?.replace(/^Bearer /, "") ?? new URL(req.url).searchParams.get("key");
 
@@ -314,6 +327,16 @@ const server = Bun.serve<Conn>({
       return who ? Response.json(await sim.visibleTo(who, store.frames(40))) : new Response(null, { status: 401 });
     }
     if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json({ ...status(), gameMaster: { key: gameMasterKey, ...builder(GAME_MASTER) } }) : new Response(null, { status: 401 });
+    if (path === "/api/voice" && req.method === "POST") {
+      const who = nameByKey(bearer(req));
+      if (!who) return new Response(null, { status: 401 });
+      const audio = await req.blob();
+      transcribe(audio).then(
+        (text) => text && chat(who, text.slice(0, 300), true),
+        (error) => console.log(`[voice] ${who}: ${error.message}`),
+      );
+      return new Response(null, { status: 204 });
+    }
     if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size });
     if (path === "/api/join" && req.method === "POST") {
       const body = await req.json();
@@ -354,6 +377,7 @@ const server = Bun.serve<Conn>({
           rules: config.rules,
           invite: config.invite,
           publicUrl,
+          voice: !!process.env.GROQ_API_KEY,
           mods: [...mods.running].filter(([, m]) => m.build.client).map(([name, m]) => ({ name, url: m.build.client })),
           feed: feedLog.slice(-8),
           claudes: Object.fromEntries([...claudes.keys()].map((name) => [name, builder(name)])),
@@ -365,8 +389,6 @@ const server = Bun.serve<Conn>({
       const msg = JSON.parse(String(raw));
       if (msg.t === "m") sim.send({ t: "msg", id: ws.data.name, mod: msg.mod, msg: msg.msg });
       else if (msg.t === "chat") chat(ws.data.name, String(msg.text).slice(0, 300));
-      else if (msg.t === "voice") chat(ws.data.name, String(msg.text).slice(0, 300), true);
-      else if (msg.t === "mic") console.log(`[mic] ${ws.data.name}: ${String(msg.text).slice(0, 300)}`);
       else if (msg.t === "resync") sim.resync(ws.data.name);
       else if (msg.t === "react") react(ws.data.name, String(msg.mod), String(msg.kind));
       else if (msg.t === "shot") shots.get(msg.id)?.(String(msg.data));
