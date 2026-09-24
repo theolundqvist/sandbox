@@ -112,8 +112,9 @@ function share(on: boolean) {
   proc.exited.then(() => {
     if (tunnel !== current) return;
     tunnel = null;
-    tunnelError = `The tunnel stopped: ${last.replace(/^\S+ (ERR|INF|WRN) /, "")}`;
+    tunnelError = `The tunnel stopped: ${last.replace(/^\S+ (ERR|INF|WRN) /, "")}. Retrying in 10 seconds.`;
     console.error(tunnelError);
+    setTimeout(() => state.sharing && !tunnel && share(true), 10_000);
   });
 }
 
