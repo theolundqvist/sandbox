@@ -402,12 +402,17 @@ export function createMcp(ctx: McpContext) {
   const STALE = "This connection's key isn't valid for the world running now: the host switched worlds or removed this player. Ask your player to open the game, join, copy the new connect command from the game menu, and restart Claude Code with it.";
   const chatSeen = new Map<string, number>();
   const unseenChat = (who: string) => ctx.chatLog.filter((c) => c.seq > (chatSeen.get(who) ?? 0) && c.from !== speaker(who));
+  /** Everything said since this Claude last looked, however long it was busy; a Claude new to the world gets the recent conversation. */
   function takeChat(who: string) {
-    const unseen = unseenChat(who);
+    const cursor = chatSeen.get(who);
+    const all = unseenChat(who);
+    const unseen = cursor === undefined ? all.slice(-30) : all;
+    const oldest = ctx.chatLog[0]?.seq ?? 0;
+    const lost = cursor !== undefined && cursor < oldest - 1 ? `(${oldest - 1 - cursor} older lines are no longer kept)\n` : "";
     const lines = unseen.map((c) => `${c.from}${c.spoken ? " (said aloud)" : ""}: ${c.text}`);
     chatSeen.set(who, ctx.chatLog.at(-1)?.seq ?? 0);
     const spoken = unseen.some((c) => c.spoken) ? "\n(said aloud) lines are what a player said into their microphone (hold T or open chat): often talk between players, not orders. See GUIDE.md, Listening to players." : "";
-    return lines.length ? [{ type: "text", text: `In-game chat since your last call:\n${lines.join("\n")}${spoken}` }] : [];
+    return lines.length ? [{ type: "text", text: `In-game chat since your last look, oldest first:\n${lost}${lines.join("\n")}${spoken}` }] : [];
   }
 
   async function handle(msg: any, who: string | null) {

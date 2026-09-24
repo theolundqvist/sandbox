@@ -95,7 +95,7 @@ let chatSeq = 0;
 function chat(from: string, text: string, spoken?: boolean) {
   chatLog.push({ seq: ++chatSeq, from, text, spoken });
   console.log(`[chat] ${from}${spoken ? " (voice)" : ""}: ${text}`);
-  if (chatLog.length > 50) chatLog.shift();
+  if (chatLog.length > 2000) chatLog.shift();
   broadcast({ t: "chat", from, text, spoken });
   for (const wake of chatWaiters) wake();
 }
