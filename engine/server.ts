@@ -270,6 +270,10 @@ const server = Bun.serve<Conn>({
         }
       }
     }
+    if (path === "/api/timelapse") {
+      const who = nameByKey(bearer(req));
+      return who ? Response.json(await sim.visibleTo(who, store.frames(40))) : new Response(null, { status: 401 });
+    }
     if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json(status()) : new Response(null, { status: 401 });
     if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size });
     if (path === "/api/join" && req.method === "POST") {
@@ -321,6 +325,7 @@ const server = Bun.serve<Conn>({
       const msg = JSON.parse(String(raw));
       if (msg.t === "m") sim.send({ t: "msg", id: ws.data.name, mod: msg.mod, msg: msg.msg });
       else if (msg.t === "chat") chat(ws.data.name, String(msg.text).slice(0, 300));
+      else if (msg.t === "resync") sim.resync(ws.data.name);
       else if (msg.t === "react") react(ws.data.name, String(msg.mod), String(msg.kind));
       else if (msg.t === "shot") shots.get(msg.id)?.(String(msg.data));
       else if (msg.t === "error") log(msg.mod, "client-error", `${ws.data.name}'s game: ${String(msg.text).slice(0, 2000)}`);

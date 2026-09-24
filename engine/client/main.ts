@@ -344,7 +344,7 @@ function connect() {
         claudes.set(msg.name, msg.state);
         return showBuilders();
       case "tick":
-        return applyTick(msg);
+        return replaying || applyTick(msg);
       case "mod":
         return loadMod(msg.name, msg.url);
       case "shot":
@@ -434,6 +434,28 @@ function react(kind: string) {
   send({ t: "react", mod: reacting, kind });
 }
 for (const b of $("react").querySelectorAll<HTMLElement>("button")) b.onclick = () => react(b.dataset.kind!);
+
+/** Replays the last hour from saved moments, then returns to the live world. */
+let replaying = false;
+let orbit = 30;
+$("timelapse").onclick = async () => {
+  closeMenu();
+  const frames: { at: number; entities: Record<string, Entity> }[] = await (await fetch("/api/timelapse", { headers: { authorization: `Bearer ${key}` } })).json();
+  if (!frames.length) return toast("Nothing to replay yet: the world saves a moment every minute.");
+  replaying = true;
+  $("replay").hidden = false;
+  for (const f of frames) {
+    if (!replaying) break;
+    $("replay-time").textContent = new Date(f.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const spots = Object.values(f.entities).flatMap((e) => (Array.isArray(e.pos) ? [Math.hypot(e.pos[0] ?? 0, e.pos[2] ?? 0)] : []));
+    orbit = Math.min(150, Math.max(20, spots.sort((a, b) => a - b)[Math.floor(spots.length * 0.9)] ?? 20));
+    applyTick({ reset: true, set: f.entities, unset: {}, removed: [] });
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  replaying = false;
+  $("replay").hidden = true;
+  send({ t: "resync" });
+};
 
 const banners: { mod: string; by: string; title: string; text: string; color: string }[] = [];
 function nextBanner() {
@@ -586,6 +608,7 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
 async function openMenu() {
   keys.clear();
   menu.hidden = false;
+  replaying = false;
   if (document.pointerLockElement) document.exitPointerLock();
   $("invite-link").textContent = `${location.origin}/#invite=${invite}`;
   const name = slug(world);
@@ -629,6 +652,11 @@ renderer.setAnimationLoop(() => {
     if (e.rot) obj.rotation.set(e.rot[0] ?? 0, e.rot[1] ?? 0, e.rot[2] ?? 0);
   }
   for (const m of ordered) call(m, "frame", dt);
+  if (replaying) {
+    const a = now * 0.00015;
+    camera.position.set(Math.cos(a) * orbit * 1.4, orbit * 0.8, Math.sin(a) * orbit * 1.4);
+    camera.lookAt(0, 0, 0);
+  }
   draw(dt);
   const hideHint = entities.size > 0 || mods.size > 0 || now - welcomedAt < 1000;
   if (emptyHint.hidden !== hideHint) emptyHint.hidden = hideHint;

@@ -156,6 +156,12 @@ export function openStore(path: string) {
       db.run("insert or replace into snapshots values (?, ?, ?)", [Date.now(), world.nextId, JSON.stringify(Object.fromEntries(world.entities))]);
       db.run("delete from snapshots where at < ?", [Date.now() - 3_600_000]);
     },
+    /** Up to `limit` saved moments of the last hour, oldest first, evenly spread. */
+    frames(limit: number) {
+      const all = db.query("select at from snapshots order by at").all() as { at: number }[];
+      const picked = all.filter((_, i) => i % Math.ceil(all.length / limit) === 0);
+      return picked.map(({ at }) => ({ at, entities: JSON.parse((db.query("select entities from snapshots where at = ?").get(at) as { entities: string }).entities) as Record<string, Entity> }));
+    },
     snapshots: () => (db.query("select at from snapshots order by at desc").all() as { at: number }[]).map((r) => r.at),
     rewind: (at: number, world: Persisted) => read(db.query("select next_id, entities from snapshots where at = ?").get(at) as any, world),
   };

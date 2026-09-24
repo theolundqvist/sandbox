@@ -272,6 +272,11 @@ self.onmessage = async ({ data: msg }) => {
       return;
     case "resync":
       return void resync.add(msg.id);
+    case "see": {
+      const p = world.players.get(msg.player);
+      const frames = p ? msg.frames.map((f: { at: number; entities: Record<string, Entity> }) => ({ at: f.at, entities: Object.fromEntries(Object.entries(f.entities).filter(([id, e]) => visible(p, Number(id), e))) })) : [];
+      return post({ t: "seen", id: msg.id, frames });
+    }
     case "leave": {
       const p = world.players.get(msg.id);
       if (!p) return;

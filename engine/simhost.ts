@@ -1,6 +1,8 @@
 import type { Entity, Player } from "./api";
 import type { Diff } from "./world";
 
+export type Frame = { at: number; entities: Record<string, Entity> };
+
 export type RunningMod = { name: string; id: number; server: string | null };
 
 const HANG_MS = 2000;
@@ -59,6 +61,10 @@ export class SimHost {
       } else if (msg.t === "log") this.on.log(msg.mod, msg.level, msg.text);
       else if (msg.t === "fault") this.on.fault(msg.mod, msg.error);
       else if (msg.t === "applied") this.applying.get(msg.name)?.(msg.error);
+      else if (msg.t === "seen") {
+        this.seeing.get(msg.id)?.(msg.frames);
+        this.seeing.delete(msg.id);
+      }
     };
     this.worker.postMessage({
       t: "init",
@@ -68,6 +74,17 @@ export class SimHost {
       players: [...this.players.values()],
       mods: this.mods(),
       dbDir: this.dbDir,
+    });
+  }
+
+  private seeing = new Map<number, (frames: Frame[]) => void>();
+  private seeSeq = 0;
+  /** Saved moments cut down to what one player may see under the live mods' rules. */
+  visibleTo(player: string, frames: Frame[]) {
+    const id = ++this.seeSeq;
+    return new Promise<Frame[]>((resolve) => {
+      this.seeing.set(id, resolve);
+      this.worker.postMessage({ t: "see", id, player, frames });
     });
   }
 
