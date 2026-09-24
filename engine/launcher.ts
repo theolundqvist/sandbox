@@ -112,11 +112,27 @@ const lan = Object.values(networkInterfaces())
   .flat()
   .find((a) => a && a.family === "IPv4" && !a.internal)?.address;
 
-function menuState() {
+/** Host-only controls the running world serves itself. */
+async function world(action: string, body?: object) {
+  if (!running) throw new Error("No world is running.");
+  const res = await fetch(`http://127.0.0.1:${running.port}/api/host/${action}`, {
+    method: body ? "POST" : "GET",
+    headers: { authorization: `Bearer ${config(running.id).hostKey}` },
+    body: body && JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error);
+  return data;
+}
+
+async function menuState() {
   const live = running && config(running.id);
   return {
     worlds: worlds(),
-    running: running && live ? { id: running.id, name: live.name, invite: live.invite, hostKey: live.hostKey } : null,
+    running:
+      running && live
+        ? { id: running.id, name: live.name, invite: live.invite, hostKey: live.hostKey, players: await world("players"), snapshots: await world("snapshots") }
+        : null,
     lan: lan ? `http://${lan}:${PORT}` : null,
     tunnel: tunnel ? { url: tunnel.url } : null,
   };
@@ -137,8 +153,9 @@ async function menuApi(req: Request, action: string) {
       if (!/^[a-z0-9-]+$/.test(body.id ?? "")) throw new Error("That world doesn't exist.");
       rmSync(join(WORLDS, body.id), { recursive: true, force: true });
     } else if (action === "share") share(!!body.on);
+    else if (["remove", "invite", "rewind"].includes(action)) await world(action, body);
     else if (action !== "state") return Response.json({ error: "Unknown action" }, { status: 404 });
-    return Response.json(menuState());
+    return Response.json(await menuState());
   } catch (e: any) {
     return Response.json({ error: e.message }, { status: 400 });
   }

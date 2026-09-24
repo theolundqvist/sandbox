@@ -132,6 +132,8 @@ await mods.loadAll(owners);
 sim.start();
 for (const mod of refreshed) await mods.reload(mod, "world", owners[mod] ?? "world");
 setInterval(() => store.save(sim), 5000);
+store.snapshot(sim);
+setInterval(() => store.snapshot(sim), 60_000);
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, () => {
     store.save(sim);
@@ -207,6 +209,34 @@ const server = Bun.serve<Conn>({
       return (await file.exists()) ? new Response(file, { headers: { "cache-control": "max-age=31536000, immutable" } }) : new Response("not found", { status: 404 });
     }
 
+    if (path.startsWith("/api/host/")) {
+      if (bearer(req) !== config.hostKey) return new Response(null, { status: 401 });
+      const body = req.method === "POST" ? await req.json() : {};
+      switch (path.slice("/api/host/".length)) {
+        case "players":
+          return Response.json([...new Set(Object.values(keys))].map((name) => ({ name, online: sockets.has(name) })));
+        case "remove": {
+          for (const [key, name] of Object.entries(keys)) if (name === body.name) delete keys[key];
+          writeJson("keys.json", keys);
+          sockets.get(body.name)?.close(4002, "Removed by the host");
+          feed(`${body.name} was removed by the host`, "info");
+          return Response.json({});
+        }
+        case "invite":
+          config.invite = token();
+          writeJson("config.json", config);
+          return Response.json({ invite: config.invite });
+        case "snapshots":
+          return Response.json(store.snapshots());
+        case "rewind": {
+          if (!store.rewind(Number(body.at), sim)) return Response.json({ error: "That moment is no longer saved." }, { status: 404 });
+          store.save(sim);
+          sim.restart();
+          feed(`The host rewound the world to ${new Date(Number(body.at)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, "error");
+          return Response.json({});
+        }
+      }
+    }
     if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json(status()) : new Response(null, { status: 401 });
     if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size });
     if (path === "/api/join" && req.method === "POST") {

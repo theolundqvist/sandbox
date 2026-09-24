@@ -143,15 +143,25 @@ export function openStore(path: string) {
   const db = new Database(path, { create: true });
   db.run("pragma busy_timeout = 5000");
   db.run("create table if not exists world (id integer primary key check (id = 1), next_id integer, entities text)");
+  db.run("create table if not exists snapshots (at integer primary key, next_id integer, entities text)");
+  const read = (row: { next_id: number; entities: string } | null, world: Persisted) => {
+    if (!row) return false;
+    world.nextId = row.next_id;
+    world.entities.clear();
+    for (const [id, e] of Object.entries(JSON.parse(row.entities))) world.entities.set(Number(id), e as Entity);
+    return true;
+  };
   return {
-    load(world: Persisted) {
-      const row = db.query("select next_id, entities from world").get() as { next_id: number; entities: string } | null;
-      if (!row) return;
-      world.nextId = row.next_id;
-      for (const [id, e] of Object.entries(JSON.parse(row.entities))) world.entities.set(Number(id), e as Entity);
-    },
+    load: (world: Persisted) => read(db.query("select next_id, entities from world").get() as any, world),
     save(world: Persisted) {
       db.run("insert or replace into world values (1, ?, ?)", [world.nextId, JSON.stringify(Object.fromEntries(world.entities))]);
     },
+    /** Keeps one snapshot per call for the last hour. */
+    snapshot(world: Persisted) {
+      db.run("insert or replace into snapshots values (?, ?, ?)", [Date.now(), world.nextId, JSON.stringify(Object.fromEntries(world.entities))]);
+      db.run("delete from snapshots where at < ?", [Date.now() - 3_600_000]);
+    },
+    snapshots: () => (db.query("select at from snapshots order by at desc").all() as { at: number }[]).map((r) => r.at),
+    rewind: (at: number, world: Persisted) => read(db.query("select next_id, entities from snapshots where at = ?").get(at) as any, world),
   };
 }

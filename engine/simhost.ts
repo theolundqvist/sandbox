@@ -42,9 +42,10 @@ export class SimHost {
 
   start() {
     Atomics.store(this.beat, 1, 0);
-    this.worker = new Worker(new URL("./sim.ts", import.meta.url));
+    const worker = (this.worker = new Worker(new URL("./sim.ts", import.meta.url)));
     this.worker.onerror = (e) => this.on.log("engine", "error", `simulation worker: ${e.message}`);
     this.worker.onmessage = ({ data: msg }) => {
+      if (worker !== this.worker) return;
       if (msg.t === "tick") {
         const d: Diff = msg.diff;
         for (const [id, set] of Object.entries(d.set)) this.entities.set(Number(id), { ...this.entities.get(Number(id)), ...set });
@@ -72,6 +73,12 @@ export class SimHost {
 
   resync(id: string) {
     this.worker.postMessage({ t: "resync", id });
+  }
+
+  /** Replaces the world wholesale: a fresh worker loads every mod against the new entities. */
+  restart() {
+    this.worker.terminate();
+    this.start();
   }
 
   send(msg: any) {

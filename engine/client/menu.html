@@ -37,6 +37,9 @@
   .link { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
   .link span { width: 110px; color: var(--dim); font-size: 13px; flex: none; }
   code { flex: 1; min-width: 0; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(0,0,0,.35); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; overflow-x: auto; white-space: nowrap; }
+  select { font: inherit; color: var(--text); background: #1a2230; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
+  .player { display: flex; gap: 10px; align-items: center; padding: 6px 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; } .dot.on { background: var(--ok); }
   .toggle { display: flex; gap: 10px; align-items: center; margin-top: 14px; cursor: pointer; } .toggle input { accent-color: var(--accent); width: 18px; height: 18px; }
 </style>
 </head>
@@ -60,6 +63,13 @@
     <label class="toggle"><input type="checkbox" id="share"> Share over the internet (free Cloudflare tunnel, no port forwarding)</label>
     <div class="link" id="public" hidden><span>Internet</span><code id="link-public"></code><button data-copy="link-public">Copy</button></div>
     <div id="share-error" class="error"></div>
+    <div class="row"><span class="meta grow">Anyone with an invite link can join and run code on this computer.</span><button id="new-invite">New invite link</button></div>
+    <h2 style="margin-top:20px">Players</h2>
+    <div id="players"></div>
+    <h2 style="margin-top:20px">Rewind</h2>
+    <div class="row"><select id="snapshots" class="grow"></select><button id="rewind">Rewind</button></div>
+    <p class="meta">Puts every entity back to how it was then. Mods and their databases stay as they are.</p>
+    <div id="host-error" class="error"></div>
   </section>
 
   <section id="new" hidden>
@@ -121,6 +131,17 @@
       $("share").checked = !!s.tunnel;
       $("public").hidden = !s.tunnel;
       $("link-public").textContent = s.tunnel?.url ? `${s.tunnel.url}/#invite=${r.invite}` : "Opening a tunnel…";
+      $("players").replaceChildren(...(r.players.length ? r.players.map((p) => {
+        const row = Object.assign(document.createElement("div"), { className: "player" });
+        const remove = Object.assign(document.createElement("button"), { className: "danger", textContent: "Remove" });
+        remove.onclick = () => confirm(`Remove ${p.name}? Their game and their Claude lose access. Make a new invite link too if they shouldn't rejoin.`) && hostAction("remove", { name: p.name });
+        row.append(Object.assign(document.createElement("span"), { className: p.online ? "dot on" : "dot" }), Object.assign(document.createElement("span"), { className: "grow", textContent: p.name }), remove);
+        return row;
+      }) : [Object.assign(document.createElement("p"), { className: "meta", textContent: "Nobody has joined yet." })]));
+      const picked = $("snapshots").value;
+      $("snapshots").replaceChildren(...r.snapshots.map((at) => Object.assign(document.createElement("option"), { value: at, textContent: `${new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (${ago(at)})` })));
+      if (picked) $("snapshots").value = picked;
+      $("rewind").disabled = !r.snapshots.length;
     }
     $("saved").hidden = !s.worlds.length;
     $("worlds").replaceChildren(...s.worlds.map((w) => {
@@ -153,6 +174,12 @@
   }
   const play = (s) => location.assign(`/#invite=${s.running.hostKey}`);
 
+  const hostAction = (action, body) => api(action, body).catch((e) => ($("host-error").textContent = e.message));
+  $("new-invite").onclick = () => confirm("Make a new invite link? Old links stop working; people who already joined stay in.") && hostAction("invite", {});
+  $("rewind").onclick = () => {
+    const at = Number($("snapshots").value);
+    if (confirm(`Put the whole world back to ${new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} for everyone?`)) hostAction("rewind", { at });
+  };
   $("play").onclick = () => play(state);
   $("stop").onclick = () => confirm(`Stop ${state.running.name}? Everyone playing is sent back to the menu.`) && api("stop", {});
   $("share").onchange = (e) => {
@@ -188,7 +215,7 @@
       localStorage.removeItem("sandbox-menu");
       location.reload();
     });
-    setInterval(() => state?.tunnel && !state.tunnel.url && api("state"), 1500);
+    setInterval(() => state?.running && api("state"), 2000);
   }
 </script>
 </body>

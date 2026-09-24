@@ -338,6 +338,10 @@ function connect() {
       return;
     }
     if (e.code === 4001) return location.reload();
+    if (e.code === 4002) {
+      $("status").textContent = "The host removed you from this world.";
+      return;
+    }
     $("status").textContent = "Reconnecting…";
     setTimeout(connect, 1000);
   };
