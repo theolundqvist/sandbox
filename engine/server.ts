@@ -84,6 +84,12 @@ Bun.spawnSync(["git", "commit", "-qm", "server start"], { cwd: ROOT });
 
 const logs: { at: number; mod: string; level: string; text: string }[] = [];
 const feedLog: { at: number; text: string; kind: string }[] = [];
+const chatLog: { from: string; text: string }[] = [];
+function chat(from: string, text: string) {
+  chatLog.push({ from, text });
+  if (chatLog.length > 50) chatLog.shift();
+  broadcast({ t: "chat", from, text });
+}
 const sockets = new Map<string, ServerWebSocket<Conn>>();
 const broadcast = (msg: object) => {
   const text = JSON.stringify(msg);
@@ -139,6 +145,7 @@ const status = () => ({
   mods: [...mods.running].map(([name, m]) => ({ name, author: m.author, version: m.version, server: !!m.build.server, client: !!m.build.client })),
   entities: sim.entities.size,
   recent: feedLog.slice(-15).map((f) => f.text),
+  chat: chatLog.slice(-20).map((c) => `${c.from}: ${c.text}`),
 });
 
 const shots = new Map<string, (data: string) => void>();
@@ -152,7 +159,7 @@ const mcp = createMcp({
   sim,
   logs,
   feed,
-  chat: (from, text) => broadcast({ t: "chat", from, text }),
+  chat,
   status,
   screenshot: (who) =>
     new Promise((resolve, reject) => {
@@ -258,7 +265,7 @@ const server = Bun.serve<Conn>({
     message(ws, raw) {
       const msg = JSON.parse(String(raw));
       if (msg.t === "m") sim.send({ t: "msg", id: ws.data.name, mod: msg.mod, msg: msg.msg });
-      else if (msg.t === "chat") broadcast({ t: "chat", from: ws.data.name, text: String(msg.text).slice(0, 300) });
+      else if (msg.t === "chat") chat(ws.data.name, String(msg.text).slice(0, 300));
       else if (msg.t === "shot") shots.get(msg.id)?.(String(msg.data));
       else if (msg.t === "error") log(msg.mod, "client-error", `${ws.data.name}'s game: ${String(msg.text).slice(0, 2000)}`);
     },

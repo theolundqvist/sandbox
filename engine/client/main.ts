@@ -429,7 +429,7 @@ renderer.setAnimationLoop(() => {
   const blend = 1 - Math.exp(-dt * 15);
   for (const [id, obj] of objects) {
     const e = entities.get(id);
-    if (!e?.pos) continue;
+    if (!e?.pos || obj.userData.manual) continue;
     obj.position.lerp(new THREE.Vector3().fromArray(e.pos), blend);
     if (e.rot) obj.rotation.set(e.rot[0] ?? 0, e.rot[1] ?? 0, e.rot[2] ?? 0);
   }

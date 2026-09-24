@@ -24,7 +24,7 @@ const hash = (text: string) => new Bun.CryptoHasher("sha256").update(text).diges
 const tools = [
   {
     name: "status",
-    description: "World name, rules, who is online, running mods with authors and versions, and recent activity. Start here.",
+    description: "World name, rules, who is online, running mods with authors and versions, recent activity and recent chat. Start here, and check it between tasks: players ask their Claudes for things in chat.",
     inputSchema: { type: "object", properties: {} },
   },
   {

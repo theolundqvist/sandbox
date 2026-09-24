@@ -67,6 +67,8 @@ object(ctx, id, entity) { if (entity.look?.model) return myLoadedModel.clone(); 
 
 `render` wraps the final draw of each frame the same way `wrap` does, with higher `order` outermost. `object` lets you replace how any entity looks; the highest `order` mod that returns something wins, and entities are rebuilt when their `mesh`, `label` or `look` component changes, so keep custom appearance data in `look`.
 
+The engine glides every drawn object toward its entity's `pos` and `rot`. Set `object.userData.manual = true` on one (e.g. from `ctx.objects.get(id)`) to position it yourself, for client-side prediction of your own avatar or effects that should not follow the server.
+
 `event(ctx, name, data, from)` receives one-off happenings that a server mod sent with `world.emit(name, data)` (to everyone) or `world.emit(name, data, ["theo"])` (to some players): an explosion at one spot, a sound, a screen shake. Events are not saved and late joiners never see them; anything that must persist belongs in an entity.
 
 Models, textures and sounds: the `add_asset` tool stores a file from a url or base64 in `mods/<mod>/assets/`, live immediately. Load it with `ctx.asset("dragon.glb")` (this mod) or `ctx.asset("other-mod/dragon.glb")`, e.g. with `GLTFLoader` from `three/addons/loaders/GLTFLoader.js`.
