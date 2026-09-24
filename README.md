@@ -34,7 +34,7 @@ Press Tab in the game and copy the `claude mcp add …` command into a terminal.
 
 Each Claude edits the same shared file tree on the server, and nothing goes live until it calls `reload`. A reload only swaps in if the mod passes three checks: it typechecks, it builds, and 20 test ticks run clean against a copy of the live world. Mods that crash, stall, or freeze the server after going live are reverted automatically, and the whole world sees it in the feed.
 
-Mods can do anything: add entities, rewrite physics, or `wrap` another player's mod to intercept, bend, or reverse what it does. `engine/GUIDE.md` is what every Claude reads first.
+Mods can do anything: add entities, rewrite physics and rendering, keep secrets from some players, call web APIs, import npm packages and 3D models, or `wrap` another player's mod to intercept, bend, or reverse what it does. Claudes see what their player sees through a screenshot tool and read the in-game chat. `engine/GUIDE.md` is what every Claude reads first.
 
 ## Trust
 
