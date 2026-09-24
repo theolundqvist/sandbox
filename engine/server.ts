@@ -13,7 +13,7 @@ const BUILD = join(DATA, "build");
 const DB = join(DATA, "db");
 const PORT = Number(process.env.PORT ?? 7777);
 
-export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "blank"; invite: string; hostKey: string };
+export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "hills" | "blank"; invite: string; hostKey: string };
 type Conn = { name: string };
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
@@ -27,11 +27,14 @@ const keys = readJson<Record<string, string>>("keys.json", {});
 const owners = readJson<Record<string, string>>("owners.json", {});
 const nameByKey = (key: string | null) => (key ? keys[key] : undefined);
 
+const STARTS: Record<Config["start"], string[]> = { basics: ["basics"], hills: ["basics", "hills"], blank: [] };
 if (!existsSync(ROOT)) {
-  if (config.start === "blank") mkdirSync(join(ROOT, "mods"), { recursive: true });
-  else cpSync(join(ENGINE, "seed"), ROOT, { recursive: true });
+  mkdirSync(join(ROOT, "mods"), { recursive: true });
   for (const mod in owners) delete owners[mod];
-  if (config.start !== "blank") owners.basics = "world";
+  for (const mod of STARTS[config.start]) {
+    cpSync(join(ENGINE, "seed/mods", mod), join(ROOT, "mods", mod), { recursive: true });
+    owners[mod] = "world";
+  }
   writeJson("owners.json", owners);
   Bun.spawnSync(["git", "init", "-q"], { cwd: ROOT });
   Bun.spawnSync(["git", "config", "user.name", "sandbox"], { cwd: ROOT });

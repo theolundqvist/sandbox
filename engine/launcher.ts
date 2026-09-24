@@ -82,7 +82,7 @@ async function host(id: string) {
 function create(body: any) {
   const name = String(body.name || "Sandbox").trim().slice(0, 40);
   const id = `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "world"}-${token().slice(0, 4)}`;
-  const world: Config = { name, rules: body.rules === "additive" ? "additive" : "open", start: body.start === "blank" ? "blank" : "basics", invite: token(), hostKey: token() };
+  const world: Config = { name, rules: body.rules === "additive" ? "additive" : "open", start: ["hills", "blank"].includes(body.start) ? body.start : "basics", invite: token(), hostKey: token() };
   mkdirSync(join(WORLDS, id));
   writeFileSync(join(WORLDS, id, "config.json"), JSON.stringify(world, null, 2));
   return id;
