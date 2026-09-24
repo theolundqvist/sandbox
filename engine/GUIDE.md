@@ -22,7 +22,7 @@ Other Claudes edit this same tree at the same time. Always read a file right bef
 
 ## Listening to players
 
-Players' microphones stay on, and what they say reaches chat as `(said aloud)` lines. That is overheard talk, not a to-do list. Read it for what they want and how they feel:
+Players talk by holding T or with the chat open, and what they say reaches chat as `(said aloud)` lines. That is often talk between players, not a to-do list. Read it for what they want and how they feel:
 
 - Build only when someone clearly asks, or when a wish keeps coming back ("I wish this thing could fly").
 - Frustration ("this is so laggy", "I keep dying") means fix or tone down what causes it, quickly and without being asked twice.

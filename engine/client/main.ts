@@ -534,6 +534,7 @@ function openChat() {
   chat.placeholder = `Chat, or ask your Claude: "${ideas[Math.floor(Math.random() * ideas.length)]}"`;
   chat.hidden = false;
   chat.focus();
+  startTalking();
   if (document.pointerLockElement) document.exitPointerLock();
 }
 function closeMenu() {
@@ -543,87 +544,48 @@ function closeMenu() {
 function play() {
   howto.hidden = true;
   capture();
-  if (!mic && readPref("sandbox-mic") !== "off") setMic(true);
 }
 
-/** The mic stays on and every phrase goes to chat, transcribed by the host, so everyone and every Claude hears how players feel. */
+/** Push to talk: hold T (or the mic button) and the phrase goes to chat, transcribed by the host, so everyone and every Claude hears it. */
 let voiceAvailable = false;
-const readPref = (name: string) => {
-  try {
-    return localStorage.getItem(name);
-  } catch {
-    return null;
-  }
-};
-let micOn = false;
-let mic: { stop(): void } | null = null;
-const LOUD = 0.02;
-async function startMic() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-  const audio = new AudioContext();
-  const analyser = audio.createAnalyser();
-  analyser.fftSize = 1024;
-  audio.createMediaStreamSource(stream).connect(analyser);
-  const samples = new Float32Array(analyser.fftSize);
-  let phrase: { recorder: MediaRecorder; spoken: number } | null = null;
-  let began = 0;
-  let lastLoud = 0;
-  // A phrase starts when the level rises and ends after a short pause, so only speech is sent for transcription.
-  const timer = setInterval(() => {
-    analyser.getFloatTimeDomainData(samples);
-    const level = Math.sqrt(samples.reduce((sum, v) => sum + v * v, 0) / samples.length);
-    const now = performance.now();
-    if (level > LOUD) {
-      lastLoud = now;
-      if (phrase) return;
-      const chunks: Blob[] = [];
-      const r = new MediaRecorder(stream);
-      const current = (phrase = { recorder: r, spoken: 0 });
-      began = now;
-      r.ondataavailable = (e) => chunks.push(e.data);
-      r.onstop = () => {
-        if (current.spoken > 300) void fetch("/api/voice", { method: "POST", headers: { authorization: `Bearer ${key}` }, body: new Blob(chunks, { type: r.mimeType }) });
-      };
-      r.start();
-    } else if (phrase && now - lastLoud > 900) {
-      phrase.spoken = lastLoud - began;
-      phrase.recorder.stop();
-      phrase = null;
-    }
-  }, 50);
-  return {
-    stop() {
-      clearInterval(timer);
-      phrase?.recorder.stop();
-      stream.getTracks().forEach((t) => t.stop());
-      void audio.close();
-    },
-  };
-}
-function setMic(on: boolean) {
-  micOn = on && voiceAvailable;
-  try {
-    localStorage.setItem("sandbox-mic", on ? "on" : "off");
-  } catch {}
+let micStream: Promise<MediaStream> | null = null;
+let talking: { recorder: Promise<MediaRecorder>; began: number } | null = null;
+function startTalking() {
+  if (!voiceAvailable || talking) return;
+  // The stream stays open after the first press so later presses record from the first word.
+  micStream ??= navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  const recorder = micStream.then((stream) => {
+    const r = new MediaRecorder(stream);
+    const chunks: Blob[] = [];
+    r.ondataavailable = (e) => chunks.push(e.data);
+    r.onstop = () => void fetch("/api/voice", { method: "POST", headers: { authorization: `Bearer ${key}` }, body: new Blob(chunks, { type: r.mimeType }) });
+    r.start();
+    return r;
+  });
+  recorder.catch(() => {
+    micStream = null;
+    toast("The microphone is blocked. Allow it in the browser's address bar, then try again.", "error");
+  });
+  talking = { recorder, began: performance.now() };
   showMic();
-  if (micOn && !mic)
-    startMic().then(
-      (started) => (micOn ? (mic = started) : started.stop()),
-      () => {
-        setMic(false);
-        toast("The microphone is blocked. Allow it in the browser's address bar, then turn the mic on.", "error");
-      },
-    );
-  else if (!micOn) {
-    mic?.stop();
-    mic = null;
-  }
+}
+/** keep is false when the player typed instead or cancelled, so only what they meant to say is sent. */
+function stopTalking(keep: boolean) {
+  if (!talking) return;
+  const { recorder, began } = talking;
+  talking = null;
+  showMic();
+  recorder.then((r) => {
+    if (!keep || performance.now() - began < 300) r.onstop = null;
+    r.stop();
+  }, () => {});
 }
 function showMic() {
-  $("mic").textContent = !voiceAvailable ? "No voice here" : micOn ? "Mic on" : "Mic off";
-  $("mic").dataset.state = !voiceAvailable ? "none" : micOn ? "on" : "off";
+  $("mic").textContent = !voiceAvailable ? "No voice here" : talking ? "Talking" : matchMedia("(pointer: coarse)").matches ? "Hold to talk" : "Hold T to talk";
+  $("mic").dataset.state = !voiceAvailable ? "none" : talking ? "on" : "off";
 }
-$("mic").onclick = () => setMic(!micOn);
+$("mic").onpointerdown = startTalking;
+$("mic").onpointerup = $("mic").onpointerleave = () => stopTalking(true);
 showMic();
 $("howto-play").onclick = play;
 
@@ -645,11 +607,19 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     e.preventDefault();
     return menu.hidden ? openMenu() : closeMenu();
   }
+  if (e.code === "KeyT" && !typing() && menu.hidden) return startTalking();
   if (!typing()) keys.add(e.code);
 });
-addEventListener("keyup", (e: KeyboardEvent) => keys.delete(e.code));
-addEventListener("blur", () => keys.clear());
+addEventListener("keyup", (e: KeyboardEvent) => {
+  if (e.code === "KeyT") stopTalking(true);
+  keys.delete(e.code);
+});
+addEventListener("blur", () => {
+  keys.clear();
+  stopTalking(true);
+});
 chat.addEventListener("keydown", (e: KeyboardEvent) => {
+  if (e.key === "Enter" || e.key === "Escape") stopTalking(e.key === "Enter" && !chat.value.trim());
   if (e.key === "Enter") {
     if (chat.value.trim()) send({ t: "chat", text: chat.value.trim() });
     chat.value = "";
@@ -771,7 +741,7 @@ async function openMenu() {
   $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;
   const name = slug(world);
   $("claude-command").textContent = connectCommand(
-    `We are playing ${world} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through the ${name} MCP tools, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Build everything like a real game, following the guide's Build it like a real game section: think about every part of quality (looks, feel, motion, sound, atmosphere, play, speed), find or build proper models and assets instead of boxes, and start parallel subagents, one per part, for anything bigger than a tweak. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and my microphone is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 600, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
+    `We are playing ${world} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through the ${name} MCP tools, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Build everything like a real game, following the guide's Build it like a real game section: think about every part of quality (looks, feel, motion, sound, atmosphere, play, speed), find or build proper models and assets instead of boxes, and start parallel subagents, one per part, for anything bigger than a tweak. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and when I hold T or have the chat open my voice is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 600, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
     key,
   );
   showBuilders();
