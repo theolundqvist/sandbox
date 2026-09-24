@@ -253,11 +253,7 @@ const server = Bun.serve<Conn>({
       return Response.json({ key, name, invite: config.invite });
     }
 
-    if (path === "/mcp") {
-      const who = nameByKey(bearer(req));
-      if (!who) return Response.json({ error: "Unknown key. Copy the connect command from the game menu." }, { status: 401 });
-      return mcp(req, who);
-    }
+    if (path === "/mcp") return mcp(req, nameByKey(bearer(req)) ?? null);
 
     if (path === "/ws") {
       const name = nameByKey(url.searchParams.get("key"));

@@ -333,6 +333,8 @@ export function createMcp(ctx: McpContext) {
     throw new ToolError(`Unknown tool ${name}`);
   }
 
+  // An unknown key still completes the handshake: a 401 reads as "log in" to MCP clients and hides this message.
+  const STALE = "This connection's key isn't valid for the world running now: the host switched worlds or removed this player. Ask your player to open the game, join, copy the new connect command from the game menu, and restart Claude Code with it.";
   const chatSeen = new Map<string, number>();
   const unseenChat = (who: string) => ctx.chatLog.filter((c) => c.seq > (chatSeen.get(who) ?? 0) && c.from !== `${who}'s Claude`);
   function takeChat(who: string) {
@@ -341,7 +343,7 @@ export function createMcp(ctx: McpContext) {
     return lines.length ? [{ type: "text", text: `In-game chat since your last call:\n${lines.join("\n")}` }] : [];
   }
 
-  async function handle(msg: any, who: string) {
+  async function handle(msg: any, who: string | null) {
     const reply = (result: object) => ({ jsonrpc: "2.0", id: msg.id, result });
     switch (msg.method) {
       case "initialize":
@@ -356,6 +358,7 @@ export function createMcp(ctx: McpContext) {
       case "tools/list":
         return reply({ tools });
       case "tools/call":
+        if (!who) return reply({ content: [{ type: "text", text: STALE }], isError: true });
         try {
           const result = await call(msg.params.name, msg.params.arguments ?? {}, who);
           return reply({ content: [typeof result === "string" ? { type: "text", text: result } : { type: "image", data: result.image, mimeType: "image/jpeg" }, ...takeChat(who)] });
@@ -368,7 +371,7 @@ export function createMcp(ctx: McpContext) {
     return { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `Unknown method ${msg.method}` } };
   }
 
-  return async (req: Request, who: string) => {
+  return async (req: Request, who: string | null) => {
     if (req.method !== "POST") return new Response(null, { status: 405 });
     const body = await req.json();
     const replies = (await Promise.all((Array.isArray(body) ? body : [body]).map((m) => handle(m, who)))).filter(Boolean);
