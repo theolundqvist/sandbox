@@ -1,5 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { createMcp } from "./mcp";
 import { Mods } from "./mods";
@@ -13,7 +13,7 @@ const BUILD = join(DATA, "build");
 const DB = join(DATA, "db");
 const PORT = Number(process.env.PORT ?? 7777);
 
-type Config = { name: string; rules: "open" | "additive"; invite: string; hostKey: string; setup: boolean };
+export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "blank"; invite: string; hostKey: string };
 type Conn = { name: string };
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
@@ -21,16 +21,17 @@ const readJson = <T>(file: string, fallback: T): T => (existsSync(join(DATA, fil
 const writeJson = (file: string, value: unknown) => writeFileSync(join(DATA, file), JSON.stringify(value, null, 2));
 
 mkdirSync(DB, { recursive: true });
-const config = readJson<Config>("config.json", { name: "", rules: "open", invite: token(), hostKey: token(), setup: false });
+const config = readJson<Config>("config.json", { name: "Sandbox", rules: "open", start: "basics", invite: token(), hostKey: token() });
 writeJson("config.json", config);
 const keys = readJson<Record<string, string>>("keys.json", {});
 const owners = readJson<Record<string, string>>("owners.json", {});
 const nameByKey = (key: string | null) => (key ? keys[key] : undefined);
 
 if (!existsSync(ROOT)) {
-  cpSync(join(ENGINE, "seed"), ROOT, { recursive: true });
+  if (config.start === "blank") mkdirSync(join(ROOT, "mods"), { recursive: true });
+  else cpSync(join(ENGINE, "seed"), ROOT, { recursive: true });
   for (const mod in owners) delete owners[mod];
-  owners.basics = "world";
+  if (config.start !== "blank") owners.basics = "world";
   writeJson("owners.json", owners);
   Bun.spawnSync(["git", "init", "-q"], { cwd: ROOT });
   Bun.spawnSync(["git", "config", "user.name", "sandbox"], { cwd: ROOT });
@@ -189,7 +190,7 @@ const server = Bun.serve<Conn>({
     const url = new URL(req.url);
     const path = url.pathname;
 
-    if (path === "/") return html(config.setup ? "index.html" : "setup.html");
+    if (path === "/") return html("index.html");
     if (path === "/client.js") return new Response(clientJs, { headers: { "content-type": "text/javascript" } });
     if (path.startsWith("/vendor/three/")) {
       const file = Bun.file(join(ENGINE, "../node_modules/three", path.slice("/vendor/three/".length).replaceAll("..", "")));
@@ -206,18 +207,8 @@ const server = Bun.serve<Conn>({
       return (await file.exists()) ? new Response(file, { headers: { "cache-control": "max-age=31536000, immutable" } }) : new Response("not found", { status: 404 });
     }
 
-    if (path === "/api/setup" && req.method === "POST") {
-      const body = await req.json();
-      if (body.hostKey !== config.hostKey) return Response.json({ error: "Use the setup link printed in the server terminal." }, { status: 403 });
-      if (config.setup) return Response.json({ error: "Already set up." }, { status: 409 });
-      config.name = String(body.name || "Sandbox").slice(0, 40);
-      config.rules = body.rules === "additive" ? "additive" : "open";
-      config.setup = true;
-      writeJson("config.json", config);
-      return Response.json({ invite: config.invite });
-    }
     if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json(status()) : new Response(null, { status: 401 });
-    if (path === "/api/info") return Response.json({ name: config.name, rules: config.rules, online: sockets.size });
+    if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size });
     if (path === "/api/join" && req.method === "POST") {
       const body = await req.json();
       const known = nameByKey(body.key);
@@ -283,4 +274,5 @@ const server = Bun.serve<Conn>({
 });
 
 const base = `http://localhost:${server.port}`;
-console.log(config.setup ? `\n  ${config.name} is running.\n  Host link (keep private): ${base}/#invite=${config.hostKey}\n` : `\n  Set up your world: ${base}/#host=${config.hostKey}\n`);
+console.log(`\n  ${config.name} is running.\n  Host link (keep private): ${base}/#invite=${config.hostKey}\n`);
+process.send?.({ port: server.port });

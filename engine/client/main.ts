@@ -5,7 +5,9 @@ import type { ClientCtx, ClientHooks, ClientMod, Entity } from "../api";
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const hashParams = new URLSearchParams(location.hash.slice(1));
 
-let key = localStorage.getItem("sandbox-key");
+const info = await (await fetch("/api/info")).json();
+const keyName = `sandbox-key:${info.id}`;
+let key = localStorage.getItem(keyName);
 let me = "";
 let world = "";
 let invite = "";
@@ -14,7 +16,8 @@ async function join(body: object) {
   const res = await fetch("/api/join", { method: "POST", body: JSON.stringify(body) });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error);
-  localStorage.setItem("sandbox-key", data.key);
+  localStorage.setItem(keyName, data.key);
+  localStorage.setItem("sandbox-name", data.name);
   key = data.key;
   me = data.name;
   history.replaceState(null, "", "/");
@@ -25,14 +28,14 @@ async function start() {
     try {
       return await join({ key });
     } catch {
-      localStorage.removeItem("sandbox-key");
+      localStorage.removeItem(keyName);
     }
   }
-  const info = await (await fetch("/api/info")).json();
   $("join-world").textContent = info.name;
   $("join-online").textContent = info.online ? `${info.online} playing now` : "Nobody is here yet";
   $("join").hidden = false;
   if (!hashParams.get("invite")) $("join-error").textContent = "Ask the host for an invite link to join.";
+  $<HTMLInputElement>("join-name").value = localStorage.getItem("sandbox-name") ?? "";
   $("join-name").focus();
   await new Promise<void>((resolve) => {
     $("join-form").onsubmit = async (e) => {
@@ -307,6 +310,7 @@ function connect() {
         $("world-name").textContent = world;
         $("rules").textContent = msg.rules === "additive" ? "additive" : "open";
         $("status").hidden = true;
+        welcomedAt = performance.now();
         const wanted = new Map<string, string>(msg.mods.map((m: any) => [m.name, m.url]));
         for (const name of mods.keys()) if (!wanted.has(name)) await loadMod(name, null);
         for (const [name, url] of wanted) await loadMod(name, url);
@@ -333,6 +337,7 @@ function connect() {
       $("status").textContent = "You opened the game in another tab.";
       return;
     }
+    if (e.code === 4001) return location.reload();
     $("status").textContent = "Reconnecting…";
     setTimeout(connect, 1000);
   };
@@ -404,6 +409,8 @@ chat.addEventListener("keydown", (e: KeyboardEvent) => {
 });
 $("menu-button").onclick = () => openMenu();
 $("menu-close").onclick = () => (menu.hidden = true);
+$("main-menu").hidden = !localStorage.getItem("sandbox-menu");
+$("main-menu").onclick = () => location.assign("/menu");
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "sandbox";
 
@@ -437,6 +444,8 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy]")
   };
 
 // ---------- loop ----------
+const emptyHint = $("empty");
+let welcomedAt = Infinity;
 let last = performance.now();
 renderer.setAnimationLoop(() => {
   const now = performance.now();
@@ -451,6 +460,8 @@ renderer.setAnimationLoop(() => {
   }
   for (const m of ordered) call(m, "frame", dt);
   draw(dt);
+  const hideHint = entities.size > 0 || mods.size > 0 || now - welcomedAt < 1000;
+  if (emptyHint.hidden !== hideHint) emptyHint.hidden = hideHint;
 });
 
 function draw(dt: number) {

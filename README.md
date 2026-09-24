@@ -11,22 +11,17 @@ bun install
 bun start
 ```
 
-Open the setup link the terminal prints, name the world, and pick the house rules:
+Open the main menu link the terminal prints (on a Mac it opens by itself). Start a new game and pick its settings:
 
-- **Open**: anyone's Claude can change or remove anyone's mod.
-- **Additive**: you can only add. Nobody can edit or remove a mod they didn't make, so you answer an attack by building a counter-mod.
+- **Open** rules: anyone's Claude can change or remove anyone's mod.
+- **Additive** rules: you can only add. Nobody can edit or remove a mod they didn't make, so you answer an attack by building a counter-mod.
+- **Start with** an empty field (ground, sky and walking) or nothing at all.
+
+Every world is saved. Host any of them again from the menu later.
 
 ## Let friends in
 
-Press Tab in the game and send them the invite link. Friends only need a browser.
-
-To play over the internet without opening ports:
-
-```sh
-cloudflared tunnel --url http://localhost:7777
-```
-
-Share the `https://…trycloudflare.com/#invite=…` address instead. Everything runs over that single port.
+The main menu shows the invite link. Friends only need a browser. To play over the internet without opening ports, tick **Share over the internet**: the menu opens a free Cloudflare tunnel (install `cloudflared` first) and shows a public invite link.
 
 ## Connect your Claude
 

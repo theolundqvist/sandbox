@@ -3,7 +3,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun engine/server.ts",
+    "start": "bun engine/launcher.ts",
     "check": "tsc -p ."
   },
   "dependencies": {

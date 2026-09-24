@@ -30,6 +30,8 @@
   #chat { position: fixed; left: 16px; bottom: 16px; width: min(420px, calc(100vw - 32px)); padding: 10px 14px; font: inherit; color: var(--text); border-radius: 12px; outline: none; }
   #hint { position: fixed; left: 16px; bottom: 22px; color: var(--dim); font-size: 12px; text-shadow: 0 1px 2px #000; }
   #chat:not([hidden]) ~ #hint { display: none; }
+  #empty { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); color: var(--dim); text-align: center; width: min(420px, calc(100vw - 32px)); }
+  #empty b { display: block; color: var(--text); font-size: 20px; margin-bottom: 6px; }
   #toasts { position: fixed; top: 70px; right: 16px; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
   .toast { padding: 10px 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(14px); animation: in .25s ease-out; max-width: 360px; }
   .toast.ok { border-color: color-mix(in srgb, var(--ok) 50%, transparent); } .toast.error { border-color: color-mix(in srgb, var(--err) 50%, transparent); }
@@ -61,6 +63,7 @@
   <input id="chat" class="panel" placeholder="Say something…" maxlength="300" autocomplete="off" hidden>
   <div id="hint">Enter to chat · Tab for menu</div>
   <div id="toasts"></div>
+  <div id="empty" hidden><b>Nothing exists yet.</b> Press Tab, connect your Claude, and ask it for ground to stand on.</div>
 </div>
 
 <div id="join" class="overlay" hidden>
@@ -87,7 +90,7 @@
     <ul id="menu-players"></ul>
     <h2>Mods</h2>
     <ul id="menu-mods"></ul>
-    <div class="row"><button id="menu-close" class="primary">Back to the game</button></div>
+    <div class="row"><button id="menu-close" class="primary">Back to the game</button><button id="main-menu" hidden>Main menu</button></div>
   </div>
 </div>
 <script type="module" src="/client.js"></script>

@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sandbox</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='5' y='5' width='22' height='22' rx='5' fill='%23ffb547'/></svg>">
+<style>
+  :root { --line: rgba(255,255,255,.12); --text: #eef2f7; --dim: #9aa6b5; --accent: #ffb547; --err: #ff6b6b; --ok: #5fd68a; --card: rgba(255,255,255,.04); }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { background: #0b0f16 radial-gradient(circle at 30% 10%, #1d2a3d, #0b0f16 70%) fixed; }
+  body { margin: 0; min-height: 100vh; padding: 48px 16px; color: var(--text); font: 15px/1.45 Inter, system-ui, sans-serif; }
+  main { width: min(760px, 100%); margin: 0 auto; display: grid; gap: 28px; }
+  h1 { font-size: 40px; margin: 0; letter-spacing: -.02em; } .lead { color: var(--dim); margin: 6px 0 0; }
+  h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 22px; }
+  input[type=text] { width: 100%; font: inherit; font-size: 17px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.06); color: var(--text); outline: none; }
+  input[type=text]:focus { border-color: var(--accent); }
+  .choices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
+  @media (max-width: 560px) { .choices { grid-template-columns: 1fr; } }
+  label.choice { padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
+  label.choice:has(input:checked) { border-color: var(--accent); background: rgba(255,181,71,.08); }
+  label.choice input { margin: 0 8px 0 0; accent-color: var(--accent); } label.choice span { display: block; color: var(--dim); font-size: 13px; margin: 4px 0 0 22px; }
+  .setting { margin-top: 18px; }
+  button { font: inherit; color: var(--text); background: rgba(255,255,255,.08); border: 1px solid var(--line); border-radius: 10px; padding: 9px 16px; cursor: pointer; white-space: nowrap; }
+  button:hover { background: rgba(255,255,255,.14); } button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); color: #1a1204; border: 0; font-weight: 700; }
+  button.danger { color: var(--err); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 0; }
+  .error { color: var(--err); min-height: 1.4em; margin-top: 10px; }
+  .world { display: flex; gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+  .world:first-of-type { border-top: 0; }
+  .world b { display: block; font-size: 16px; } .meta { color: var(--dim); font-size: 13px; }
+  .live { color: var(--ok); font-weight: 700; }
+  .link { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .link span { width: 110px; color: var(--dim); font-size: 13px; flex: none; }
+  code { flex: 1; min-width: 0; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(0,0,0,.35); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; overflow-x: auto; white-space: nowrap; }
+  .toggle { display: flex; gap: 10px; align-items: center; margin-top: 14px; cursor: pointer; } .toggle input { accent-color: var(--accent); width: 18px; height: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Sandbox</h1>
+    <p class="lead">Start with an empty world. Your friends' Claudes build the game live while everyone plays.</p>
+  </header>
+
+  <section id="guest" hidden>
+    <h2>No game running</h2>
+    <p class="meta">The host starts a world from their main menu. This page joins it as soon as it's up.</p>
+  </section>
+
+  <section id="hosting" hidden>
+    <h2>Now hosting</h2>
+    <div class="row"><b id="hosting-name" class="grow" style="font-size:20px"></b><button id="stop" class="danger">Stop</button><button id="play" class="primary">Play</button></div>
+    <h2 style="margin-top:20px">Invite friends</h2>
+    <div class="link"><span>Same Wi-Fi</span><code id="link-lan"></code><button data-copy="link-lan">Copy</button></div>
+    <label class="toggle"><input type="checkbox" id="share"> Share over the internet (free Cloudflare tunnel, no port forwarding)</label>
+    <div class="link" id="public" hidden><span>Internet</span><code id="link-public"></code><button data-copy="link-public">Copy</button></div>
+    <div id="share-error" class="error"></div>
+  </section>
+
+  <section id="new" hidden>
+    <h2>New game</h2>
+    <form id="new-form">
+      <input type="text" id="name" placeholder="World name" maxlength="40" autocomplete="off">
+      <div class="setting"><h2>House rules</h2>
+        <div class="choices">
+          <label class="choice"><input type="radio" name="rules" value="open" checked><b>Open</b><span>Anyone's Claude can change or remove any mod.</span></label>
+          <label class="choice"><input type="radio" name="rules" value="additive"><b>Additive</b><span>You can only add. Answer an attack with a counter-mod.</span></label>
+        </div>
+      </div>
+      <div class="setting"><h2>Start with</h2>
+        <div class="choices">
+          <label class="choice"><input type="radio" name="start" value="basics" checked><b>An empty field</b><span>Ground, sky and walking. Everything else is up to you.</span></label>
+          <label class="choice"><input type="radio" name="start" value="blank"><b>Nothing at all</b><span>Not even ground. Your Claudes build physics too.</span></label>
+        </div>
+      </div>
+      <div class="row" style="margin-top:20px"><button class="primary" type="submit">Create and host</button></div>
+      <div id="new-error" class="error"></div>
+    </form>
+  </section>
+
+  <section id="saved" hidden>
+    <h2>Your worlds</h2>
+    <div id="worlds"></div>
+    <div id="worlds-error" class="error"></div>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const hashKey = new URLSearchParams(location.hash.slice(1)).get("key");
+  if (hashKey) {
+    localStorage.setItem("sandbox-menu", hashKey);
+    history.replaceState(null, "", "/menu");
+  }
+  const key = localStorage.getItem("sandbox-menu");
+  let state = null;
+
+  async function api(action, body) {
+    const res = await fetch(`/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    render((state = data));
+    return data;
+  }
+
+  const ago = (ms) => {
+    const m = Math.round((Date.now() - ms) / 60000);
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+  };
+
+  function render(s) {
+    const r = s.running;
+    $("hosting").hidden = !r;
+    if (r) {
+      $("hosting-name").textContent = r.name;
+      $("link-lan").textContent = `${s.lan ?? location.origin}/#invite=${r.invite}`;
+      $("share").checked = !!s.tunnel;
+      $("public").hidden = !s.tunnel;
+      $("link-public").textContent = s.tunnel?.url ? `${s.tunnel.url}/#invite=${r.invite}` : "Opening a tunnel…";
+    }
+    $("saved").hidden = !s.worlds.length;
+    $("worlds").replaceChildren(...s.worlds.map((w) => {
+      const row = document.createElement("div");
+      row.className = "world";
+      const isLive = r?.id === w.id;
+      const mods = w.mods === 1 ? "1 mod" : `${w.mods} mods`;
+      const players = w.players === 1 ? "1 player" : `${w.players} players`;
+      row.innerHTML = `<div class="grow"><b></b><div class="meta"></div></div>`;
+      row.querySelector("b").textContent = w.name;
+      row.querySelector(".meta").textContent = `${w.rules} · ${mods} · ${players} · ${isLive ? "" : `played ${ago(w.played)}`}`.replace(/ · $/, "");
+      if (isLive) row.querySelector(".meta").prepend(Object.assign(document.createElement("span"), { className: "live", textContent: "Hosting now · " }));
+      const del = Object.assign(document.createElement("button"), { className: "danger", textContent: "Delete", disabled: isLive, title: isLive ? "Stop it first" : "" });
+      del.onclick = () => confirm(`Delete ${w.name} forever? Its mods, database and history are removed.`) && api("delete", { id: w.id }).catch((e) => ($("worlds-error").textContent = e.message));
+      const play = Object.assign(document.createElement("button"), { className: isLive ? "" : "primary", textContent: isLive ? "Play" : "Host" });
+      play.onclick = () => hostWorld(w.id);
+      row.append(del, play);
+      return row;
+    }));
+  }
+
+  async function hostWorld(id) {
+    if (state.running && state.running.id !== id && !confirm(`Stop ${state.running.name} for everyone playing it?`)) return;
+    try {
+      const s = await api("host", { id });
+      play(s);
+    } catch (e) {
+      $("worlds-error").textContent = e.message;
+    }
+  }
+  const play = (s) => location.assign(`/#invite=${s.running.hostKey}`);
+
+  $("play").onclick = () => play(state);
+  $("stop").onclick = () => confirm(`Stop ${state.running.name}? Everyone playing is sent back to the menu.`) && api("stop", {});
+  $("share").onchange = (e) => {
+    $("share-error").textContent = "";
+    api("share", { on: e.target.checked }).catch((err) => {
+      e.target.checked = false;
+      $("share-error").textContent = err.message;
+    });
+  };
+  $("new-form").onsubmit = async (e) => {
+    e.preventDefault();
+    if (state.running && !confirm(`Stop ${state.running.name} for everyone playing it?`)) return;
+    const form = new FormData(e.target);
+    try {
+      play(await api("create", { name: $("name").value, rules: form.get("rules"), start: form.get("start") }));
+    } catch (err) {
+      $("new-error").textContent = err.message;
+    }
+  };
+  for (const button of document.querySelectorAll("[data-copy]"))
+    button.onclick = async () => {
+      await navigator.clipboard.writeText($(button.dataset.copy).textContent);
+      button.textContent = "Copied";
+      setTimeout(() => (button.textContent = "Copy"), 1500);
+    };
+
+  if (!key) {
+    $("guest").hidden = false;
+    setInterval(async () => (await fetch("/api/info")).ok && location.assign("/"), 2000);
+  } else {
+    $("new").hidden = false;
+    api("state").catch((e) => {
+      localStorage.removeItem("sandbox-menu");
+      location.reload();
+    });
+    setInterval(() => state?.tunnel && !state.tunnel.url && api("state"), 1500);
+  }
+</script>
+</body>
+</html>
