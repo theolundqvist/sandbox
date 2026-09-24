@@ -76,8 +76,12 @@ export interface ClientCtx {
   use<T = any>(mod: string): T;
   /** URL of a file added with add_asset: ctx.asset("dragon.glb") for this mod's, ctx.asset("other-mod/dragon.glb") for another's. */
   asset(name: string): string;
-  /** Adds a tab to the game menu (Tab) and returns its empty content element; it is removed when this mod is reloaded or removed. */
+  /** Your block in the game menu (Tab) tab with this title, which is created if no tab has it. Extend the engine's "Game", "Builders", "Mods" and "Help" tabs or another mod's tab by using its title. Removed when this mod reloads. */
   menuTab(title: string): HTMLElement;
+  /** Your element in one of the engine's screen areas, where every mod's elements stack instead of overlapping: "left" (middle of the left edge), "right" (bottom right, growing up), "bottom" (bottom centre, growing up). Removed when this mod reloads. */
+  hud(area: "left" | "right" | "bottom"): HTMLElement;
+  /** Offers an action on E. The engine shows one prompt for the nearest available action of any mod, and E (or tapping the prompt) runs only that one. `distance` returns how far the player is from it, or null while it is out of reach. Returns a function that withdraws it; reloading withdraws it too. */
+  interact(action: { label: string | (() => string); distance(): number | null; run(): void }): () => void;
 }
 
 export interface ClientHooks {

@@ -3,7 +3,7 @@ import type { Entity } from "./api";
 import { basename, join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { createMcp, GAME_MASTER, type Task } from "./mcp";
-import { Mods } from "./mods";
+import { ENGINE_KEYS, Mods } from "./mods";
 import { SimHost } from "./simhost";
 import { changes, openStore } from "./world";
 
@@ -203,6 +203,7 @@ const status = () => ({
     return { name, author: m.author, version: m.version, server: !!m.build.server, client: !!m.build.client, about: about[name], usedBy: mods.users(name), love: v?.love.size ?? 0, undo: v?.undo.size ?? 0 };
   }),
   undoNeeded: Math.floor(sockets.size / 2) + 1,
+  controls: { engineKeys: ENGINE_KEYS, ...mods.controls() },
   entities: sim.entities.size,
   recent: feedLog.slice(-15).map((f) => f.text),
 });

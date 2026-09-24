@@ -11,6 +11,12 @@ export type ModEvents = {
 };
 
 const MOD_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+const KEY_CODE = /(?:[=!]==?\s*|\.has\(\s*|case\s+)["'`](Key[A-Z]|Digit[0-9]|F[0-9]{1,2}|Arrow(?:Up|Down|Left|Right)|Tab|Enter|Escape|Backquote|Backspace|CapsLock|Minus|Equal|Bracket(?:Left|Right)|Semicolon|Quote|Comma|Period|Slash|Backslash|Numpad\w+|(?:Control|Alt|Meta)(?:Left|Right)|Space|Shift(?:Left|Right)?)["'`]/g;
+const MENU_TAB = /menuTab\(\s*["'`]([^"'`]+)["'`]/g;
+/** Keys the engine itself handles. */
+export const ENGINE_KEYS: Record<string, string> = { Tab: "the game menu", Enter: "chat", KeyT: "push to talk", KeyE: "interact prompts from ctx.interact" };
+/** Keys many mods read on purpose (moving, steering, closing their own window), so sharing them is not an overlap. */
+const SHARED_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Shift", "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "Escape"]);
 const TSC = join(import.meta.dir, "../node_modules/.bin/tsc");
 
 export class Mods {
@@ -103,7 +109,34 @@ export class Mods {
     const ms = Math.round(performance.now() - started);
     this.events.feed(`${who} reloaded ${name} v${version}`, "ok");
     const warning = loadError ? `\nBut its load hook threw on the live world:\n${loadError}` : "";
-    return { ok: true, report: `${name} v${version} is live for everyone (${ms} ms).${warning}\nWatch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.` };
+    return { ok: true, report: `${name} v${version} is live for everyone (${ms} ms).${warning}${this.overlaps(name)}\nWatch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.` };
+  }
+
+  /** Which live mods read which keys and fill which menu tabs, found in their client code. */
+  controls() {
+    const keys: Record<string, string[]> = {};
+    const menus: Record<string, string[]> = {};
+    for (const name of this.running.keys()) {
+      const dir = join(this.root, "mods", name);
+      if (!existsSync(dir)) continue;
+      const code = readdirSync(dir).filter((f) => f.endsWith(".ts") && f !== "server.ts").map((f) => readFileSync(join(dir, f), "utf8")).join("\n");
+      for (const key of new Set([...code.matchAll(KEY_CODE)].map((m) => m[1]!))) (keys[key] ??= []).push(name);
+      for (const title of new Set([...code.matchAll(MENU_TAB)].map((m) => m[1]!))) (menus[title] ??= []).push(name);
+    }
+    return { keys, menus };
+  }
+
+  /** Keys this mod reads that the engine or another mod already uses, as advice for whoever just reloaded it. */
+  private overlaps(name: string) {
+    const lines: string[] = [];
+    for (const [key, users] of Object.entries(this.controls().keys)) {
+      if (!users.includes(name) || SHARED_KEYS.has(key)) continue;
+      const others = users.filter((u) => u !== name);
+      if (key === "KeyE") lines.push("- KeyE: the engine owns E. Offer the action with ctx.interact instead, so players get one prompt for the nearest thing and E never fires two mods.");
+      else if (ENGINE_KEYS[key]) lines.push(`- ${key}: the engine uses it for ${ENGINE_KEYS[key]}. Pick another key.`);
+      else if (others.length) lines.push(`- ${key}: also used by ${others.join(", ")}. Pick a free key (status lists every key in use), or share the feature through that mod's exports.`);
+    }
+    return lines.length ? `\nControls that overlap, fix these:\n${lines.join("\n")}` : "";
   }
 
   private fail(name: string, who: string, report: string) {

@@ -236,7 +236,8 @@ function applyTick({ reset, set, unset, removed, events }: Tick) {
 }
 
 // ---------- mods ----------
-type Loaded = { name: string; url: string; mod: ClientMod; ctx: ClientCtx; errors: number; ms: number; tabs: HTMLElement[] };
+type Action = Parameters<ClientCtx["interact"]>[0];
+type Loaded = { name: string; url: string; mod: ClientMod; ctx: ClientCtx; errors: number; ms: number; owned: HTMLElement[]; actions: Set<Action> };
 const mods = new Map<string, Loaded>();
 let ordered: Loaded[] = [];
 const keys = new Set<string>();
@@ -297,9 +298,9 @@ async function loadMod(name: string, url: string | null) {
   }
   if (old) {
     call(old, "dispose");
-    for (const el of old.tabs) el.remove();
-    if (old.tabs.some((el) => el.classList.contains("active"))) showTab("game");
+    for (const el of old.owned) el.remove();
     mods.delete(name);
+    pruneTabs();
   }
   if (!mod || !url) {
     reorder();
@@ -318,24 +319,98 @@ async function loadMod(name: string, url: string | null) {
     use,
     asset: (file) => `/assets/${file.includes("/") ? file : `${name}/${file}`}`,
     menuTab: (title) => {
-      const id = `${name}:${world}`;
-      const button = Object.assign(document.createElement("button"), { textContent: title });
-      const section = document.createElement("section");
-      button.dataset.tab = section.dataset.tab = id;
-      section.hidden = true;
-      button.onclick = () => showTab(id);
-      $("tabs").insertBefore(button, $("tabs").querySelector("[data-tab=help]"));
-      $("menu").querySelector("section[data-tab=help]")!.before(section);
-      loaded.tabs.push(button, section);
-      return section;
+      const block = document.createElement("div");
+      menuSection(title).append(block);
+      loaded.owned.push(block);
+      return block;
+    },
+    hud: (area) => {
+      const el = document.createElement("div");
+      $(`hud-${area}`).append(el);
+      loaded.owned.push(el);
+      return el;
+    },
+    interact: (action) => {
+      loaded.actions.add(action);
+      return () => void loaded.actions.delete(action);
     },
   };
-  const loaded: Loaded = { name, url, mod, ctx, errors: 0, ms: 0, tabs: [] };
+  const loaded: Loaded = { name, url, mod, ctx, errors: 0, ms: 0, owned: [], actions: new Set() };
   mods.set(name, loaded);
   reorder();
   call(loaded, "init");
   if (mod.object || old?.mod.object) rebuildAll();
 }
+
+/** The section of the menu tab with this title; mods share tabs by title, and a tab no mod fills any more goes away. */
+const CORE_TABS = ["game", "builders", "mods", "help"];
+let tabSeq = 0;
+function menuSection(title: string) {
+  let button = [...$("tabs").querySelectorAll<HTMLElement>("button")].find((b) => b.textContent!.trim().toLowerCase() === title.trim().toLowerCase());
+  if (!button) {
+    const id = `tab-${++tabSeq}`;
+    button = Object.assign(document.createElement("button"), { textContent: title });
+    const section = document.createElement("section");
+    button.dataset.tab = section.dataset.tab = id;
+    section.hidden = true;
+    button.onclick = () => showTab(id);
+    $("tabs").insertBefore(button, $("tabs").querySelector("[data-tab=help]"));
+    $("menu").querySelector("section[data-tab=help]")!.before(section);
+  }
+  return $("menu").querySelector<HTMLElement>(`section[data-tab="${button.dataset.tab}"]`)!;
+}
+function pruneTabs() {
+  for (const section of $("menu").querySelectorAll<HTMLElement>("section[data-tab]")) {
+    const tab = section.dataset.tab!;
+    if (CORE_TABS.includes(tab) || section.childElementCount) continue;
+    const button = $("tabs").querySelector<HTMLElement>(`[data-tab="${tab}"]`);
+    if (button?.classList.contains("active")) showTab("game");
+    button?.remove();
+    section.remove();
+  }
+}
+
+/** One E prompt for the whole game: the nearest action any mod offers. */
+function nearestAction() {
+  let best: { mod: Loaded; action: Action } | null = null;
+  let bestDistance = Infinity;
+  for (const mod of mods.values())
+    for (const action of mod.actions) {
+      let d: number | null = null;
+      try {
+        d = action.distance();
+      } catch (e: any) {
+        mod.actions.delete(action);
+        send({ t: "error", mod: mod.name, text: `interact distance(): ${e?.stack ?? e}` });
+      }
+      if (d !== null && d < bestDistance) [best, bestDistance] = [{ mod, action }, d];
+    }
+  return best;
+}
+function runAction() {
+  const near = nearestAction();
+  if (!near) return;
+  try {
+    near.action.run();
+  } catch (e: any) {
+    send({ t: "error", mod: near.mod.name, text: `interact run(): ${e?.stack ?? e}` });
+  }
+}
+function showAction() {
+  let near = menu.hidden && palette.hidden ? nearestAction() : null;
+  let label = "";
+  try {
+    label = near ? (typeof near.action.label === "function" ? near.action.label() : near.action.label) : "";
+  } catch (e: any) {
+    near!.mod.actions.delete(near!.action);
+    send({ t: "error", mod: near!.mod.name, text: `interact label(): ${e?.stack ?? e}` });
+    near = null;
+  }
+  $("interact").hidden = !near;
+  const span = $("interact").querySelector("span")!;
+  if (span.textContent !== label) span.textContent = label;
+}
+$("interact").onclick = runAction;
 
 // ---------- network ----------
 function connect() {
@@ -618,6 +693,7 @@ addEventListener("keydown", (e: KeyboardEvent) => {
   }
   if (e.code === "Escape" && !typing() && !menu.hidden) return closeMenu();
   if (e.code === "KeyT" && !typing() && menu.hidden) return startTalking();
+  if (e.code === "KeyE" && !e.repeat && !typing() && menu.hidden) runAction();
   if (!typing()) keys.add(e.code);
 });
 addEventListener("keyup", (e: KeyboardEvent) => {
@@ -907,6 +983,7 @@ renderer.setAnimationLoop(() => {
     if (e.rot) obj.rotation.set(e.rot[0] ?? 0, e.rot[1] ?? 0, e.rot[2] ?? 0);
   }
   for (const m of ordered) call(m, "frame", dt);
+  showAction();
   if (replaying) {
     const a = now * 0.00015;
     camera.position.set(Math.cos(a) * orbit * 1.4, orbit * 0.8, Math.sin(a) * orbit * 1.4);
