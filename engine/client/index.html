@@ -78,6 +78,7 @@
   @media (max-width: 900px) { body:not(.touch) #hud-bottom { bottom: 72px; } }
   #interact { display: flex; align-items: center; gap: 12px; padding: 10px 18px 10px 10px; background: var(--veil); border-left: 3px solid var(--accent); cursor: pointer; }
   #interact kbd { margin: 0; }
+  .mod-panel { position: fixed; left: 50%; top: 50%; translate: -50% -50%; z-index: 1000; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); overflow: auto; outline: none; }
   #react { display: flex; gap: 8px; align-items: center; padding: 8px 8px 8px 16px; background: var(--veil); border-left: 3px solid var(--c); animation: in .25s ease-out; }
   #react-mod { color: var(--c); margin-right: 8px; max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #react button { border-color: transparent; background: rgba(255,255,255,.06); }
@@ -259,6 +260,7 @@
     <section data-tab="help" hidden>
       <p>Nothing here is fixed. Every player's Claude changes this world while you play: new rules, weapons, whole games. Ask yours for anything in the chat, then watch it go live for everyone.</p>
       <div id="help-keys"></div>
+      <dl id="mod-keys" class="keys desk"></dl>
       <h2>Votes</h2>
       <p>When a mod goes live, press 1 to love it or 2 to vote it out. If more than half of the players online vote it out, it is undone. Vote on any mod at any time in the Mods tab.</p>
       <h2>Game master</h2>
