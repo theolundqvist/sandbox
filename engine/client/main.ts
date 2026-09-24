@@ -55,18 +55,9 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color("#9fc7e8");
-scene.fog = new THREE.Fog("#9fc7e8", 60, 220);
 const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
 camera.position.set(0, 10, 16);
 camera.lookAt(0, 0, 0);
-scene.add(new THREE.HemisphereLight("#ffffff", "#5b6b4a", 1.4));
-const sun = new THREE.DirectionalLight("#fff4e0", 2.2);
-sun.position.set(30, 50, 20);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -60, right: 60, top: 60, bottom: -60, far: 200 });
-scene.add(sun);
 
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
@@ -80,6 +71,7 @@ resize();
 const entities = new Map<number, Entity>();
 const objects = new Map<number, THREE.Object3D>();
 const looks = new Map<number, string>();
+const custom = new Set<THREE.Object3D>();
 
 function geometry(shape: string, size: number[]) {
   const [x = 1, y = x, z = x] = size;
@@ -117,7 +109,20 @@ function labelSprite(text: string) {
   return sprite;
 }
 
-function build(e: Entity) {
+function build(id: number, e: Entity) {
+  for (const m of [...ordered].reverse()) {
+    if (!m.mod.object) continue;
+    let made: THREE.Object3D | null | undefined | void;
+    guarded(m, "object", () => (made = m.mod.object!(m.ctx, id, e)));
+    if (made) {
+      custom.add(made);
+      return made;
+    }
+  }
+  return defaultObject(e);
+}
+
+function defaultObject(e: Entity) {
   const group = new THREE.Group();
   if (e.mesh) {
     const size = typeof e.mesh.size === "number" ? [e.mesh.size] : (e.mesh.size ?? [1]);
@@ -142,8 +147,10 @@ function build(e: Entity) {
   return group;
 }
 
+// Objects from a mod's object hook may share geometry and materials, so only the mod may free them.
 function dispose(obj: THREE.Object3D) {
   scene.remove(obj);
+  if (custom.delete(obj)) return;
   obj.traverse((o: any) => {
     o.geometry?.dispose();
     o.material?.map?.dispose();
@@ -153,23 +160,30 @@ function dispose(obj: THREE.Object3D) {
 
 function syncObject(id: number, e: Entity | undefined, snap: boolean) {
   const old = objects.get(id);
-  if (!e || !e.pos || (!e.mesh && !e.label)) {
+  if (!e || !e.pos) {
     if (old) dispose(old);
     objects.delete(id);
     looks.delete(id);
     return;
   }
-  const look = JSON.stringify([e.mesh, e.label]);
+  const look = JSON.stringify([e.mesh, e.label, e.look]);
   let obj = old;
   if (!obj || looks.get(id) !== look) {
     if (old) dispose(old);
-    obj = build(e);
+    obj = build(id, e);
     obj.position.fromArray(e.pos);
     scene.add(obj);
     objects.set(id, obj);
     looks.set(id, look);
   }
   if (snap) obj.position.fromArray(e.pos);
+}
+
+function rebuildAll() {
+  for (const [id, e] of entities) {
+    looks.delete(id);
+    syncObject(id, e, true);
+  }
 }
 
 function applyEntities(set: Record<string, Entity>, removed: number[] = []) {
@@ -237,12 +251,16 @@ async function loadMod(name: string, url: string | null) {
     call(old, "dispose");
     mods.delete(name);
   }
-  if (!mod || !url) return reorder();
+  if (!mod || !url) {
+    reorder();
+    return rebuildAll();
+  }
   const ctx: ClientCtx = { THREE, scene, camera, renderer, entities, objects, playerId: me, keys, send: (msg) => send({ t: "m", mod: name, msg }) };
   const loaded: Loaded = { name, url, mod, ctx, errors: 0 };
   mods.set(name, loaded);
   reorder();
   call(loaded, "init");
+  if (mod.object || old?.mod.object) rebuildAll();
 }
 
 // ---------- network ----------
@@ -348,7 +366,9 @@ async function openMenu() {
   keys.clear();
   menu.hidden = false;
   $("invite-link").textContent = `${location.origin}/#invite=${invite}`;
-  $("claude-command").textContent = `claude mcp add --transport http ${slug(world)} ${location.origin}/mcp --header "Authorization: Bearer ${key}"`;
+  const name = slug(world);
+  const prompt = `We're playing ${world.replace(/['"`$\\]/g, "")} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I'm ${me} in the game. You're connected to the game server through the ${name} MCP tools, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Start with the status tool and read GUIDE.md, then tell me in a few lines what the world has so far and suggest three things we could build next.`;
+  $("claude-command").textContent = `claude mcp add -s user --transport http ${name} ${location.origin}/mcp --header "Authorization: Bearer ${key}"; claude '${prompt}'`;
   const status = await (await fetch("/api/status", { headers: { authorization: `Bearer ${key}` } })).json();
   $("menu-players").replaceChildren(...status.online.map((p: string) => Object.assign(document.createElement("li"), { textContent: p === me ? `${p} (you)` : p })));
   $("menu-mods").replaceChildren(
@@ -385,7 +405,13 @@ renderer.setAnimationLoop(() => {
     if (e.rot) obj.rotation.set(e.rot[0] ?? 0, e.rot[1] ?? 0, e.rot[2] ?? 0);
   }
   for (const m of ordered) call(m, "frame", dt);
-  renderer.render(scene, camera);
+  let draw = () => renderer.render(scene, camera);
+  for (const m of ordered) {
+    if (!m.mod.render) continue;
+    const inner = draw;
+    draw = () => guarded(m, "render", () => m.mod.render!(m.ctx, inner, dt));
+  }
+  draw();
 });
 
 await start();

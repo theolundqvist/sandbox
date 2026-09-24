@@ -54,6 +54,15 @@ export default {
 } satisfies ClientMod;
 ```
 
+Client mods own everything the player sees and can restyle all of it: the sky, fog and lights live in `basics` and can be changed from any mod through `ctx.scene`. Two more hooks give full control over rendering:
+
+```ts
+render(ctx, draw, dt) { draw(); /* or composer.render(), a second camera, a shader pass... */ },
+object(ctx, id, entity) { if (entity.look?.model) return myLoadedModel.clone(); },  // draw this entity your way
+```
+
+`render` wraps the final draw of each frame the same way `wrap` does, with higher `order` outermost. `object` lets you replace how any entity looks; the highest `order` mod that returns something wins, and entities are rebuilt when their `mesh`, `label` or `look` component changes, so keep custom appearance data in `look`.
+
 `ctx.entities` is the live replicated world, `ctx.playerId` is this player, `ctx.keys` holds pressed key codes. The engine's own HUD takes the top 70 px, the top-right corner below it for notifications, and the bottom-left corner for chat, so put your DOM elsewhere.
 
 ## Power over other mods

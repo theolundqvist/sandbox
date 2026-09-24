@@ -65,6 +65,10 @@ export interface ClientHooks {
   frame?(ctx: ClientCtx, dt: number): void;
   /** Undo everything init added: the new version's init runs right after. */
   dispose?(ctx: ClientCtx): void;
+  /** Wraps the final draw of each frame: call draw() or replace it (post-processing, shaders, split-screen). */
+  render?(ctx: ClientCtx, draw: () => void, dt: number): void;
+  /** Return your own Object3D to draw this entity, or nothing to leave it to others. Highest `order` asks first. */
+  object?(ctx: ClientCtx, id: number, entity: Entity): THREE.Object3D | null | undefined | void;
 }
 
 type ClientWrapped = { [K in keyof ClientHooks]?: (next: (...args: any[]) => void, ctx: ClientCtx, ...args: any[]) => void };

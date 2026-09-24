@@ -1,5 +1,8 @@
 import type { ClientMod } from "../../api";
 
+import type * as THREE from "three";
+
+let lights: THREE.Light[] = [];
 let yaw = 0;
 let pitch = 0.45;
 let distance = 14;
@@ -18,6 +21,17 @@ const noMenu = (e: Event) => e.preventDefault();
 
 export default {
   init(ctx) {
+    const { THREE, scene } = ctx;
+    scene.background = new THREE.Color("#9fc7e8");
+    scene.fog = new THREE.Fog("#9fc7e8", 60, 220);
+    const sun = new THREE.DirectionalLight("#fff4e0", 2.2);
+    sun.position.set(30, 50, 20);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left: -60, right: 60, top: 60, bottom: -60, far: 200 });
+    lights = [new THREE.HemisphereLight("#ffffff", "#5b6b4a", 1.4), sun];
+    scene.add(...lights);
+
     const canvas = ctx.renderer.domElement;
     canvas.addEventListener("pointerdown", onDown);
     addEventListener("pointerup", onUp);
@@ -27,6 +41,10 @@ export default {
   },
 
   dispose(ctx) {
+    ctx.scene.remove(...lights);
+    ctx.scene.background = null;
+    ctx.scene.fog = null;
+
     const canvas = ctx.renderer.domElement;
     canvas.removeEventListener("pointerdown", onDown);
     removeEventListener("pointerup", onUp);
