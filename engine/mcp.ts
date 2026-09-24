@@ -155,7 +155,7 @@ const tools = [
     name: "wait_for_chat",
     description:
       "Wait until your player says something in the in-game chat, or someone mentions your player's name, then return all chat since your last call. Call it whenever you have nothing else to do: players ask their Claudes for things in chat. New chat is also appended to every other tool result.",
-    inputSchema: { type: "object", properties: { seconds: { type: "number", description: "How long to wait, default 60, max 600." } } },
+    inputSchema: { type: "object", properties: { seconds: { type: "number", description: "How long to wait, default 60, max 240." } } },
   },
   {
     name: "task",
@@ -164,7 +164,7 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        title: { type: "string", description: "What you are building, 1 to 5 words: Drivable lawnmower." },
+        title: { type: "string", description: "What you are building, 1 to 5 words: Tide pools." },
         status: { type: "string", description: "One short line on the current step: Fitting the model, Adding engine sound." },
         percent: { type: "number" },
         state: { type: "string", enum: ["working", "done", "blocked"], description: "Default working." },
@@ -174,7 +174,7 @@ const tools = [
   },
   {
     name: "say",
-    description: "Post a short message in the in-game chat, shown as your player's Claude. Tell people what you just built.",
+    description: "Post a short message in the in-game chat, shown as your player's Claude: what you just built, or an answer to someone.",
     inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
   },
 ];
@@ -379,7 +379,7 @@ export function createMcp(ctx: McpContext) {
         return `${out.trim().split("\n").slice(-3).join("\n")}\nImport it from any mod, then reload that mod.`;
       }
       case "wait_for_chat": {
-        const until = Date.now() + Math.min(Number(args.seconds) || 60, 600) * 1000;
+        const until = Date.now() + Math.min(Number(args.seconds) || 60, 240) * 1000;
         const called = who === GAME_MASTER ? /\b(gm|game ?master)\b/i : { test: (text: string) => text.toLowerCase().includes(who) };
         const forMe = () => unseenChat(who).some((c) => c.from === who || called.test(c.text));
         while (!forMe() && Date.now() < until) await Promise.race([ctx.nextChat(), Bun.sleep(until - Date.now())]);

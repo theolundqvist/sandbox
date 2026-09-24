@@ -914,7 +914,7 @@ const connectCommand = (prompt: (tools: string) => string, key: string | null, c
     return `claude ${shellQuote(prompt(`the ${name} MCP tools`))} --mcp-config ${shellQuote(JSON.stringify({ mcpServers: { [name]: { type: "http", url: `${base}/mcp`, headers: { Authorization: `Bearer ${key}` } } } }))} --allowedTools mcp__${name} Agent WebSearch WebFetch`;
   }
   const bin = `~/.local/bin/${command}`;
-  const tools = `the ${bin} command: run it alone to list its tools, call one as ${bin} <tool> name=value, and give wait_for_chat calls a Bash timeout of 600000`;
+  const tools = `the ${bin} command: run it alone to list its tools, call one as ${bin} <tool> name=value, and give wait_for_chat calls a Bash timeout of 300000`;
   return `mkdir -p ~/.local/bin && curl -fsS -H ${shellQuote(`Authorization: Bearer ${key}`)} ${shellQuote(`${base}/cli?name=${command}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin} && claude ${shellQuote(prompt(tools))} --allowedTools ${shellQuote(`Bash(${bin}:*)`)} Agent WebSearch WebFetch`;
 };
 for (const button of document.querySelectorAll<HTMLButtonElement>("[data-via]")) {
@@ -937,7 +937,7 @@ async function openMenu() {
   $("menu-world").textContent = world;
   $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;
   $("claude-command").textContent = connectCommand(
-    (tools) => `We are playing ${world} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through ${tools}, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Build everything like a real game, following the guide's Build it like a real game section: think about every part of quality (looks, feel, motion, sound, atmosphere, play, speed), find or build proper models and assets instead of boxes, and start parallel subagents, one per part, for anything bigger than a tweak. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and when I hold T or have the chat open my voice is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 590, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
+    (tools) => `We are playing ${world} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through ${tools}, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and when I hold T or have the chat open my voice is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 240, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
     key,
     slug(world),
   );
