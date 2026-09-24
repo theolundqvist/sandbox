@@ -5,6 +5,8 @@ import type { ClientCtx, ClientHooks, ClientMod, Entity } from "../api";
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const hashParams = new URLSearchParams(location.hash.slice(1));
 
+// Through the relay the game lives at /r/<room>/; its own requests reach the room by cookie, but links and Claude need the full address.
+const origin = location.origin + (location.pathname.match(/^\/r\/[a-z0-9-]+/)?.[0] ?? "");
 const info = await (await fetch("/api/info")).json();
 const keyName = `sandbox-key:${info.id}`;
 let key = hashParams.get("key") ?? localStorage.getItem(keyName);
@@ -619,10 +621,10 @@ async function openMenu() {
   menu.hidden = false;
   replaying = false;
   if (document.pointerLockElement) document.exitPointerLock();
-  $("invite-link").textContent = `${location.origin}/#invite=${invite}`;
+  $("invite-link").textContent = `${origin}/#invite=${invite}`;
   const name = slug(world);
   const prompt = `We are playing ${world.replace(/['"`$\\]/g, "")} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through the ${name} MCP tools, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat: call wait_for_chat with seconds 600, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`;
-  $("claude-command").textContent = `claude '${prompt}' --mcp-config '${JSON.stringify({ mcpServers: { [name]: { type: "http", url: `${location.origin}/mcp`, headers: { Authorization: `Bearer ${key}` } } } })}' --allowedTools mcp__${name}`;
+  $("claude-command").textContent = `claude '${prompt}' --mcp-config '${JSON.stringify({ mcpServers: { [name]: { type: "http", url: `${origin}/mcp`, headers: { Authorization: `Bearer ${key}` } } } })}' --allowedTools mcp__${name}`;
   const status = await (await fetch("/api/status", { headers: { authorization: `Bearer ${key}` } })).json();
   $("menu-players").replaceChildren(...status.online.map((p: string) => Object.assign(document.createElement("li"), { textContent: p === me ? `${p} (you)` : p })));
   $("menu-mods").replaceChildren(

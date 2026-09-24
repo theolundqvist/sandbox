@@ -1,0 +1,13 @@
+services:
+  relay:
+    image: oven/bun:1
+    restart: unless-stopped
+    working_dir: /relay
+    command: bun relay.ts
+    environment:
+      RELAY_CLAIMS: /relay/data/claims.json
+    volumes:
+      - ./relay.ts:/relay/relay.ts:ro
+      - ./data:/relay/data
+    ports:
+      - 127.0.0.1:9100:9100

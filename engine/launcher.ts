@@ -12,13 +12,13 @@ const STATE = join(DATA, "launcher.json");
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 mkdirSync(WORLDS, { recursive: true });
-const state: { hostKey: string; hosting: string | null; sharing?: boolean } = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : { hostKey: token(), hosting: null };
+const state: { hostKey: string; hosting: string | null; sharing?: boolean; room?: string; relayToken?: string } = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : { hostKey: token(), hosting: null };
 const saveState = () => writeFileSync(STATE, JSON.stringify(state, null, 2));
 saveState();
 
 type Pipe = { target: string; upstream?: WebSocket; queue: string[] };
 let running: { id: string; proc: Subprocess; port: number } | null = null;
-let tunnel: { proc: Subprocess; url: string | null } | null = null;
+let tunnel: { ws: WebSocket; url: string | null } | null = null;
 let tunnelError: string | null = null;
 const players = new Set<ServerWebSocket<Pipe>>();
 
@@ -88,34 +88,71 @@ function create(body: any) {
   return id;
 }
 
+const RELAY = process.env.SANDBOX_RELAY ?? "https://play.lundqvistliss.com";
+
+/** Makes this machine reachable through the public relay, which forwards players' requests and sockets over one outbound connection. */
 function share(on: boolean) {
   if (!on) {
-    tunnel?.proc.kill();
+    const current = tunnel;
     tunnel = null;
+    current?.ws.close();
     return;
   }
   if (tunnel) return;
   tunnelError = null;
-  if (!Bun.which("cloudflared")) throw new Error("Sharing over the internet needs cloudflared: brew install cloudflared (or see developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads).");
-  const proc = Bun.spawn(["cloudflared", "tunnel", "--no-autoupdate", "--protocol", "http2", "--url", `http://localhost:${PORT}`], { stdout: "ignore", stderr: "pipe" });
-  const current = (tunnel = { proc, url: null as string | null });
-  let last = "";
-  (async () => {
-    let url: string | undefined;
-    for await (const chunk of proc.stderr) {
-      const text = new TextDecoder().decode(chunk);
-      last = text.trim().split("\n").at(-1) ?? last;
-      url ??= text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)?.[0];
-      if (url && text.includes("Registered tunnel connection")) current.url = url;
+  state.room ??= `${token().slice(0, 8)}`;
+  state.relayToken ??= token() + token();
+  saveState();
+  const ws = new WebSocket(`${RELAY.replace(/^http/, "ws")}/_host?room=${state.room}&token=${state.relayToken}`);
+  const current = (tunnel = { ws, url: null as string | null });
+  const local = new Map<number, { ws: WebSocket; queue: string[] }>();
+  const ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ t: "ping" })), 20_000);
+  const reply = (msg: object) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(msg));
+  ws.onopen = () => (current.url = `${RELAY}/r/${state.room}`);
+  ws.onmessage = async ({ data }) => {
+    const msg = JSON.parse(String(data));
+    if (msg.t === "req") {
+      try {
+        const res = await fetch(`http://127.0.0.1:${PORT}${msg.path}`, { method: msg.method, headers: msg.headers, body: msg.body && Buffer.from(msg.body, "base64"), redirect: "manual" });
+        const headers = Object.fromEntries([...res.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k)));
+        reply({ t: "res", id: msg.id, status: res.status, headers });
+        if (res.body) for await (const chunk of res.body) reply({ t: "chunk", id: msg.id, data: Buffer.from(chunk).toString("base64") });
+      } catch (e: any) {
+        reply({ t: "res", id: msg.id, status: 502, headers: { "content-type": "text/plain" } });
+        reply({ t: "chunk", id: msg.id, data: Buffer.from(String(e?.message ?? e)).toString("base64") });
+      }
+      reply({ t: "end", id: msg.id });
+    } else if (msg.t === "open") {
+      const upstream = new WebSocket(`ws://127.0.0.1:${PORT}${msg.path}`, { headers: msg.headers } as any);
+      const pipe = { ws: upstream, queue: [] as string[] };
+      local.set(msg.id, pipe);
+      upstream.onopen = () => {
+        for (const m of pipe.queue) upstream.send(m);
+        pipe.queue = [];
+      };
+      upstream.onmessage = (e) => reply({ t: "msg", id: msg.id, data: String(e.data) });
+      upstream.onclose = (e) => {
+        if (local.delete(msg.id)) reply({ t: "close", id: msg.id, code: e.code, reason: e.reason });
+      };
+    } else if (msg.t === "msg") {
+      const pipe = local.get(msg.id);
+      if (pipe?.ws.readyState === WebSocket.OPEN) pipe.ws.send(msg.data);
+      else pipe?.queue.push(msg.data);
+    } else if (msg.t === "close") {
+      const pipe = local.get(msg.id);
+      local.delete(msg.id);
+      pipe?.ws.close();
     }
-  })();
-  proc.exited.then(() => {
+  };
+  ws.onclose = (e) => {
+    clearInterval(ping);
+    for (const pipe of local.values()) pipe.ws.close();
     if (tunnel !== current) return;
     tunnel = null;
-    tunnelError = `The tunnel stopped: ${last.replace(/^\S+ (ERR|INF|WRN) /, "")}. Retrying in 10 seconds.`;
+    tunnelError = `Lost the connection to ${RELAY}${e.reason ? `: ${e.reason}` : ""}. Retrying in 5 seconds.`;
     console.error(tunnelError);
-    setTimeout(() => state.sharing && !tunnel && share(true), 10_000);
-  });
+    setTimeout(() => state.sharing && !tunnel && share(true), 5_000);
+  };
 }
 
 const lan = Object.values(networkInterfaces())
@@ -220,7 +257,7 @@ Bun.serve<Pipe>({
 
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, async () => {
-    tunnel?.proc.kill();
+    tunnel?.ws.close();
     await stop();
     process.exit(0);
   });
