@@ -94,6 +94,7 @@ const chatWaiters = new Set<() => void>();
 let chatSeq = 0;
 function chat(from: string, text: string, spoken?: boolean) {
   chatLog.push({ seq: ++chatSeq, from, text, spoken });
+  console.log(`[chat] ${from}${spoken ? " (voice)" : ""}: ${text}`);
   if (chatLog.length > 50) chatLog.shift();
   broadcast({ t: "chat", from, text, spoken });
   for (const wake of chatWaiters) wake();
@@ -365,6 +366,7 @@ const server = Bun.serve<Conn>({
       if (msg.t === "m") sim.send({ t: "msg", id: ws.data.name, mod: msg.mod, msg: msg.msg });
       else if (msg.t === "chat") chat(ws.data.name, String(msg.text).slice(0, 300));
       else if (msg.t === "voice") chat(ws.data.name, String(msg.text).slice(0, 300), true);
+      else if (msg.t === "mic") console.log(`[mic] ${ws.data.name}: ${String(msg.text).slice(0, 300)}`);
       else if (msg.t === "resync") sim.resync(ws.data.name);
       else if (msg.t === "react") react(ws.data.name, String(msg.mod), String(msg.kind));
       else if (msg.t === "shot") shots.get(msg.id)?.(String(msg.data));

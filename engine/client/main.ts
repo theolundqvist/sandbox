@@ -573,6 +573,8 @@ function setMic(on: boolean) {
     r.continuous = true;
     r.interimResults = false;
     r.lang = navigator.language;
+    const report = (text: string) => send({ t: "mic", text });
+    r.onstart = () => report(`listening (${navigator.userAgent.match(/(Edg|Chrome|Safari|Firefox)\/[\d.]+/g)?.join(" ") ?? navigator.userAgent})`);
     r.onresult = (e: any) => {
       micFailures = 0;
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -582,10 +584,12 @@ function setMic(on: boolean) {
     };
     // Browsers end recognition after silence or a minute of talk; restart until the player mutes, backing off when it keeps failing.
     r.onend = () => {
+      report("ended");
       if (!micOn) return void (micRecognizer = null);
       setTimeout(() => micOn && micRecognizer === r && r.start(), Math.min(250 * 2 ** micFailures, 10_000) - 250);
     };
     r.onerror = (e: any) => {
+      report(`error ${e.error}${e.message ? `: ${e.message}` : ""}`);
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
         setMic(false);
         toast("The microphone is blocked. Allow it in the browser's address bar, then turn the mic on.", "error");
