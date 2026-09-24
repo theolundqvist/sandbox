@@ -1,6 +1,7 @@
 import { toCanvas } from "html-to-image";
 import * as THREE from "three";
-import type { ClientCtx, ClientHooks, ClientMod, Entity } from "../api";
+import type { ClientCtx, ClientHooks, ClientMod, Entity, ReplayShot } from "../api";
+import { clock, isAvatar, plan, type Activity, type Plan, type Tick as Moment, type Shot } from "./director";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const hashParams = new URLSearchParams(location.hash.slice(1));
@@ -313,9 +314,9 @@ async function loadMod(name: string, url: string | null) {
     renderer,
     entities,
     objects,
-    playerId: me,
+    playerId: (replay && director.shot?.player) || me,
     keys,
-    send: (msg) => send({ t: "m", mod: name, msg }),
+    send: (msg) => !replay && send({ t: "m", mod: name, msg }),
     use,
     asset: (file) => `/assets/${file.includes("/") ? file : `${name}/${file}`}`,
     menuTab: (title) => {
@@ -451,7 +452,8 @@ function connect() {
         claudes.set(msg.name, { state: msg.state, task: msg.task });
         return showBuilders();
       case "tick":
-        return replaying || applyTick(msg);
+        if (!replay) applyTick(msg);
+        return;
       case "mod":
         return loadMod(msg.name, msg.url);
       case "shot":
@@ -473,7 +475,7 @@ function connect() {
         if (!menu.hidden) refreshMenu();
         return;
       case "chat":
-        return addLine(`${msg.from}${msg.spoken ? " (voice)" : ""}: ${msg.text}`, msg.from.endsWith("'s Claude") || msg.from === "Game master" ? "claude" : msg.spoken ? "chat spoken" : "chat");
+        return addLine(...chatLine(msg.from, msg.text, msg.spoken));
     }
   };
   ws.onclose = (e) => {
@@ -509,15 +511,17 @@ async function screenshot() {
 }
 
 // ---------- HUD ----------
-function addLine(text: string, kind = "info") {
+function addLine(text: string, kind = "info", feed = $("feed")) {
   const line = document.createElement("div");
   line.className = `line ${kind}`;
   line.textContent = text;
-  $("feed").append(line);
-  while ($("feed").children.length > 40) $("feed").firstElementChild!.remove();
-  $("feed").scrollTop = 1e9;
+  feed.append(line);
+  while (feed.children.length > 40) feed.firstElementChild!.remove();
+  feed.scrollTop = 1e9;
   return line;
 }
+const chatLine = (from: string, text: string, spoken?: boolean) =>
+  [`${from}${spoken ? " (voice)" : ""}: ${text}`, from.endsWith("'s Claude") || from === "Game master" ? "claude" : spoken ? "chat spoken" : "chat"] as const;
 
 /** After a mod arrives, players have 30 s to love it or vote it out. */
 let reacting = "";
@@ -543,34 +547,471 @@ function react(kind: string) {
 }
 for (const b of $("react").querySelectorAll<HTMLElement>("button")) b.onclick = () => react(b.dataset.kind!);
 
-/** Replays the last three hours from moments recorded every two seconds, then returns to the live world. */
-let replaying = false;
-let orbit = 30;
+/** The timelapse: the last three hours replayed tick by tick through the same pipeline as live play, directed as shots of where things were built. */
+type Replay = { frames: Moment[]; plan: Plan; at: number; clock: number; step: number; speed: number; playing: boolean; free: boolean; ended: number; fog: THREE.Scene["fog"]; far: number };
+let replay: Replay | null = null;
+const SPEEDS = [0.5, 1, 2, 4];
+/** `orbiting` is whether the engine's camera frames the shot, rather than a mod's replay hook or the game's own camera. */
+const director = { shot: null as Shot | null, started: 0, angle: 0, focus: new THREE.Vector3(), distance: 30, cut: true, orbiting: true };
+const freeCam = { yaw: 0, pitch: 0.6, distance: 60, pointers: new Map<number, { x: number; y: number }>() };
+const replayKeys = new Set<string>();
+const replayLayer = new THREE.Group();
+const trails = new Map<string, { id: number; tag: THREE.Sprite; dots: THREE.Points; past: number[] }>();
+let marks: THREE.Points | null = null;
+const TRAIL = 16;
+
 $("timelapse").onclick = async () => {
-  closeMenu();
-  const frames: (Tick & { at: number })[] = await (await fetch("/api/timelapse", { headers: { authorization: `Bearer ${key}` } })).json();
-  if (!frames.length) return toast("Nothing to replay yet: the world records a moment every two seconds.");
-  replaying = true;
-  $("replay").hidden = false;
-  const step = Math.min(400, Math.max(50, 40_000 / frames.length));
-  for (const f of frames) {
-    if (!replaying) break;
-    $("replay-time").textContent = new Date(f.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    applyTick(f);
-    const spots = [...entities.values()].flatMap((e) => (Array.isArray(e.pos) ? [Math.hypot(e.pos[0] ?? 0, e.pos[2] ?? 0)] : []));
-    orbit = Math.min(150, Math.max(20, spots.sort((a, b) => a - b)[Math.floor(spots.length * 0.9)] ?? 20));
-    await new Promise((r) => setTimeout(r, step));
+  const button = $<HTMLButtonElement>("timelapse");
+  button.disabled = true;
+  button.textContent = "Loading…";
+  try {
+    const res = await fetch("/api/timelapse", { headers: { authorization: `Bearer ${key}` } });
+    if (!res.ok) return toast(`The timelapse didn't load: the server answered ${res.status}. Try again in a moment.`, "error");
+    const frames: Moment[] = await res.json();
+    if (frames.length < 2) return toast("Nothing to replay yet: the world records a moment every two seconds, so come back in a minute.");
+    startReplay(frames);
+  } catch (e: any) {
+    console.error(e);
+    return toast(e instanceof TypeError ? "The timelapse didn't load: the server can't be reached. Try again in a moment." : "The timelapse couldn't be played. Try again in a moment.", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Timelapse";
   }
-  replaying = false;
-  $("replay").hidden = true;
-  send({ t: "resync" });
+  menu.hidden = true;
 };
 
+function startReplay(frames: Moment[]) {
+  // About 70 s at normal speed, and shots of about 4 s.
+  const step = Math.min(400, Math.max(50, 70_000 / frames.length));
+  const planned = plan(frames, Math.max(1, Math.round(4000 / step)));
+  keys.clear();
+  replay = { frames, plan: planned, at: 0, clock: 0, step, speed: 1, playing: true, free: false, ended: 0, fog: scene.fog, far: camera.far };
+  document.body.classList.add("replaying");
+  for (const id of ["replay", "replay-bar", "replay-feed"]) $(id).hidden = false;
+  camera.far = 10_000;
+  camera.updateProjectionMatrix();
+  scene.add(replayLayer);
+  $("replay-marks").replaceChildren(
+    ...planned.markers.map((m) => {
+      const i = document.createElement("i");
+      i.style.left = `${(m.tick / (frames.length - 1)) * 100}%`;
+      if (m.color) i.style.setProperty("--c", m.color);
+      return i;
+    }),
+  );
+  $("replay-chapters").querySelector("ul")!.replaceChildren(
+    ...planned.shots.map((shot) => {
+      const li = document.createElement("li");
+      const [time, ...what] = shot.caption.split(" · ");
+      li.innerHTML = "<span class=caps></span><b></b>";
+      li.querySelector("span")!.textContent = time!;
+      li.querySelector("b")!.textContent = what.join(" · ");
+      li.onclick = () => seek(shot.from);
+      return li;
+    }),
+  );
+  seek(0);
+}
+
+function leaveReplay() {
+  const r = replay;
+  if (!r) return;
+  replay = null;
+  director.shot = null;
+  replayKeys.clear();
+  freeCam.pointers.clear();
+  document.body.classList.remove("replaying");
+  for (const id of ["replay", "replay-bar", "replay-feed", "replay-caption", "replay-chapters", "announce"]) $(id).hidden = true;
+  for (const m of mods.values()) m.ctx.playerId = me;
+  scene.remove(replayLayer);
+  for (const t of trails.values()) forget(t.tag, t.dots);
+  trails.clear();
+  if (marks) forget(marks);
+  marks = null;
+  scene.fog = r.fog;
+  camera.far = r.far;
+  camera.updateProjectionMatrix();
+  send({ t: "resync" });
+  nextBanner();
+}
+
+/** Jumps to a moment: the world as it was then, rebuilt from the nearest checkpoint, with what was said just before. */
+function seek(tick: number) {
+  const r = replay!;
+  r.at = Math.max(0, Math.min(r.frames.length - 1, Math.round(tick)));
+  r.clock = 0;
+  r.ended = 0;
+  applyTick({ reset: true, set: structuredClone(r.plan.stateAt(r.at)), unset: {}, removed: [] });
+  for (const t of trails.values()) t.past.length = 0;
+  $("replay-feed").replaceChildren();
+  for (const f of r.frames.slice(Math.max(0, r.at - 3), r.at + 1)) happen(f.activity, false);
+  director.shot = null;
+  showFrame();
+  showControls();
+}
+
+/** Plays forward in the render loop, a recorded moment every `step` ms at normal speed. */
+function advance(dt: number, now: number) {
+  const r = replay!;
+  if (r.ended && !r.free && now - r.ended > 8000) return leaveReplay();
+  if (!r.playing) return;
+  r.clock = Math.min(r.clock + dt * 1000 * r.speed, r.step * 8);
+  while (r.clock >= r.step && r.at < r.frames.length - 1) {
+    r.clock -= r.step;
+    const frame = r.frames[++r.at]!;
+    applyTick(structuredClone(frame));
+    happen(frame.activity, true);
+    showFrame();
+  }
+  if (r.at === r.frames.length - 1) {
+    r.playing = false;
+    r.ended = now;
+    showControls();
+  }
+}
+
+function showFrame() {
+  const r = replay!;
+  const last = r.at === r.frames.length - 1;
+  const shot = last ? r.plan.shots.at(-1)! : r.plan.shots.findLast((s) => s.from <= r.at)!;
+  if (shot !== director.shot) direct(shot);
+  $("replay-time").textContent = clock(r.frames[r.at]!.at);
+  $("replay-head").style.left = `${(r.at / (r.frames.length - 1)) * 100}%`;
+  trace();
+  drawTrack();
+}
+
+function showControls() {
+  const r = replay!;
+  $("replay-play").firstChild!.textContent = r.playing ? "Pause" : r.at === r.frames.length - 1 ? "Replay" : "Play";
+  $("replay-speed").textContent = `${r.speed}×`;
+  $("replay-free").firstChild!.textContent = r.free ? "Director" : "Free camera";
+  $("replay-free").classList.toggle("on", r.free);
+  $<HTMLButtonElement>("replay-free").disabled = !r.free && !director.orbiting;
+  $("replay-chapters-button").classList.toggle("on", !$("replay-chapters").hidden);
+}
+
+function togglePlay() {
+  const r = replay!;
+  if (r.at === r.frames.length - 1) {
+    seek(0);
+    r.playing = true;
+  } else r.playing = !r.playing;
+  r.ended = 0;
+  showControls();
+}
+function setSpeed(by: number) {
+  const r = replay!;
+  r.speed = SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, SPEEDS.indexOf(r.speed) + by))]!;
+  showControls();
+}
+function cycleSpeed() {
+  const r = replay!;
+  r.speed = SPEEDS[(SPEEDS.indexOf(r.speed) + 1) % SPEEDS.length]!;
+  showControls();
+}
+/** Five percent of the timelapse, or with Shift the previous or next chapter. */
+function skip(by: number, chapter: boolean) {
+  const r = replay!;
+  if (!chapter) return seek(r.at + by * Math.max(1, Math.round(r.frames.length / 20)));
+  const starts = r.plan.shots.map((s) => Math.min(s.from, r.frames.length - 1));
+  seek(by > 0 ? (starts.find((s) => s > r.at) ?? r.frames.length - 1) : (starts.findLast((s) => s < r.at - 2) ?? 0));
+}
+function toggleChapters() {
+  $("replay-chapters").hidden = !$("replay-chapters").hidden;
+  showControls();
+  showChapter();
+}
+function toggleFree() {
+  const r = replay!;
+  if (!r.free && !director.orbiting) return;
+  r.free = !r.free;
+  r.ended = 0;
+  if (r.free) {
+    const offset = camera.position.clone().sub(director.focus);
+    freeCam.distance = Math.max(3, offset.length());
+    freeCam.yaw = Math.atan2(offset.z, offset.x);
+    freeCam.pitch = Math.asin(Math.max(-1, Math.min(1, offset.y / freeCam.distance)));
+  } else if (director.shot) direct(director.shot);
+  showControls();
+}
+
+function replayKey(e: KeyboardEvent) {
+  if (e.code === "Tab") {
+    e.preventDefault();
+    leaveReplay();
+    return openMenu();
+  }
+  if (e.code === "Escape") {
+    leaveReplay();
+    return capture();
+  }
+  const act: Record<string, () => void> = {
+    Space: togglePlay,
+    ArrowLeft: () => skip(-1, e.shiftKey),
+    ArrowRight: () => skip(1, e.shiftKey),
+    ArrowUp: () => setSpeed(1),
+    ArrowDown: () => setSpeed(-1),
+    KeyC: toggleChapters,
+    KeyF: toggleFree,
+  };
+  if (!act[e.code]) return replayKeys.add(e.code);
+  e.preventDefault();
+  if (!e.repeat || e.code.startsWith("Arrow")) act[e.code]!();
+}
+
+$("replay-play").onclick = togglePlay;
+$("replay-speed").onclick = cycleSpeed;
+$("replay-free").onclick = toggleFree;
+$("replay-chapters-button").onclick = toggleChapters;
+$("replay-leave").onclick = () => {
+  leaveReplay();
+  capture();
+};
+
+/** The timeline: how much was built when, reloads and banners marked by who, and the playhead; drag it to scrub. */
+const track = $("replay-track");
+const trackCanvas = track.querySelector("canvas")!;
+function drawTrack() {
+  const r = replay!;
+  const w = track.clientWidth;
+  const h = track.clientHeight;
+  const scale = Math.min(devicePixelRatio, 2);
+  if (trackCanvas.width !== Math.round(w * scale)) [trackCanvas.width, trackCanvas.height] = [Math.round(w * scale), Math.round(h * scale)];
+  const g = trackCanvas.getContext("2d")!;
+  g.setTransform(scale, 0, 0, scale, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const bins = Math.max(1, Math.floor(w / 4));
+  const sums = new Array<number>(bins).fill(0);
+  r.plan.density.forEach((d, i) => (sums[Math.min(bins - 1, Math.floor((i / r.frames.length) * bins))]! += d));
+  const most = Math.max(1, ...sums);
+  const played = r.at / (r.frames.length - 1);
+  sums.forEach((s, i) => {
+    g.fillStyle = (i + 0.5) / bins <= played ? "#ffb547" : "rgba(255,255,255,.32)";
+    const bar = s ? Math.max(2, Math.sqrt(s / most) * (h - 8)) : 1;
+    g.fillRect(i * 4, h - bar, 3, bar);
+  });
+}
+const tickAt = (x: number) => {
+  const box = track.getBoundingClientRect();
+  return Math.round(Math.max(0, Math.min(1, (x - box.left) / box.width)) * (replay!.frames.length - 1));
+};
+function showTip(x: number) {
+  const r = replay!;
+  const tick = tickAt(x);
+  const near = r.plan.markers.filter((m) => Math.abs(m.tick - tick) <= r.frames.length / 150);
+  const tip = $("replay-tip");
+  tip.textContent = [clock(r.frames[tick]!.at), ...near.slice(-3).map((m) => m.label)].join(" · ");
+  tip.style.left = `${Math.max(0, Math.min(1, (x - track.getBoundingClientRect().left) / track.clientWidth)) * 100}%`;
+  tip.hidden = false;
+}
+let scrubbing: { at: number } | null = null;
+track.onpointerdown = (e) => {
+  track.setPointerCapture(e.pointerId);
+  scrubbing = { at: 0 };
+  scrub(e);
+};
+track.onpointermove = scrub;
+function scrub(e: PointerEvent) {
+  if (!replay) return;
+  showTip(e.clientX);
+  if (!scrubbing) return;
+  $("replay-head").style.left = `${(tickAt(e.clientX) / (replay.frames.length - 1)) * 100}%`;
+  // Rebuilding the world is the expensive part of a seek, so a drag seeks a few times a second.
+  if (performance.now() - scrubbing.at < 150) return;
+  scrubbing.at = performance.now();
+  seek(tickAt(e.clientX));
+}
+track.onpointerup = track.onpointercancel = (e) => {
+  if (scrubbing && replay) seek(tickAt(e.clientX));
+  scrubbing = null;
+  if (e.pointerType !== "mouse") $("replay-tip").hidden = true;
+};
+track.onpointerleave = () => !scrubbing && ($("replay-tip").hidden = true);
+
+/** Dragging the view takes the camera from the director; wheel or pinch zooms, WASD moves, Q and E go down and up. */
+renderer.domElement.addEventListener("pointerdown", (e) => {
+  if (!replay) return;
+  freeCam.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  renderer.domElement.setPointerCapture(e.pointerId);
+});
+renderer.domElement.addEventListener("pointermove", (e) => {
+  const was = freeCam.pointers.get(e.pointerId);
+  if (!replay || !was) return;
+  if (!replay.free && (!director.orbiting || Math.hypot(e.clientX - was.x, e.clientY - was.y) < 4)) return;
+  if (!replay.free) toggleFree();
+  const others = [...freeCam.pointers].filter(([id]) => id !== e.pointerId);
+  if (others.length) {
+    const [, o] = others[0]!;
+    freeCam.distance *= Math.hypot(was.x - o.x, was.y - o.y) / Math.max(1, Math.hypot(e.clientX - o.x, e.clientY - o.y));
+  } else {
+    freeCam.yaw += (e.clientX - was.x) * 0.006;
+    freeCam.pitch = Math.max(-0.2, Math.min(1.5, freeCam.pitch + (e.clientY - was.y) * 0.006));
+  }
+  freeCam.distance = Math.max(3, Math.min(4000, freeCam.distance));
+  freeCam.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+});
+for (const type of ["pointerup", "pointercancel"]) renderer.domElement.addEventListener(type, (e) => freeCam.pointers.delete((e as PointerEvent).pointerId));
+renderer.domElement.addEventListener("wheel", (e) => {
+  if (!replay || (!replay.free && !director.orbiting)) return;
+  if (!replay.free) toggleFree();
+  freeCam.distance = Math.max(3, Math.min(4000, freeCam.distance * Math.exp(e.deltaY * 0.001)));
+}, { passive: true });
+
+/** Feed lines, chat, voice and banners as they happened; `banners` is false when catching up after a seek. */
+function happen(activity: Activity[] | undefined, banners: boolean) {
+  for (const a of activity ?? []) {
+    if (a.t === "feed") addLine(a.text, a.kind, $("replay-feed"));
+    else if (a.t === "chat") addLine(...chatLine(a.from, a.text, a.spoken), $("replay-feed"));
+    else {
+      addLine(`${a.title}${a.text ? ` · ${a.text}` : ""}  (${a.by}'s Claude)`, "mod", $("replay-feed")).style.setProperty("--c", a.color);
+      if (banners) showBanner(a);
+    }
+  }
+  while ($("replay-feed").children.length > 6) $("replay-feed").firstElementChild!.remove();
+}
+
+function forget(...objects: (THREE.Sprite | THREE.Points)[]) {
+  for (const o of objects) {
+    replayLayer.remove(o);
+    if (o instanceof THREE.Points) o.geometry.dispose();
+    (o.material as THREE.SpriteMaterial).map?.dispose();
+    (o.material as THREE.Material).dispose();
+  }
+}
+
+/** Starts a shot: a cut when the new place is far from what the camera shows, otherwise a quick flight there. */
+function direct(shot: Shot) {
+  director.cut = !director.shot || !shot.target || director.focus.distanceTo(new THREE.Vector3(...shot.target)) > director.distance * 2.5;
+  for (const m of mods.values()) m.ctx.playerId = shot.player ?? me;
+  if (director.cut) director.angle += 2.2;
+  director.shot = shot;
+  director.started = performance.now();
+  const [time, ...what] = shot.caption.split(" · ");
+  const caption = $("replay-caption");
+  caption.querySelector("span")!.textContent = time!;
+  caption.querySelector("b")!.textContent = what.join(" · ");
+  caption.hidden = true;
+  void caption.offsetWidth;
+  caption.hidden = false;
+  showChapter();
+  if (marks) forget(marks);
+  marks = null;
+  if (!shot.marks.length) return;
+  const geometry = new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(shot.marks, 3));
+  marks = new THREE.Points(geometry, new THREE.PointsMaterial({ color: "#ffb547", size: 4, sizeAttenuation: false, transparent: true, opacity: 0.6, depthTest: false }));
+  marks.renderOrder = 9;
+  replayLayer.add(marks);
+}
+
+function showChapter() {
+  const list = $("replay-chapters");
+  const index = replay && director.shot ? replay.plan.shots.indexOf(director.shot) : -1;
+  list.querySelectorAll("li").forEach((li, i) => {
+    if (li.classList.toggle("active", i === index) && !list.hidden) li.scrollIntoView({ block: "nearest" });
+  });
+}
+
+/** Every player's avatar gets a name tag and a short trail of where it was over the last moments. */
+function trace() {
+  const present = new Set<string>();
+  for (const [id, e] of entities) {
+    if (!isAvatar(e) || !Array.isArray(e.pos)) continue;
+    present.add(e.player);
+    let t = trails.get(e.player);
+    if (!t) {
+      const tag = labelSprite(String(e.name ?? e.player));
+      tag.material.sizeAttenuation = false;
+      tag.scale.set((0.03 * tag.scale.x) / tag.scale.y, 0.03, 1);
+      const geometry = new THREE.BufferGeometry()
+        .setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(TRAIL * 3), 3))
+        .setAttribute("color", new THREE.Float32BufferAttribute(new Float32Array(TRAIL * 4), 4));
+      const dots = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 6, sizeAttenuation: false, vertexColors: true, transparent: true, depthWrite: false }));
+      dots.frustumCulled = false;
+      replayLayer.add(tag, dots);
+      trails.set(e.player, (t = { id, tag, dots, past: [] }));
+    }
+    t.id = id;
+    t.past.push(...(e.pos as number[]).slice(0, 3));
+    t.past.splice(0, Math.max(0, t.past.length - TRAIL * 3));
+    const color = new THREE.Color(e.look?.avatar ?? "#ffb547");
+    const n = t.past.length / 3;
+    const colors = t.dots.geometry.getAttribute("color") as THREE.BufferAttribute;
+    (t.dots.geometry.getAttribute("position") as THREE.BufferAttribute).set(t.past).needsUpdate = true;
+    for (let i = 0; i < n; i++) colors.setXYZW(i, color.r, color.g, color.b, ((i + 1) / n) * 0.8);
+    colors.needsUpdate = true;
+    t.dots.geometry.setDrawRange(0, n);
+  }
+  for (const [player, t] of trails) {
+    if (present.has(player)) continue;
+    forget(t.tag, t.dots);
+    trails.delete(player);
+  }
+}
+
+/** Mods frame the shot first; otherwise the engine's camera orbits the shot's place slowly at a distance that frames what was built, overviews without fog. */
+function film(dt: number, now: number) {
+  const r = replay!;
+  const shot = director.shot;
+  if (!shot) return;
+  for (const t of trails.values()) {
+    const obj = objects.get(t.id);
+    if (obj) t.tag.position.copy(obj.position).setY(obj.position.y + 2.4);
+  }
+  const view: ReplayShot = { kind: shot.kind, target: shot.target, radius: shot.radius, ids: shot.ids, mod: shot.mod, player: shot.player, caption: shot.caption, elapsed: (now - director.started) / 1000 };
+  const framed = !r.free && [...ordered].reverse().some((m) => m.mod.replay && call(m, "replay", view, dt) === true);
+  // A game drawn through its own camera, or whose things have no place, keeps its own view: its hooks already show ctx.playerId's past.
+  const orbiting = !framed && !!shot.target && [...mods.values()].every((m) => m.ctx.camera === camera);
+  if (orbiting !== director.orbiting) {
+    director.orbiting = orbiting;
+    showControls();
+  }
+  if (!orbiting && !r.free) {
+    scene.fog = r.fog;
+    return;
+  }
+  if (r.free) {
+    const forward = new THREE.Vector3(-Math.cos(freeCam.yaw), 0, -Math.sin(freeCam.yaw));
+    const move = new THREE.Vector3();
+    for (const [code, x, y, z] of [["KeyW", 1, 0, 0], ["KeyS", -1, 0, 0], ["KeyD", 0, 0, 1], ["KeyA", 0, 0, -1], ["KeyE", 0, 1, 0], ["KeyQ", 0, -1, 0]] as const)
+      if (replayKeys.has(code)) move.add(new THREE.Vector3(forward.x * x - forward.z * z, y, forward.z * x + forward.x * z));
+    director.focus.addScaledVector(move, Math.max(12, freeCam.distance) * dt);
+    const { yaw, pitch, distance } = freeCam;
+    camera.position.copy(director.focus).add(new THREE.Vector3(Math.cos(yaw) * Math.cos(pitch), Math.sin(pitch), Math.sin(yaw) * Math.cos(pitch)).multiplyScalar(distance));
+    camera.lookAt(director.focus);
+    scene.fog = distance > 250 ? null : r.fog;
+    return;
+  }
+  const avatar = shot.kind === "follow" ? trails.get(shot.player!) : undefined;
+  const goal = (avatar && objects.get(avatar.id)?.position) || new THREE.Vector3(...shot.target!);
+  const distance = shot.kind === "overview" ? shot.radius * 1.5 : shot.kind === "follow" ? 16 : Math.min(220, Math.max(22, shot.radius * 2.4));
+  const lift = shot.kind === "overview" ? 0.9 : shot.kind === "follow" ? 0.45 : 0.6;
+  if (director.cut) {
+    director.focus.copy(goal);
+    director.distance = distance;
+    director.cut = false;
+  } else {
+    const k = 1 - Math.exp(-dt * 2.5);
+    director.focus.lerp(goal, k);
+    director.distance += (distance - director.distance) * k;
+  }
+  const a = director.angle + (now - director.started) * 0.00012;
+  const { x, y, z } = director.focus;
+  camera.position.set(x + Math.cos(a) * director.distance, y + director.distance * lift, z + Math.sin(a) * director.distance);
+  camera.lookAt(director.focus);
+  scene.fog = shot.kind === "overview" ? null : r.fog;
+}
+
 const banners: { mod: string; by: string; title: string; text: string; color: string }[] = [];
+/** Live banners wait while a timelapse plays. */
 function nextBanner() {
+  const a = !replay && $("announce").hidden && banners.shift();
+  if (a) showBanner(a);
+}
+function showBanner(a: (typeof banners)[number]) {
   const el = $("announce");
-  const a = el.hidden && banners.shift();
-  if (!a) return;
+  el.hidden = true;
+  void el.offsetWidth;
   el.style.setProperty("--c", a.color);
   const [kicker, title, text] = el.children as unknown as HTMLElement[];
   kicker!.textContent = `${a.mod} · by ${a.by}'s Claude`;
@@ -600,7 +1041,7 @@ const typing = () => document.activeElement instanceof HTMLInputElement;
 
 /** During play the mouse steers the camera; the cursor is free only while chat, the menu or an overlay is open. */
 function capture() {
-  if (!document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !document.pointerLockElement) renderer.domElement.requestPointerLock();
+  if (!replay && !document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !document.pointerLockElement) renderer.domElement.requestPointerLock();
 }
 renderer.domElement.addEventListener("click", capture);
 const ideas = ["add coins that respawn and a scoreboard", "make the floor lava every 30 seconds", "give me a grappling hook", "spawn a boss that chases whoever is winning", "let us build with blocks", "add a race track with a timer", "make me tiny and everyone else huge"];
@@ -677,6 +1118,7 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     if (e.code === "Enter" || e.code === "Space") play();
     return;
   }
+  if (replay && !typing()) return replayKey(e);
   if ((e.code === "Digit1" || e.code === "Digit2") && !typing() && menu.hidden && !$("react").hidden) {
     react(e.code === "Digit1" ? "love" : "undo");
     return;
@@ -699,6 +1141,7 @@ addEventListener("keydown", (e: KeyboardEvent) => {
 addEventListener("keyup", (e: KeyboardEvent) => {
   if (e.code === "KeyT") stopTalking(true);
   keys.delete(e.code);
+  replayKeys.delete(e.code);
 });
 addEventListener("blur", () => {
   keys.clear();
@@ -931,8 +1374,8 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-via]"))
 
 async function openMenu() {
   keys.clear();
+  leaveReplay();
   menu.hidden = false;
-  replaying = false;
   if (document.pointerLockElement) document.exitPointerLock();
   $("menu-world").textContent = world;
   $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;
@@ -1007,11 +1450,8 @@ renderer.setAnimationLoop(() => {
   }
   for (const m of ordered) call(m, "frame", dt);
   showAction();
-  if (replaying) {
-    const a = now * 0.00015;
-    camera.position.set(Math.cos(a) * orbit * 1.4, orbit * 0.8, Math.sin(a) * orbit * 1.4);
-    camera.lookAt(0, 0, 0);
-  }
+  if (replay) advance(dt, now);
+  if (replay) film(dt, now);
   const drawStart = performance.now();
   draw(dt);
   stats.drawMs += performance.now() - drawStart;

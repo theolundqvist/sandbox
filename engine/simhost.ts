@@ -19,7 +19,7 @@ export class SimHost {
     private dbDir: string,
     private mods: () => RunningMod[],
     private on: {
-      tick(outs: Record<string, string>): void;
+      tick(outs: Record<string, string>, diff: Diff): void;
       log(mod: string, level: string, text: string): void;
       fault(mod: string, error: string): void;
     },
@@ -57,7 +57,7 @@ export class SimHost {
         }
         for (const id of d.removed) this.entities.delete(id);
         this.nextId = msg.nextId;
-        this.on.tick(msg.outs);
+        this.on.tick(msg.outs, d);
       } else if (msg.t === "log") this.on.log(msg.mod, msg.level, msg.text);
       else if (msg.t === "perf") this.perf = msg;
       else if (msg.t === "fault") this.on.fault(msg.mod, msg.error);

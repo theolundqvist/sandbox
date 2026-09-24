@@ -285,20 +285,33 @@ self.onmessage = async ({ data: msg }) => {
     case "see": {
       const p = world.players.get(msg.player);
       // Visibility is checked when an entity changes, so the check runs once per change instead of once per entity per moment.
+      const whole = new Map<string, Entity>();
       const shown = new Set<string>();
-      const ticks = p
-        ? msg.ticks.map((t: Tick) => {
-            const out: Tick = { at: t.at, reset: t.reset, set: {}, unset: {}, removed: t.removed.filter((id) => shown.delete(String(id))) };
-            for (const [id, e] of Object.entries(t.set)) {
-              if (visible(p, Number(id), e)) {
-                out.set[id] = e;
-                if (t.unset[id] && shown.has(id)) out.unset[id] = t.unset[id]!;
-                shown.add(id);
-              } else if (shown.delete(id)) out.removed.push(Number(id));
-            }
-            return out;
-          })
-        : [];
+      const ticks: Tick[] = [];
+      for (const t of p ? (msg.ticks as Tick[]) : []) {
+        const out: Tick = { at: t.at, reset: t.reset, set: {}, unset: {}, removed: [], activity: t.activity };
+        for (const id of t.removed) {
+          whole.delete(String(id));
+          if (shown.delete(String(id))) out.removed.push(id);
+        }
+        for (const id of new Set([...Object.keys(t.set), ...Object.keys(t.unset)])) {
+          const e = { ...whole.get(id), ...t.set[id] };
+          for (const k of t.unset[id] ?? []) delete e[k];
+          whole.set(id, e);
+          if (!visible(p!, Number(id), e)) {
+            if (shown.delete(id)) out.removed.push(Number(id));
+          } else if (!shown.has(id)) {
+            shown.add(id);
+            out.set[id] = e;
+          } else {
+            if (t.set[id]) out.set[id] = t.set[id];
+            if (t.unset[id]) out.unset[id] = t.unset[id];
+          }
+        }
+        ticks.push(out);
+        // Lets the simulation tick between slices of a long history.
+        if (ticks.length % 50 === 0) await new Promise((r) => setTimeout(r, 0));
+      }
       return post({ t: "seen", id: msg.id, ticks });
     }
     case "leave": {

@@ -4,7 +4,7 @@ import type { ServerWebSocket } from "bun";
 import { createMcp, GAME_MASTER, type Task } from "./mcp";
 import { ENGINE_KEYS, Mods } from "./mods";
 import { SimHost } from "./simhost";
-import { openStore } from "./world";
+import { openStore, type Activity, type Tick } from "./world";
 
 const ENGINE = import.meta.dir;
 const DATA = process.env.SANDBOX_DATA ?? join(ENGINE, "../data");
@@ -92,8 +92,11 @@ const feedLog: { at: number; text: string; kind: string }[] = [];
 const chatLog: { seq: number; from: string; text: string; spoken?: boolean }[] = [];
 const chatWaiters = new Set<() => void>();
 let chatSeq = 0;
+/** Feed lines, chat and banners since the last timelapse moment. */
+let happened: Activity[] = [];
 function chat(from: string, text: string, spoken?: boolean) {
   chatLog.push({ seq: ++chatSeq, from, text, spoken });
+  happened.push({ at: Date.now(), t: "chat", from, text: text.slice(0, 200), spoken });
   console.log(`[chat] ${from}${spoken ? " (voice)" : ""}: ${text}`);
   if (chatLog.length > 50) chatLog.shift();
   broadcast({ t: "chat", from, text, spoken });
@@ -154,6 +157,7 @@ function log(mod: string, level: string, text: string, player?: string) {
 function feed(text: string, kind = "info") {
   feedLog.push({ at: Date.now(), text, kind });
   if (feedLog.length > 50) feedLog.shift();
+  happened.push({ at: Date.now(), t: "feed", text: text.slice(0, 200), kind });
   broadcast({ t: "feed", text, kind });
   console.log(`[feed] ${text}`);
 }
@@ -163,7 +167,8 @@ const mods = new Mods(ROOT, BUILD, join(DATA, "mods.json"), {
   feed,
 });
 const sim = new SimHost(DB, () => mods.list(), {
-  tick: (outs) => {
+  tick: (outs, diff) => {
+    store.track(diff);
     for (const [id, text] of Object.entries(outs)) sockets.get(id)?.send(text);
   },
   log,
@@ -182,7 +187,40 @@ for (const mod of refreshed) await mods.reload(mod, "world", owners[mod] ?? "wor
 setInterval(() => store.save(sim), 5000);
 store.snapshot(sim);
 setInterval(() => store.snapshot(sim), 60_000);
-setInterval(() => store.record(sim), 2000);
+setInterval(() => {
+  store.record(sim, happened.slice(-30));
+  happened = [];
+}, 2000);
+/** Reloads from the world's git history, for timelapse moments recorded before activity was stored. */
+function olderReloads(): Activity[] {
+  const log = Bun.spawnSync(["git", "log", "--since=3 hours ago", "--format=%at %an|%s"], { cwd: ROOT }).stdout.toString();
+  return log.split("\n").flatMap((row) => {
+    const [, at, who, subject] = row.match(/^(\d+) (.+?)\|(\S+ v\d+)$/) ?? [];
+    return at ? [{ at: Number(at) * 1000, t: "feed" as const, text: `${who} reloaded ${subject}`, kind: "ok" }] : [];
+  });
+}
+const timelapse = new Worker(new URL("./timelapse.ts", import.meta.url));
+const jobs = new Map<number, { resolve(v: any): void; reject(e: Error): void }>();
+let jobSeq = 0;
+timelapse.onmessage = ({ data }) => {
+  const job = jobs.get(data.id);
+  jobs.delete(data.id);
+  if (data.error) job?.reject(new Error(data.error));
+  else job?.resolve(data);
+};
+const inWorker = <T>(msg: object) =>
+  new Promise<T>((resolve, reject) => {
+    const id = ++jobSeq;
+    jobs.set(id, { resolve, reject });
+    timelapse.postMessage({ ...msg, id });
+  });
+/** Viewers opening the timelapse within a few seconds of each other share one build. */
+let built: { at: number; ticks: Promise<Tick[]> } | null = null;
+async function timelapseFor(who: string) {
+  if (!built || Date.now() - built.at > 10_000) built = { at: Date.now(), ticks: inWorker<{ ticks: Tick[] }>({ t: "build", path: join(DATA, "world.sqlite"), limit: 900, older: olderReloads() }).then((r) => r.ticks) };
+  const seen = await sim.visibleTo(who, await built.ticks);
+  return (await inWorker<{ gz: Uint8Array<ArrayBuffer> }>({ t: "encode", ticks: seen })).gz;
+}
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, () => {
     store.save(sim);
@@ -230,6 +268,7 @@ const mcp = createMcp({
   presence,
   setTask,
   announce: (a) => {
+    happened.push({ at: Date.now(), t: "announce", ...a });
     about[a.mod] = { title: a.title, text: a.text, color: a.color };
     writeJson("about.json", about);
     broadcast({ t: "announce", ...a });
@@ -320,6 +359,7 @@ const server = Bun.serve<Conn>({
           if (!store.rewind(Number(body.at), sim)) return Response.json({ error: "That moment is no longer saved." }, { status: 404 });
           store.save(sim);
           sim.restart();
+          store.keyframe();
           feed(`The host rewound the world to ${new Date(Number(body.at)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, "error");
           return Response.json({});
         }
@@ -328,7 +368,13 @@ const server = Bun.serve<Conn>({
     if (path === "/api/timelapse") {
       const who = nameByKey(bearer(req));
       if (!who) return new Response(null, { status: 401 });
-      return new Response(Bun.gzipSync(JSON.stringify(await sim.visibleTo(who, store.ticks(600)))), { headers: { "content-type": "application/json", "content-encoding": "gzip" } });
+      try {
+        return new Response(await timelapseFor(who), { headers: { "content-type": "application/json", "content-encoding": "gzip" } });
+      } catch (e: any) {
+        built = null;
+        log("engine", "error", `timelapse: ${e.message}`);
+        return Response.json({ error: "The timelapse couldn't be built." }, { status: 500 });
+      }
     }
     if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json({ ...status(), gameMaster: { key: gameMasterKey, ...builder(GAME_MASTER) } }) : new Response(null, { status: 401 });
     if (path === "/api/voice" && req.method === "POST") {

@@ -95,6 +95,27 @@ export interface ClientHooks {
   object?(ctx: ClientCtx, id: number, entity: Entity): THREE.Object3D | null | undefined | void;
   /** A one-off event a server mod sent with world.emit. `from` is the emitting mod. */
   event?(ctx: ClientCtx, name: string, data: any, from: string): void;
+  /** Frames the timelapse, every frame while one plays: show the shot your way (move your camera, scroll your board, open the panel it is about) and return true, or return nothing to leave it to the next mod and then the engine. Highest `order` asks first. */
+  replay?(ctx: ClientCtx, shot: ReplayShot, dt: number): boolean | void;
+}
+
+/** One timelapse shot. While it plays, ctx.entities holds the world as it was and every hook runs on it as in live play; ctx.playerId is the player the shot is about, ctx.keys stays empty and ctx.send is dropped. */
+export interface ReplayShot {
+  /** "place": where something was built; "follow": a player at play; "overview": the whole world. */
+  kind: "place" | "follow" | "overview";
+  /** Centre of what changed and how far it spreads, in world units; no target when the things that changed have no `pos`. */
+  target?: [number, number, number];
+  radius: number;
+  /** Entities built or edited during the shot. */
+  ids: number[];
+  /** The mod the shot is about, when one is. */
+  mod?: string;
+  /** The player the shot is about, when one is. */
+  player?: string;
+  /** What the viewer reads, e.g. "21:30 · ludvig builds realms". */
+  caption: string;
+  /** Seconds since the shot began. */
+  elapsed: number;
 }
 
 type ClientWrapped = { [K in keyof ClientHooks]?: (next: (...args: any[]) => any, ctx: ClientCtx, ...args: any[]) => any };

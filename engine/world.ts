@@ -137,11 +137,15 @@ type Persisted = { entities: Map<number, Entity>; nextId: number };
 export function openStore(path: string) {
   const db = new Database(path, { create: true });
   db.run("pragma busy_timeout = 5000");
+  // Saves and timelapse moments commit on the server's main thread every few seconds; without WAL each waits on a disk flush and the timelapse reader blocks them.
+  db.run("pragma journal_mode = wal");
+  db.run("pragma synchronous = normal");
   db.run("create table if not exists world (id integer primary key check (id = 1), next_id integer, entities text)");
   db.run("create table if not exists snapshots (at integer primary key, next_id integer, entities text)");
-  db.run("create table if not exists timelapse (at integer primary key, full integer, data blob)");
-  let last: Record<string, Entity> | null = null;
-  let sinceFull = 0;
+  db.run("create table if not exists timelapse (at integer primary key, full integer, data blob, activity text)");
+  if (!db.query("select 1 from pragma_table_info('timelapse') where name = 'activity'").get()) db.run("alter table timelapse add column activity text");
+  let pending: Moment = { set: {}, unset: {}, removed: [] };
+  let sinceFull = -1;
   const read = (row: { next_id: number; entities: string } | null, world: Persisted) => {
     if (!row) return false;
     world.nextId = row.next_id;
@@ -159,67 +163,47 @@ export function openStore(path: string) {
       db.run("insert or replace into snapshots values (?, ?, ?)", [Date.now(), world.nextId, JSON.stringify(Object.fromEntries(world.entities))]);
       db.run("delete from snapshots where at < ?", [Date.now() - 3_600_000]);
     },
-    /** A timelapse moment: what changed since the last one, with the whole world every 150th so old moments can be dropped. */
-    record(world: Persisted) {
-      const now: Record<string, Entity> = JSON.parse(JSON.stringify(Object.fromEntries(world.entities)));
-      const full = !last || ++sinceFull >= 150;
-      if (full) sinceFull = 0;
-      db.run("insert or replace into timelapse values (?, ?, ?)", [Date.now(), full ? 1 : 0, Bun.gzipSync(JSON.stringify(full ? now : changes(last!, now)))]);
-      last = now;
-      db.run("delete from timelapse where at < ?", [Date.now() - 3 * 3_600_000]);
+    /** Folds one simulation tick's changes into the next timelapse moment, so recording never diffs the whole world. */
+    track(d: Diff) {
+      for (const [id, set] of Object.entries(d.set)) {
+        pending.set[id] = { ...pending.set[id], ...set };
+        const lost = pending.unset[id]?.filter((k) => !(k in set));
+        if (lost) pending.unset[id] = lost;
+      }
+      for (const [id, keys] of Object.entries(d.unset)) {
+        for (const k of keys) delete pending.set[id]?.[k];
+        pending.unset[id] = [...new Set([...(pending.unset[id] ?? []), ...keys])];
+      }
+      for (const id of d.removed) {
+        delete pending.set[id];
+        delete pending.unset[id];
+        pending.removed.push(id);
+      }
     },
-    /** Up to `limit` recorded moments, oldest first, evenly spread. */
-    /** Up to `limit` evenly spaced moments as ticks: the first in full, then what changed since the previous one. */
-    ticks(limit: number) {
-      const rows = db.query("select at, full, data from timelapse order by at").all() as { at: number; full: number; data: Uint8Array<ArrayBuffer> }[];
-      const usable = rows.slice(Math.max(0, rows.findIndex((r) => r.full)));
-      const every = Math.ceil(usable.length / limit);
-      const state: Record<string, Entity> = {};
-      let before = new Map<string, Entity | undefined>();
-      const touch = (id: string) => before.has(id) || before.set(id, state[id]);
-      const ticks: Tick[] = [];
-      usable.forEach((row, i) => {
-        const data = JSON.parse(new TextDecoder().decode(Bun.gunzipSync(row.data)));
-        const set: Record<string, Entity> = row.full ? data : data.set;
-        const removed: string[] = row.full ? Object.keys(state).filter((id) => !(id in data)) : data.removed.map(String);
-        for (const id of [...Object.keys(set), ...removed]) touch(id);
-        Object.assign(state, set);
-        for (const id of removed) delete state[id];
-        if (i % every) return;
-        if (!ticks.length) ticks.push({ at: row.at, reset: true, set: { ...state }, unset: {}, removed: [] });
-        else {
-          const tick: Tick = { at: row.at, set: {}, unset: {}, removed: [] };
-          for (const [id, was] of before) {
-            const now = state[id];
-            if (!now) {
-              if (was) tick.removed.push(Number(id));
-            } else if (now !== was) {
-              tick.set[id] = now;
-              if (was) tick.unset[id] = Object.keys(was).filter((k) => !(k in now));
-            }
-          }
-          ticks.push(tick);
-        }
-        before = new Map();
-      });
-      return ticks;
+    /** The next moment records the whole world, as after a rewind replaced it. */
+    keyframe() {
+      sinceFull = -1;
+    },
+    /** A timelapse moment; the whole world at the start (full 1) and every 150th (full 2, whose changes also go into the next moment) so old ones can be dropped. */
+    record(world: Persisted, activity: Activity[]) {
+      const full = sinceFull < 0 ? 1 : sinceFull >= 149 ? 2 : 0;
+      sinceFull = full ? 0 : sinceFull + 1;
+      const data = full ? Object.fromEntries(world.entities) : pending;
+      db.run("insert or replace into timelapse values (?, ?, ?, ?)", [Date.now(), full, Bun.gzipSync(JSON.stringify(data)), JSON.stringify(activity)]);
+      if (full !== 2) pending = { set: {}, unset: {}, removed: [] };
+      db.run("delete from timelapse where at < ?", [Date.now() - 3 * 3_600_000]);
     },
     snapshots: () => (db.query("select at from snapshots order by at desc").all() as { at: number }[]).map((r) => r.at),
     rewind: (at: number, world: Persisted) => read(db.query("select next_id, entities from snapshots where at = ?").get(at) as any, world),
   };
 }
 
-export type Tick = { at: number; reset?: true; set: Record<string, Entity>; unset: Record<string, string[]>; removed: number[] };
-
-/** What differs between two moments; changed entities are sent whole, with the keys they lost. */
-export function changes(before: Record<string, Entity>, after: Record<string, Entity>) {
-  const set: Record<string, Entity> = {};
-  const unset: Record<string, string[]> = {};
-  for (const [id, e] of Object.entries(after)) {
-    const was = before[id];
-    if (JSON.stringify(e) === JSON.stringify(was)) continue;
-    set[id] = e;
-    if (was) unset[id] = Object.keys(was).filter((k) => !(k in e));
-  }
-  return { set, unset, removed: Object.keys(before).filter((id) => !(id in after)).map(Number) };
-}
+/** Changed components per entity, the components they lost, and removed entities. */
+export type Moment = { set: Record<string, Entity>; unset: Record<string, string[]>; removed: number[] };
+export type Tick = Moment & { at: number; reset?: true; activity?: Activity[] };
+/** What players saw happen: feed lines, chat (typed or spoken) and mod banners. */
+export type Activity = { at: number } & (
+  | { t: "feed"; text: string; kind: string }
+  | { t: "chat"; from: string; text: string; spoken?: boolean }
+  | { t: "announce"; mod: string; by: string; title: string; text: string; color: string }
+);
