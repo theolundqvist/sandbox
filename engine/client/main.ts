@@ -527,7 +527,7 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     e.preventDefault();
     return;
   }
-  if ((e.code === "Escape" || e.code === "Tab") && !typing()) {
+  if (e.code === "Escape" && !typing()) {
     e.preventDefault();
     return menu.hidden ? openMenu() : closeMenu();
   }
