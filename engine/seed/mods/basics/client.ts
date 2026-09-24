@@ -7,14 +7,19 @@ let yaw = 0;
 let pitch = 0.45;
 let distance = 14;
 let sent = "";
-let dragging = false;
+let drag: { id: number; x: number; y: number } | null = null;
 
-const onDown = (e: PointerEvent) => (dragging = e.button === 0 || e.button === 2);
-const onUp = () => (dragging = false);
+const onDown = (e: PointerEvent) => {
+  if (e.button === 0 || e.button === 2) drag = { id: e.pointerId, x: e.clientX, y: e.clientY };
+};
+const onUp = (e: PointerEvent) => {
+  if (e.pointerId === drag?.id) drag = null;
+};
 const onMove = (e: PointerEvent) => {
-  if (!dragging) return;
-  yaw -= e.movementX * 0.005;
-  pitch = Math.min(1.4, Math.max(0.05, pitch + e.movementY * 0.005));
+  if (e.pointerId !== drag?.id) return;
+  yaw -= (e.clientX - drag.x) * 0.005;
+  pitch = Math.min(1.4, Math.max(0.05, pitch + (e.clientY - drag.y) * 0.005));
+  [drag.x, drag.y] = [e.clientX, e.clientY];
 };
 const onWheel = (e: WheelEvent) => (distance = Math.min(60, Math.max(4, distance * (1 + e.deltaY * 0.001))));
 const noMenu = (e: Event) => e.preventDefault();

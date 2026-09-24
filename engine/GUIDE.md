@@ -74,7 +74,7 @@ The engine glides every drawn object toward its entity's `pos` and `rot`. Set `o
 
 Models, textures and sounds: the `add_asset` tool stores a file from a url or base64 in `mods/<mod>/assets/`, live immediately. Load it with `ctx.asset("dragon.glb")` (this mod) or `ctx.asset("other-mod/dragon.glb")`, e.g. with `GLTFLoader` from `three/addons/loaders/GLTFLoader.js`.
 
-`ctx.entities` is the live replicated world (only what this player may see), `ctx.playerId` is this player, `ctx.keys` holds pressed key codes. The engine's own HUD takes the top 70 px, the top-right corner below it for notifications, and the bottom-left corner for chat, so put your DOM elsewhere.
+`ctx.entities` is the live replicated world (only what this player may see), `ctx.playerId` is this player, `ctx.keys` holds pressed key codes; on phones the on-screen stick presses `KeyW`/`KeyA`/`KeyS`/`KeyD` and the jump button `Space`, so read those and phone players can play too. The engine's own HUD takes the top 70 px, the top-right corner below it for notifications, and the bottom-left corner for chat, so put your DOM elsewhere.
 
 ## Power over other mods
 

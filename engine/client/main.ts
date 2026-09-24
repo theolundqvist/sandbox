@@ -401,17 +401,58 @@ addEventListener("keydown", (e: KeyboardEvent) => {
 addEventListener("keyup", (e: KeyboardEvent) => keys.delete(e.code));
 addEventListener("blur", () => keys.clear());
 chat.addEventListener("keydown", (e: KeyboardEvent) => {
-  if (e.code === "Enter") {
+  if (e.key === "Enter") {
     if (chat.value.trim()) send({ t: "chat", text: chat.value.trim() });
     chat.value = "";
   }
-  if (e.code === "Enter" || e.code === "Escape") {
+  if (e.key === "Enter" || e.key === "Escape") {
     chat.blur();
     chat.hidden = true;
   }
   e.stopPropagation();
 });
 $("menu-button").onclick = () => openMenu();
+
+// Touch screens drive the same key codes as a keyboard, so every mod that reads ctx.keys works on phones.
+function enableTouch() {
+  document.body.classList.add("touch");
+  $("stick").hidden = $("jump").hidden = false;
+  $("menu-button").textContent = "Menu";
+  $("hint").textContent = "Chat";
+  $("hint").onclick = () => {
+    chat.hidden = false;
+    chat.focus();
+  };
+  const stick = $("stick");
+  const knob = stick.firstElementChild as HTMLElement;
+  const steer = (e: PointerEvent) => {
+    const box = stick.getBoundingClientRect();
+    let x = (e.clientX - box.left - box.width / 2) / (box.width / 2);
+    let y = (e.clientY - box.top - box.height / 2) / (box.height / 2);
+    const len = Math.hypot(x, y);
+    if (len > 1) [x, y] = [x / len, y / len];
+    knob.style.translate = `${x * 40}px ${y * 40}px`;
+    for (const [code, on] of [["KeyW", y < -0.35], ["KeyS", y > 0.35], ["KeyA", x < -0.35], ["KeyD", x > 0.35]] as const) on ? keys.add(code) : keys.delete(code);
+  };
+  const release = () => {
+    knob.style.translate = "";
+    for (const code of ["KeyW", "KeyS", "KeyA", "KeyD"]) keys.delete(code);
+  };
+  stick.onpointerdown = (e) => {
+    stick.setPointerCapture(e.pointerId);
+    steer(e);
+  };
+  stick.onpointermove = (e) => stick.hasPointerCapture(e.pointerId) && steer(e);
+  stick.onpointerup = stick.onpointercancel = release;
+  const jump = $("jump");
+  jump.onpointerdown = (e) => {
+    jump.setPointerCapture(e.pointerId);
+    keys.add("Space");
+  };
+  jump.onpointerup = jump.onpointercancel = () => keys.delete("Space");
+}
+if (matchMedia("(pointer: coarse)").matches) enableTouch();
+else addEventListener("touchstart", enableTouch, { once: true });
 $("menu-close").onclick = () => (menu.hidden = true);
 $("main-menu").hidden = !localStorage.getItem("sandbox-menu");
 $("main-menu").onclick = () => location.assign("/menu");

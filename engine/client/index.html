@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Sandbox</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='5' y='5' width='22' height='22' rx='5' fill='%23ffb547'/></svg>">
 <script type="importmap">
@@ -49,6 +49,13 @@
   ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
   li { padding: 8px 12px; background: rgba(255,255,255,.05); border-radius: 8px; display: flex; justify-content: space-between; gap: 12px; }
   li span { color: var(--dim); }
+  body.touch canvas { touch-action: none; }
+  body.touch #feed { top: 70px; bottom: auto; mask-image: none; max-height: 24vh; }
+  body.touch #chat { top: 70px; bottom: auto; }
+  body.touch #hint { pointer-events: auto; padding: 8px 14px; bottom: auto; top: 70px; left: auto; right: 16px; color: var(--text); font-size: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; text-shadow: none; }
+  #stick { position: fixed; left: 28px; bottom: 28px; width: 128px; height: 128px; border-radius: 50%; touch-action: none; }
+  #stick div { position: absolute; left: 40px; top: 40px; width: 48px; height: 48px; border-radius: 50%; background: rgba(255,255,255,.35); pointer-events: none; }
+  #jump { position: fixed; right: 28px; bottom: 40px; width: 88px; height: 88px; border-radius: 50%; touch-action: none; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -63,6 +70,8 @@
   <input id="chat" class="panel" placeholder="Say something…" maxlength="300" autocomplete="off" hidden>
   <div id="hint">Enter to chat · Tab for menu</div>
   <div id="toasts"></div>
+  <div id="stick" class="panel" hidden><div></div></div>
+  <button id="jump" class="panel" hidden>Jump</button>
   <div id="empty" hidden><b>Nothing exists yet.</b> Press Tab, connect your Claude, and ask it for ground to stand on.</div>
 </div>
 
