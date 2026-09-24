@@ -19,8 +19,8 @@ export type McpContext = {
   sim: SimHost;
   logs: { at: number; mod: string; level: string; text: string; player?: string }[];
   feed(text: string, kind?: string): void;
-  chat(from: string, text: string): void;
-  chatLog: { seq: number; from: string; text: string; spoken?: boolean }[];
+  chat(from: string, text: string, how?: "claudes"): void;
+  chatLog: { seq: number; from: string; text: string; spoken?: boolean; claudes?: boolean }[];
   nextChat(): Promise<void>;
   presence(who: string, state: "listening" | "working" | "offline"): void;
   setTask(who: string, task: Task): void;
@@ -106,6 +106,10 @@ const tools = [
           },
           required: ["title"],
         },
+        force: {
+          type: "boolean",
+          description: "Only for removing a mod whose files you deleted: unload it even though live mods still use it. Tell their owners first.",
+        },
       },
       required: ["mod"],
     },
@@ -154,7 +158,7 @@ const tools = [
   {
     name: "wait_for_chat",
     description:
-      "Wait until your player says something in the in-game chat, or someone mentions your player's name, then return all chat since your last call. Call it whenever you have nothing else to do: players ask their Claudes for things in chat. New chat is also appended to every other tool result.",
+      "Wait until your player says something in the in-game chat, or someone mentions your player's name, or another Claude's message to claudes names your player, claudes or everyone, then return all chat since your last call. Call it whenever you have nothing else to do: players ask their Claudes for things in chat. New chat is also appended to every other tool result.",
     inputSchema: { type: "object", properties: { seconds: { type: "number", description: "How long to wait, default 60, max 240." } } },
   },
   {
@@ -174,8 +178,13 @@ const tools = [
   },
   {
     name: "say",
-    description: "Post a short message in the in-game chat, shown as your player's Claude: what you just built, or an answer to someone.",
-    inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+    description:
+      "Post a short message in the in-game chat, shown as your player's Claude: what you just built, or an answer to someone. To coordinate with other Claudes (API contracts, hashes, who builds what), pass to: \"claudes\" instead: players don't see it in chat, other Claudes get it with their chat and it wakes their wait_for_chat when it names their player, claudes or everyone.",
+    inputSchema: {
+      type: "object",
+      properties: { text: { type: "string" }, to: { type: "string", enum: ["claudes"], description: "claudes: only other Claudes read it (and players who open the Builders tab)." } },
+      required: ["text"],
+    },
   },
 ];
 
@@ -310,7 +319,7 @@ export function createMcp(ctx: McpContext) {
         if (ctx.rules() === "additive" && owner && owner !== who && owner !== "world") throw new ToolError(`This world is additive: ${mod} belongs to ${owner}.`);
         claim(mod, who);
         const isNew = !ctx.mods.running.has(mod);
-        const result = await ctx.mods.reload(mod, who, ctx.owners[mod]!);
+        const result = await ctx.mods.reload(mod, who, ctx.owners[mod]!, args.force === true);
         if (!result.ok) throw new ToolError(result.report);
         const a = args.announce;
         if (a || isNew)
@@ -381,13 +390,14 @@ export function createMcp(ctx: McpContext) {
       case "wait_for_chat": {
         const until = Date.now() + Math.min(Number(args.seconds) || 60, 240) * 1000;
         const called = who === GAME_MASTER ? /\b(gm|game ?master)\b/i : { test: (text: string) => text.toLowerCase().includes(who) };
-        const forMe = () => unseenChat(who).some((c) => c.from === who || called.test(c.text));
+        const forMe = () => unseenChat(who).some((c) => c.from === who || called.test(c.text) || (c.claudes && /\b(claudes|everyone)\b/i.test(c.text)));
         while (!forMe() && Date.now() < until) await Promise.race([ctx.nextChat(), Bun.sleep(until - Date.now())]);
         return forMe() ? "New chat:" : who === GAME_MASTER ? "Nobody called for the game master. Check how play feels and tune one small thing if it needs it." : `Nothing for you from ${who} yet.`;
       }
       case "say":
-        ctx.chat(speaker(who), String(args.text).slice(0, 300));
-        return "Said.";
+        if (args.to !== undefined && args.to !== "claudes") throw new ToolError(`to can only be "claudes"; leave it out to talk in the players' chat.`);
+        ctx.chat(speaker(who), String(args.text).slice(0, 300), args.to);
+        return args.to ? "Sent to the other Claudes." : "Said.";
       case "task": {
         const state = ["done", "blocked"].includes(args.state) ? args.state : "working";
         const percent = Number.isFinite(args.percent) ? Math.max(0, Math.min(100, Math.round(args.percent))) : undefined;
@@ -402,12 +412,17 @@ export function createMcp(ctx: McpContext) {
   const STALE = "This connection's key isn't valid for the world running now: the host switched worlds or removed this player. Ask your player to open the game, join, copy the new connect command from the game menu, and restart Claude Code with it.";
   const chatSeen = new Map<string, number>();
   const unseenChat = (who: string) => ctx.chatLog.filter((c) => c.seq > (chatSeen.get(who) ?? 0) && c.from !== speaker(who));
+  /** Everything said since this Claude last looked, however long it was busy; a Claude new to the world gets the recent conversation. */
   function takeChat(who: string) {
-    const unseen = unseenChat(who);
-    const lines = unseen.map((c) => `${c.from}${c.spoken ? " (said aloud)" : ""}: ${c.text}`);
+    const cursor = chatSeen.get(who);
+    const all = unseenChat(who);
+    const unseen = cursor === undefined ? all.slice(-30) : all;
+    const oldest = ctx.chatLog[0]?.seq ?? 0;
+    const lost = cursor !== undefined && cursor < oldest - 1 ? `(${oldest - 1 - cursor} older lines are no longer kept)\n` : "";
+    const lines = unseen.map((c) => `${c.claudes ? "[claudes] " : ""}${c.from}${c.spoken ? " (said aloud)" : ""}: ${c.text}`);
     chatSeen.set(who, ctx.chatLog.at(-1)?.seq ?? 0);
     const spoken = unseen.some((c) => c.spoken) ? "\n(said aloud) lines are what a player said into their microphone (hold T or open chat): often talk between players, not orders. See GUIDE.md, Listening to players." : "";
-    return lines.length ? [{ type: "text", text: `In-game chat since your last call:\n${lines.join("\n")}${spoken}` }] : [];
+    return lines.length ? [{ type: "text", text: `In-game chat since your last look, oldest first:\n${lost}${lines.join("\n")}${spoken}` }] : [];
   }
 
   async function handle(msg: any, who: string | null) {

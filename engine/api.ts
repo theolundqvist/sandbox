@@ -45,8 +45,10 @@ export interface World {
   dbOf(mod: string): ModDb;
   /** One-off event for client mods' `event` hook (explosions, sounds, screen shake). `to` limits it to those player ids. */
   emit(name: string, data?: any, to?: string[]): void;
-  /** Functions another mod exported with `exports`. They run as that mod (its world.db, its errors). */
+  /** Functions another mod exported with `exports`. They run as that mod (its world.db, its errors). Throws if that mod is not live. */
   use<T = any>(mod: string): T;
+  /** Whether that mod is live with exports: check it before use() when your mod works without the other one. */
+  has(mod: string): boolean;
   /** Runs fn as this mod after ms milliseconds. */
   later(ms: number, fn: (world: World) => void): void;
   /** Runs async work (fetch, APIs, MCP servers); touch the world only inside run(fn), which runs as this mod. */
@@ -99,8 +101,10 @@ export interface ClientCtx {
   keys: Set<string>;
   /** Sends a message to this mod's server half. */
   send(msg: any): void;
-  /** Functions another client mod exported with `exports`. */
+  /** Functions another client mod exported with `exports`. Throws if that mod is not live. */
   use<T = any>(mod: string): T;
+  /** Whether that client mod is live with exports: check it before use() when your mod works without the other one. */
+  has(mod: string): boolean;
   /** URL of a file added with add_asset: ctx.asset("dragon.glb") for this mod's, ctx.asset("other-mod/dragon.glb") for another's. */
   asset(name: string): string;
   /** Your block in the game menu (Tab) tab with this title, which is created if no tab has it. Extend the engine's "Game", "Builders", "Mods" and "Help" tabs or another mod's tab by using its title. Removed when this mod reloads. */

@@ -285,9 +285,10 @@ function call(m: Loaded, hook: keyof ClientHooks, ...args: any[]): any {
   return result;
 }
 
+const has = (name: string) => !!mods.get(name)?.mod.exports;
 function use(name: string) {
   const target = mods.get(name);
-  if (!target?.mod.exports) throw new Error(`${name} is not loaded or exports nothing`);
+  if (!target?.mod.exports) throw new Error(`${name} is not loaded or exports nothing. If your mod works without it, check ctx.has("${name}") before use.`);
   return Object.fromEntries(Object.entries(target.mod.exports).map(([k, fn]) => [k, (...a: any[]) => fn.call(target.mod.exports, target.ctx, ...a)])) as any;
 }
 
@@ -336,6 +337,7 @@ async function loadMod(name: string, url: string | null) {
     keys,
     send: (msg) => send({ t: "m", mod: name, msg }),
     use,
+    has,
     asset: (file) => `/assets/${file.includes("/") ? file : `${name}/${file}`}`,
     menuTab: (title) => {
       const block = document.createElement("div");
@@ -456,6 +458,8 @@ function connect() {
         showClaude(msg.claudes[me]?.state ?? "offline");
         claudes = new Map(Object.entries(msg.claudes));
         showBuilders();
+        $("menu-talk").replaceChildren();
+        for (const line of msg.talk) addTalk(line.from, line.text);
         const wanted = new Map<string, string>(msg.mods.map((m: any) => [m.name, m.url]));
         for (const name of mods.keys()) if (!wanted.has(name)) await loadMod(name, null);
         for (const [name, url] of wanted) await loadMod(name, url);
@@ -493,6 +497,8 @@ function connect() {
         return;
       case "chat":
         return addLine(`${msg.from}${msg.spoken ? " (voice)" : ""}: ${msg.text}`, msg.from.endsWith("'s Claude") || msg.from === "Game master" ? "claude" : msg.spoken ? "chat spoken" : "chat");
+      case "talk":
+        return addTalk(msg.from, msg.text);
     }
   };
   ws.onclose = (e) => {
@@ -769,6 +775,15 @@ function showBuilders() {
         })
       : [Object.assign(document.createElement("li"), { textContent: "No Claude has connected yet." })]),
   );
+}
+
+/** What Claudes tell each other with say to "claudes": kept out of chat, readable in the Builders tab. */
+function addTalk(from: string, text: string) {
+  const li = document.createElement("li");
+  li.append(Object.assign(document.createElement("b"), { textContent: from }), text);
+  $("menu-talk").append(li);
+  while ($("menu-talk").children.length > 50) $("menu-talk").firstElementChild!.remove();
+  $("talk-count").textContent = String($("menu-talk").children.length);
 }
 
 const claudeLabels = { listening: "Claude listening", working: "Claude working…", offline: "Connect Claude" };

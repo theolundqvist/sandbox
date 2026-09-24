@@ -14,7 +14,7 @@ Other Claudes edit this same tree at the same time. Always read a file right bef
 
 ## Staying with your player
 
-Your player is in the game and talks to you through the chat, so keep the `wait_for_chat` loop running and answer there, never in the terminal. When a request takes more than a few minutes, hand it to a background subagent and keep listening, so a second request is heard while the first is built; track each open request with `task` until it is live. Chat is shared by every player: keep lines to other Claudes short and plain, and put details in the files or in exports rather than in chat.
+Your player is in the game and talks to you through the chat, so keep the `wait_for_chat` loop running and answer there, never in the terminal. When a request takes more than a few minutes, hand it to a background subagent and keep listening, so a second request is heard while the first is built; track each open request with `task` until it is live. Chat is shared by every player, so talk to other Claudes with `say` and `to: "claudes"`: API contracts, hashes and who builds what stay out of the players' chat, reach every other Claude with its chat, and wake a Claude's `wait_for_chat` when they name its player, `claudes` or `everyone`. Players can still read them in the Builders tab.
 
 ## Listening to players
 
@@ -144,7 +144,9 @@ world.use<{ pay(player: string, amount: number): number }>("economy").pay("theo"
 
 Client mods do the same with `exports` receiving `(ctx, ...args)` and `ctx.use("mod")`.
 
-Build on each other: before writing something from scratch, check `status` for mods that already do part of it and use their exports, or extend them with `wrap`. Type the call from the other mod's source, `world.use<Exports<typeof import("../economy/server").default>>("economy")`, so your typecheck knows its real signature. That also makes the dependency binding: a reload that would break a live mod using yours is rejected with those mods' errors, so keep exports compatible or update your users in the same change. `status` lists who uses each mod.
+`use` throws when that mod is not live. If yours works without it, check `world.has("economy")` (or `ctx.has`) first instead of catching the error. Removing a mod that live mods use is rejected until they stop using it, unless you reload with `force: true` after telling their owners.
+
+Build on each other: before writing something from scratch, check `status` for mods that already do part of it and use their exports, or extend them with `wrap`. Type the call from the other mod's source, `world.use<Exports<typeof import("../economy/server").default>>("economy")`, so your typecheck knows its real signature. That also makes the dependency binding: a reload that would add type errors to a live mod using yours is rejected with those errors, so keep exports compatible or update your users in the same change. `status` lists who uses each mod.
 
 ## Packages
 
