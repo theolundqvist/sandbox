@@ -1,8 +1,9 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { ServerWebSocket } from "bun";
+import type { Server, ServerWebSocket } from "bun";
 import { createMcp, GAME_MASTER, type Task } from "./mcp";
 import { ENGINE_KEYS, Mods } from "./mods";
+import { latencies, openRecord, route } from "./record";
 import { SimHost } from "./simhost";
 import { openStore } from "./world";
 
@@ -14,7 +15,7 @@ const DB = join(DATA, "db");
 const PORT = Number(process.env.PORT ?? 7777);
 
 export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "hills" | "blank"; invite: string; hostKey: string };
-type Conn = { name: string };
+type Conn = { name: string; ua: string; at: number };
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 const readJson = <T>(file: string, fallback: T): T => (existsSync(join(DATA, file)) ? JSON.parse(readFileSync(join(DATA, file), "utf8")) : fallback);
@@ -90,6 +91,7 @@ writeFileSync(
 Bun.spawnSync(["git", "add", "-A"], { cwd: ROOT });
 Bun.spawnSync(["git", "commit", "-qm", "server start"], { cwd: ROOT });
 
+const record = openRecord(join(DATA, "record.sqlite"));
 const logs: { at: number; mod: string; level: string; text: string; player?: string }[] = [];
 const clientPerf = new Map<string, { at: number } & Record<string, unknown>>();
 const feedLog: { at: number; text: string; kind: string }[] = [];
@@ -101,6 +103,7 @@ function chat(from: string, text: string, how?: "spoken" | "claudes") {
   const spoken = how === "spoken" || undefined;
   const claudes = how === "claudes" || undefined;
   chatLog.push({ seq: ++chatSeq, from, text, spoken, claudes });
+  record.add("chat", from, { text, how });
   console.log(`[chat] ${claudes ? "[claudes] " : ""}${from}${spoken ? " (voice)" : ""}: ${text}`);
   if (chatLog.length > 2000) chatLog.shift();
   broadcast(claudes ? { t: "talk", from, text } : { t: "chat", from, text, spoken });
@@ -119,6 +122,7 @@ function react(from: string, mod: string, kind: string) {
   v[kind].add(from);
   v[kind === "love" ? "undo" : "love"].delete(from);
   const needed = Math.floor(sockets.size / 2) + 1;
+  record.add("action", from, { what: "vote", mod, kind, version: live.version });
   broadcast({ t: "votes", mod, love: v.love.size, undo: v.undo.size, needed });
   chat("game", kind === "love" ? `${from} loves ${mod} by ${live.author}` : `${from} votes to undo ${mod} by ${live.author} (${v.undo.size}/${needed})`);
   if (v.undo.size < needed) return;
@@ -133,7 +137,9 @@ const builder = (name: string) => ({ state: claudes.get(name)?.state ?? "offline
 function presence(name: string, state: Presence) {
   const changed = claudes.get(name)?.state !== state;
   claudes.set(name, { ...claudes.get(name), state, at: Date.now() });
-  if (changed) broadcast({ t: "claude", name, ...builder(name) });
+  if (!changed) return;
+  broadcast({ t: "claude", name, ...builder(name) });
+  record.add("claude", name, { state });
 }
 function setTask(name: string, task: Task) {
   claudes.set(name, { state: "working", ...claudes.get(name), at: Date.now(), task });
@@ -150,13 +156,36 @@ const gameMasterKey = Object.keys(keys).find((k) => keys[k] === GAME_MASTER)!;
 setInterval(() => {
   for (const [name, c] of claudes) if (c.state === "working" && Date.now() - c.at > 120_000) presence(name, "offline");
 }, 15_000);
+/** Websocket traffic per player since the last server sample. */
+const traffic = new Map<string, { outKB: number; out: number; maxKB: number; inKB: number; in: number }>();
+function usage(name: string) {
+  const t = traffic.get(name) ?? { outKB: 0, out: 0, maxKB: 0, inKB: 0, in: 0 };
+  traffic.set(name, t);
+  return t;
+}
+function sent(name: string, text: string) {
+  const t = usage(name);
+  t.out++;
+  t.outKB += text.length / 1024;
+  t.maxKB = Math.max(t.maxKB, text.length / 1024);
+}
 const broadcast = (msg: object) => {
   const text = JSON.stringify(msg);
-  for (const ws of sockets.values()) ws.send(text);
+  for (const [name, ws] of sockets) {
+    ws.send(text);
+    sent(name, text);
+  }
 };
+/** A mod that logs an error every tick records at most 20 a minute. */
+const errorBudget = new Map<string, { minute: number; n: number }>();
 function log(mod: string, level: string, text: string, player?: string) {
   logs.push({ at: Date.now(), mod, level, text, player });
   if (logs.length > 1000) logs.shift();
+  if (!level.endsWith("error")) return;
+  const minute = Math.floor(Date.now() / 60_000);
+  const budget = errorBudget.get(mod)?.minute === minute ? errorBudget.get(mod)! : { minute, n: 0 };
+  errorBudget.set(mod, budget);
+  if (++budget.n <= 20) record.add("error", player ?? null, { mod, level, text: text.slice(0, 500) });
 }
 function feed(text: string, kind = "info") {
   feedLog.push({ at: Date.now(), text, kind });
@@ -168,10 +197,14 @@ function feed(text: string, kind = "info") {
 const mods = new Mods(ROOT, BUILD, join(DATA, "mods.json"), {
   client: (name, url) => broadcast({ t: "mod", name, url }),
   feed,
+  record: record.add,
 });
 const sim = new SimHost(DB, () => mods.list(), {
   tick: (outs) => {
-    for (const [id, text] of Object.entries(outs)) sockets.get(id)?.send(text);
+    for (const [id, text] of Object.entries(outs)) {
+      sockets.get(id)?.send(text);
+      sent(id, text);
+    }
   },
   log,
   fault: (mod, error) => {
@@ -192,6 +225,7 @@ setInterval(() => store.snapshot(sim), 60_000);
 setInterval(() => store.record(sim), 2000);
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, () => {
+    record.close();
     store.save(sim);
     process.exit(0);
   });
@@ -220,6 +254,40 @@ const perf = () => ({
   players: Object.fromEntries([...clientPerf].map(([name, { at, ...p }]) => [name, { ...p, secondsOld: Math.round((Date.now() - at) / 1000) }])),
 });
 
+/** Every 10 s: simulation tick times, how long the main thread stalled, process CPU and memory, and each player's websocket traffic. */
+const http = latencies();
+const simWindow: NonNullable<typeof sim.perf>[] = [];
+let lastPerf = sim.perf;
+let lagMs = 0;
+let lagAt = performance.now();
+let cpu = process.cpuUsage();
+setInterval(() => {
+  const now = performance.now();
+  lagMs = Math.max(lagMs, now - lagAt - 100);
+  lagAt = now;
+  if (sim.perf && sim.perf !== lastPerf) simWindow.push((lastPerf = sim.perf));
+}, 100);
+setInterval(() => {
+  const used = process.cpuUsage(cpu);
+  cpu = process.cpuUsage();
+  const r = (v: number) => Math.round(v * 10) / 10;
+  record.add("server", null, {
+    tick: { avg: r(Math.max(0, ...simWindow.map((p) => p.msPerTick))), p50: r(Math.max(0, ...simWindow.map((p) => p.p50))), p95: r(Math.max(0, ...simWindow.map((p) => p.p95))), max: r(Math.max(0, ...simWindow.map((p) => p.max))) },
+    mods: simWindow.at(-1)?.mods,
+    lagMs: Math.round(lagMs),
+    cpuPct: Math.round((used.user + used.system) / 100_000),
+    rssMB: Math.round(process.memoryUsage().rss / 1048576),
+    heapMB: Math.round(process.memoryUsage().heapUsed / 1048576),
+    entities: sim.entities.size,
+    online: sockets.size,
+    ws: Object.fromEntries([...traffic].map(([name, t]) => [name, { outKB: Math.round(t.outKB), out: t.out, maxKB: r(t.maxKB), inKB: r(t.inKB), in: t.in }])),
+    http: http.take(),
+  });
+  simWindow.length = 0;
+  lagMs = 0;
+  traffic.clear();
+}, 10_000);
+
 let publicUrl: string | null = null;
 const shots = new Map<string, (data: string) => void>();
 const mcp = createMcp({
@@ -244,6 +312,7 @@ const mcp = createMcp({
   nextChat: () => new Promise<void>((resolve) => chatWaiters.add(function wake() { chatWaiters.delete(wake); resolve(); })),
   status,
   perf,
+  record,
   screenshot: (who) =>
     new Promise((resolve, reject) => {
       const ws = sockets.get(who);
@@ -279,7 +348,7 @@ const bearer = (req: Request) => req.headers.get("authorization")?.replace(/^Bea
 const server = Bun.serve<Conn>({
   port: PORT,
   idleTimeout: 255,
-  async fetch(req, server) {
+  fetch: timed(async (req, server) => {
     const url = new URL(req.url);
     const path = url.pathname;
 
@@ -323,6 +392,16 @@ const server = Bun.serve<Conn>({
           return Response.json({ invite: config.invite });
         case "snapshots":
           return Response.json(store.snapshots());
+        case "activity":
+          return Response.json(
+            record.activity({
+              minutes: Number(url.searchParams.get("minutes") ?? 60),
+              who: url.searchParams.get("who") ?? undefined,
+              kind: url.searchParams.get("kind") ?? undefined,
+              limit: Number(url.searchParams.get("limit") ?? 200),
+              summary: url.searchParams.get("summary") !== "false",
+            }),
+          );
         case "rewind": {
           if (!store.rewind(Number(body.at), sim)) return Response.json({ error: "That moment is no longer saved." }, { status: 404 });
           store.save(sim);
@@ -335,16 +414,26 @@ const server = Bun.serve<Conn>({
     if (path === "/api/timelapse") {
       const who = nameByKey(bearer(req));
       if (!who) return new Response(null, { status: 401 });
-      return new Response(Bun.gzipSync(JSON.stringify(await sim.visibleTo(who, store.ticks(600)))), { headers: { "content-type": "application/json", "content-encoding": "gzip" } });
+      const started = performance.now();
+      const body = Bun.gzipSync(JSON.stringify(await sim.visibleTo(who, store.ticks(600))));
+      record.add("action", who, { what: "timelapse", ms: Math.round(performance.now() - started), bytes: body.length });
+      return new Response(body, { headers: { "content-type": "application/json", "content-encoding": "gzip" } });
     }
     if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json({ ...status(), gameMaster: { key: gameMasterKey, ...builder(GAME_MASTER) } }) : new Response(null, { status: 401 });
     if (path === "/api/voice" && req.method === "POST") {
       const who = nameByKey(bearer(req));
       if (!who) return new Response(null, { status: 401 });
       const audio = await req.blob();
+      const started = performance.now();
       transcribe(audio).then(
-        (text) => text && chat(who, text.slice(0, 300), "spoken"),
-        (error) => console.log(`[voice] ${who}: ${error.message}`),
+        (text) => {
+          record.add("action", who, { what: "voice", ms: Math.round(performance.now() - started), bytes: audio.size, heard: !!text });
+          if (text) chat(who, text.slice(0, 300), "spoken");
+        },
+        (error) => {
+          console.log(`[voice] ${who}: ${error.message}`);
+          record.add("error", who, { mod: "voice", level: "error", text: String(error.message).slice(0, 500) });
+        },
       );
       return new Response(null, { status: 204 });
     }
@@ -369,10 +458,10 @@ const server = Bun.serve<Conn>({
     if (path === "/ws") {
       const name = nameByKey(url.searchParams.get("key"));
       if (!name) return new Response("unknown key", { status: 401 });
-      return server.upgrade(req, { data: { name } }) ? undefined : new Response("upgrade failed", { status: 400 });
+      return server.upgrade(req, { data: { name, ua: req.headers.get("user-agent") ?? "", at: Date.now() } }) ? undefined : new Response("upgrade failed", { status: 400 });
     }
     return new Response("not found", { status: 404 });
-  },
+  }),
   websocket: {
     open(ws) {
       const { name } = ws.data;
@@ -397,8 +486,12 @@ const server = Bun.serve<Conn>({
         }),
       );
       if (!previous) feed(`${name} joined`, "info");
+      record.add("session", name, { event: previous ? "rejoin" : "join", ua: ws.data.ua.slice(0, 200) });
     },
     message(ws, raw) {
+      const t = usage(ws.data.name);
+      t.in++;
+      t.inKB += raw.length / 1024;
       const msg = JSON.parse(String(raw));
       if (msg.t === "m") sim.send({ t: "msg", id: ws.data.name, mod: msg.mod, msg: msg.msg });
       else if (msg.t === "chat") chat(ws.data.name, String(msg.text).slice(0, 300));
@@ -411,17 +504,64 @@ const server = Bun.serve<Conn>({
         const { t, at, ...report } = msg;
         clientPerf.set(ws.data.name, { ...report, at: Date.now() });
         ws.send(JSON.stringify({ t: "pong", at }));
-      }
+        samplePlayer(ws.data.name, report);
+      } else if (msg.t === "loaded") record.add("session", ws.data.name, { loaded: true, firstFrameMs: msg.firstFrameMs, modsMs: msg.modsMs, slowestMods: msg.slowestMods, screen: msg.screen });
+      else if (msg.t === "act") record.add("action", ws.data.name, { what: String(msg.what).slice(0, 40), detail: String(msg.detail ?? "").slice(0, 120) });
     },
     close(ws) {
       if (sockets.get(ws.data.name) !== ws) return;
       sockets.delete(ws.data.name);
       clientPerf.delete(ws.data.name);
+      clientWindow.delete(ws.data.name);
+      record.add("session", ws.data.name, { event: "leave", seconds: Math.round((Date.now() - ws.data.at) / 1000) });
       sim.send({ t: "leave", id: ws.data.name });
       feed(`${ws.data.name} left`, "info");
     },
   },
 });
+
+function timed(handle: (req: Request, server: Server<Conn>) => Promise<Response | undefined>) {
+  return async (req: Request, server: Server<Conn>) => {
+    const started = performance.now();
+    try {
+      return await handle(req, server);
+    } finally {
+      http.add(`${req.method} ${route(new URL(req.url).pathname)}`, performance.now() - started);
+    }
+  };
+}
+
+/** Games report every 2 s; the record keeps one row per 10 s with the worst frame times of those reports. */
+const clientWindow = new Map<string, any[]>();
+function samplePlayer(name: string, report: any) {
+  const reports = [...(clientWindow.get(name) ?? []), report];
+  clientWindow.set(name, reports);
+  if (reports.length < 5) return;
+  clientWindow.delete(name);
+  const worst = (key: string) => Math.max(...reports.map((r) => r[key] ?? 0));
+  const { drawCallsPerFrame, trianglesPerFrame, sceneObjects, entities, pingMs, downloadKBps, heapMB, geometries, textures, modsMsPerFrame, msPerFrame, hidden } = report;
+  record.add("client", name, {
+    fps: Math.min(...reports.map((r) => r.fps)),
+    p95FrameMs: worst("p95FrameMs"),
+    slowestFrameMs: worst("slowestFrameMs"),
+    msPerFrame,
+    drawCalls: drawCallsPerFrame,
+    triangles: trianglesPerFrame,
+    sceneObjects,
+    geometries,
+    textures,
+    entities,
+    pingMs,
+    downloadKBps,
+    heapMB,
+    mods: Object.fromEntries(Object.entries(modsMsPerFrame ?? {}).slice(0, 5)),
+    hidden,
+    pressed: reports.reduce((all, r) => {
+      for (const [key, n] of Object.entries(r.pressed ?? {})) all[key] = (all[key] ?? 0) + (n as number);
+      return all;
+    }, {}),
+  });
+}
 
 const base = `http://localhost:${server.port}`;
 console.log(`\n  ${config.name} is running.\n  Host link (keep private): ${base}/#invite=${config.hostKey}\n`);

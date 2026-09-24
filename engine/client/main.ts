@@ -292,7 +292,7 @@ function use(name: string) {
   return Object.fromEntries(Object.entries(target.mod.exports).map(([k, fn]) => [k, (...a: any[]) => fn.call(target.mod.exports, target.ctx, ...a)])) as any;
 }
 
-async function loadMod(name: string, url: string | null) {
+async function loadMod(name: string, url: string | null, rebuild = true) {
   const old = mods.get(name);
   if (old?.url === url) return;
   let mod: ClientMod | null = null;
@@ -312,7 +312,7 @@ async function loadMod(name: string, url: string | null) {
   }
   if (!mod || !url) {
     reorder();
-    return rebuildAll();
+    return rebuild && rebuildAll();
   }
   const ctx: ClientCtx = {
     THREE,
@@ -360,7 +360,7 @@ async function loadMod(name: string, url: string | null) {
   mods.set(name, loaded);
   reorder();
   call(loaded, "init");
-  if (mod.object || old?.mod.object) rebuildAll();
+  if (rebuild && (mod.object || old?.mod.object)) rebuildAll();
 }
 
 /** The section of the menu tab with this title; mods share tabs by title, and a tab no mod fills any more goes away. */
@@ -411,6 +411,7 @@ function nearestAction() {
 function runAction() {
   const near = nearestAction();
   if (!near) return;
+  send({ t: "act", what: "interact", detail: near.mod.name });
   try {
     near.action.run();
   } catch (e: any) {
@@ -461,9 +462,27 @@ function connect() {
         $("menu-talk").replaceChildren();
         for (const line of msg.talk) addTalk(line.from, line.text);
         const wanted = new Map<string, string>(msg.mods.map((m: any) => [m.name, m.url]));
-        for (const name of mods.keys()) if (!wanted.has(name)) await loadMod(name, null);
-        for (const [name, url] of wanted) await loadMod(name, url);
+        // Every mod downloads at once; they still start in order, and entities are rebuilt once for all of them.
+        await Promise.allSettled([...wanted.values()].map((url) => import(url)));
+        const modMs: [string, number][] = [];
+        for (const name of mods.keys()) if (!wanted.has(name)) await loadMod(name, null, false);
+        for (const [name, url] of wanted) {
+          const started = performance.now();
+          await loadMod(name, url, false);
+          modMs.push([name, Math.round(performance.now() - started)]);
+        }
+        rebuildAll();
         for (const f of msg.feed) addLine(f.text, f.kind);
+        const modsMs = Math.round(performance.now() - welcomedAt);
+        requestAnimationFrame(() =>
+          send({
+            t: "loaded",
+            firstFrameMs: Math.round(performance.now()),
+            modsMs,
+            slowestMods: Object.fromEntries(modMs.sort((a, b) => b[1] - a[1]).slice(0, 5)),
+            screen: `${innerWidth}x${innerHeight}`,
+          }),
+        );
         return;
       }
       case "public":
@@ -523,7 +542,7 @@ async function screenshot() {
   const scene3d = new Image();
   scene3d.src = renderer.domElement.toDataURL("image/png");
   const [overlay] = await Promise.all([
-    toCanvas(document.body, { filter: (node) => node !== renderer.domElement, skipFonts: true, pixelRatio: 1, style: { background: "transparent" } }),
+    toCanvas(document.body, { filter: (node) => node !== renderer.domElement && !(node as HTMLElement).hidden, skipFonts: true, pixelRatio: 1, style: { background: "transparent" } }),
     scene3d.decode(),
   ]);
   const out = Object.assign(document.createElement("canvas"), { width: innerWidth, height: innerHeight });
@@ -719,7 +738,9 @@ addEventListener("keydown", (e: KeyboardEvent) => {
   if (e.code === "Escape" && !typing() && !menu.hidden) return closeMenu();
   if (e.code === "KeyT" && !typing() && menu.hidden) return startTalking();
   if (e.code === "KeyE" && !e.repeat && !typing() && menu.hidden) runAction();
-  if (!typing()) keys.add(e.code);
+  if (typing()) return;
+  keys.add(e.code);
+  if (!e.repeat) pressed[e.code] = (pressed[e.code] ?? 0) + 1;
 });
 addEventListener("keyup", (e: KeyboardEvent) => {
   if (e.code === "KeyT") stopTalking(true);
@@ -832,6 +853,7 @@ if (matchMedia("(pointer: coarse)").matches) enableTouch();
 else addEventListener("touchstart", enableTouch, { once: true });
 $("menu-close").onclick = closeMenu;
 function showTab(tab: string) {
+  send({ t: "act", what: "tab", detail: $("tabs").querySelector(`[data-tab="${tab}"]`)?.textContent ?? tab });
   for (const el of $("menu").querySelectorAll<HTMLElement>("[data-tab]")) {
     if (el.tagName === "BUTTON") el.classList.toggle("active", el.dataset.tab === tab);
     else el.hidden = el.dataset.tab !== tab;
@@ -915,6 +937,7 @@ function runPicked(i: number) {
   const command = shown[i];
   if (!command) return;
   palette.hidden = true;
+  send({ t: "act", what: "palette", detail: `${command.where}: ${command.label}` });
   command.run();
   capture();
 }
@@ -964,6 +987,7 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-via]"))
 }
 
 async function openMenu() {
+  send({ t: "act", what: "menu" });
   keys.clear();
   menu.hidden = false;
   replaying = false;
@@ -1068,6 +1092,8 @@ function draw(dt: number) {
 
 // ---------- debugging for the Claudes: the perf and logs tools ----------
 const stats = { frames: [] as number[], loopMs: 0, drawMs: 0, calls: 0, triangles: 0, bytes: 0, ping: 0 };
+/** Key presses since the last report, so the record shows which controls players use. */
+let pressed: Record<string, number> = {};
 const gl = renderer.getContext();
 const gpu = gl.getExtension("WEBGL_debug_renderer_info");
 const gpuName = gpu ? gl.getParameter(gpu.UNMASKED_RENDERER_WEBGL) : "unknown";
@@ -1097,7 +1123,9 @@ setInterval(() => {
     screen: `${renderer.domElement.width}x${renderer.domElement.height} at pixel ratio ${renderer.getPixelRatio()}`,
     gpu: gpuName,
     hidden: document.hidden || undefined,
+    pressed,
   });
+  pressed = {};
   for (const m of ordered) m.ms = 0;
   Object.assign(stats, { frames: [], loopMs: 0, drawMs: 0, calls: 0, triangles: 0, bytes: 0 });
   reportedAt = now;

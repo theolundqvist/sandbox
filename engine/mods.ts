@@ -9,6 +9,7 @@ type Mod = { id: number; author: string; version: number; build: Build; previous
 export type ModEvents = {
   client(name: string, url: string | null): void;
   feed(text: string, kind?: "ok" | "error" | "info"): void;
+  record(kind: "reload" | "error", who: string | null, data: object): void;
 };
 
 const MOD_NAME = /^[a-z][a-z0-9-]{0,31}$/;
@@ -20,11 +21,18 @@ export const ENGINE_KEYS: Record<string, string> = { Tab: "the game menu", Enter
 const SHARED_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Shift", "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "Escape"]);
 const TSC = join(import.meta.dir, "../node_modules/.bin/tsc");
 
-async function tsc(root: string) {
-  const proc = Bun.spawn([TSC, "-p", root, "--pretty", "false"], { cwd: root, stdout: "pipe", stderr: "pipe" });
-  const lines = (await new Response(proc.stdout).text()).split("\n");
-  await proc.exited;
-  return lines;
+/** Checks only these mods' files and what they import, which reports the same errors in them as checking the whole tree. */
+async function tsc(root: string, mods: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), "sandbox-tsconfig-"));
+  try {
+    writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ extends: join(root, "tsconfig.json"), include: mods.map((mod) => join(root, "mods", mod, "**/*.ts")) }));
+    const proc = Bun.spawn([TSC, "-p", join(dir, "tsconfig.json"), "--pretty", "false"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+    const lines = (await new Response(proc.stdout).text()).split("\n");
+    await proc.exited;
+    return lines;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 export class Mods {
@@ -98,21 +106,35 @@ export class Mods {
     }
 
     const started = performance.now();
+    const ms: Record<string, number> = {};
+    let mark = started;
+    const lap = (stage: string) => {
+      const now = performance.now();
+      ms[stage] = Math.round(now - mark);
+      mark = now;
+    };
+    const reject = (stage: string, report: string) => {
+      lap(stage);
+      this.events.record("reload", who, { mod: name, ok: false, stage, ms: { ...ms, total: Math.round(performance.now() - started) }, report: report.slice(0, 500) });
+      return this.fail(name, who, report);
+    };
     const { own, dependents } = await this.typecheck(name);
-    if (own) return this.fail(name, who, `Type errors, nothing changed:\n${own}`);
+    if (own) return reject("typecheck", `Type errors, nothing changed:\n${own}`);
     if (dependents)
-      return this.fail(
-        name,
-        who,
+      return reject(
+        "typecheck",
         `This change breaks live mods that use ${name}, nothing changed. Keep ${name}'s exports compatible, or fix those mods in the same change and reload them after this one:\n${dependents}`,
       );
+    lap("typecheck");
     const build = await this.build(name);
-    if (typeof build === "string") return this.fail(name, who, `Build failed, nothing changed:\n${build}`);
+    if (typeof build === "string") return reject("build", `Build failed, nothing changed:\n${build}`);
+    lap("build");
 
     const id = current?.id ?? this.nextId++;
     if (build.server) {
       const error = await this.sim.trial({ name, id, server: build.server });
-      if (error) return this.fail(name, who, `Test run against a copy of the live world failed, nothing changed:\n${error}`);
+      if (error) return reject("trial", `Test run against a copy of the live world failed, nothing changed:\n${error}`);
+      lap("trial");
     }
 
     const version = (current?.version ?? 0) + 1;
@@ -120,11 +142,14 @@ export class Mods {
     this.save();
     const loadError = await this.sim.apply({ name, id, server: build.server });
     this.events.client(name, build.client);
+    lap("apply");
     await this.commit(name, `${name} v${version}`, who);
-    const ms = Math.round(performance.now() - started);
+    lap("commit");
+    const total = Math.round(performance.now() - started);
+    this.events.record("reload", who, { mod: name, ok: true, version, ms: { ...ms, total }, loadError: loadError?.slice(0, 500) });
     this.events.feed(`${who} reloaded ${name} v${version}`, "ok");
     const warning = loadError ? `\nBut its load hook threw on the live world:\n${loadError}` : "";
-    return { ok: true, report: `${name} v${version} is live for everyone (${ms} ms).${warning}${this.overlaps(name)}\nWatch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.` };
+    return { ok: true, report: `${name} v${version} is live for everyone (${total} ms).${warning}${this.overlaps(name)}\nWatch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.` };
   }
 
   /** Which live mods read which keys and fill which menu tabs, found in their client code. */
@@ -163,6 +188,7 @@ export class Mods {
   revert(name: string, error: string) {
     const mod = this.running.get(name);
     if (!mod) return;
+    this.events.record("error", null, { mod: name, revert: true, text: error.slice(0, 500) });
     const previous = mod.previous.pop();
     if (previous) {
       mod.build = previous;
@@ -183,13 +209,13 @@ export class Mods {
   private async typecheck(name: string) {
     const users = this.users(name);
     const errorsIn = (lines: string[], mods: string[]) => lines.filter((line) => mods.some((mod) => line.startsWith(`mods/${mod}/`)));
-    const lines = await tsc(this.root);
+    const lines = await tsc(this.root, [name, ...users]);
     let dependents = errorsIn(lines, users);
     // Errors those mods have without this change, like their own unfinished edits, are not this change's doing.
     if (dependents.length) {
       const before = await this.withoutChange(name);
       try {
-        const old = new Set(errorsIn(await tsc(before), users));
+        const old = new Set(errorsIn(await tsc(before, users), users));
         dependents = dependents.filter((line) => !old.has(line));
       } finally {
         rmSync(before, { recursive: true, force: true });

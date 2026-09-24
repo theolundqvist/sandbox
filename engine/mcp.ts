@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { Mods } from "./mods";
+import { brief, type Recorder } from "./record";
 import type { SimHost } from "./simhost";
 
 /** The shared Claude that runs events, challenges and bosses for the whole world. */
@@ -28,6 +29,7 @@ export type McpContext = {
   status(): object;
   perf(): object;
   screenshot(who: string): Promise<string>;
+  record: Recorder;
 };
 
 const hash = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex").slice(0, 12);
@@ -123,6 +125,21 @@ const tools = [
     name: "perf",
     description: "Why is the game slow? Server cost per mod (ms per 50 ms tick) and, for every player's game, fps, slowest frames, ms per frame spent in each client mod and in drawing, draw calls, triangles, scene objects, network ping and download rate, memory and GPU. Games report every 2 seconds.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "activity",
+    description:
+      "What happened in this world, from its record kept for 14 days: every Claude's tool calls, all chat, players joining, leaving and what they did, reloads with typecheck, build and test timings, errors, and server and game performance every 10 seconds. By default a digest: slowest tool calls, reload times, error counts, tick and frame times. summary: false returns the rows, newest last.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        minutes: { type: "number", description: "How far back, default 60." },
+        who: { type: "string", description: "One player or Claude." },
+        kind: { type: "string", description: "Comma list of tool, chat, claude, session, action, reload, error, server, client, proxy, exit." },
+        summary: { type: "boolean" },
+        limit: { type: "number", description: "Rows when summary is false, default 200." },
+      },
+    },
   },
   {
     name: "query_world",
@@ -250,7 +267,22 @@ export function createMcp(ctx: McpContext) {
     return out;
   }
 
-  async function call(name: string, args: any, who: string): Promise<string | { image: string }> {
+  /** Runs a tool and records who called it, how long it took, how much it returned and any error. */
+  async function call(name: string, args: any, who: string, via: "mcp" | "cli") {
+    const started = performance.now();
+    let result: string | { image: string } | undefined;
+    let error: string | undefined;
+    try {
+      return (result = await run(name, args, who));
+    } catch (e: any) {
+      error = String(e.message).slice(0, 300);
+      throw e;
+    } finally {
+      ctx.record.add("tool", who, { tool: name, via, args: brief(args), ms: Math.round(performance.now() - started), bytes: typeof result === "string" ? result.length : result?.image.length, error });
+    }
+  }
+
+  async function run(name: string, args: any, who: string): Promise<string | { image: string }> {
     switch (name) {
       case "status":
         return JSON.stringify(ctx.status(), null, 2);
@@ -338,6 +370,8 @@ export function createMcp(ctx: McpContext) {
       }
       case "perf":
         return JSON.stringify(ctx.perf(), null, 2);
+      case "activity":
+        return JSON.stringify(ctx.record.activity(args), null, 1);
       case "query_world": {
         const components: string[] = args.components ?? [];
         const found = [...ctx.sim.entities].filter(([, e]) => components.every((c) => c in e));
@@ -442,7 +476,7 @@ export function createMcp(ctx: McpContext) {
       case "tools/call":
         if (!who) return reply({ content: [{ type: "text", text: STALE }], isError: true });
         try {
-          const result = await call(msg.params.name, msg.params.arguments ?? {}, who);
+          const result = await call(msg.params.name, msg.params.arguments ?? {}, who, "mcp");
           return reply({ content: [typeof result === "string" ? { type: "text", text: result } : { type: "image", data: result.image, mimeType: "image/jpeg" }, ...takeChat(who)] });
         } catch (e: any) {
           if (!(e instanceof ToolError)) console.error(e);
@@ -489,7 +523,7 @@ export function createMcp(ctx: McpContext) {
     if (listening) req.signal.addEventListener("abort", () => ctx.presence(who, "offline"));
     const answer = async (): Promise<{ status: number; body: string | Blob; image?: boolean }> => {
       try {
-        const result = await call(command, args, who);
+        const result = await call(command, args, who, "cli");
         if (typeof result !== "string") return { status: 200, body: new Blob([Buffer.from(result.image, "base64")]), image: true };
         return { status: 200, body: [result, ...takeChat(who).map((c) => c.text)].join("\n\n") + "\n" };
       } catch (e: any) {

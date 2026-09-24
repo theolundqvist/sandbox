@@ -273,19 +273,21 @@ self.onmessage = async ({ data: msg }) => {
       }
       if (trial) return runTrial();
       let last = performance.now();
-      let busy = 0;
-      let ticks = 0;
+      let times: number[] = [];
       setInterval(() => {
         const now = performance.now();
         tick(Math.min((now - last) / 1000, 0.25));
         last = now;
         flush();
-        busy += performance.now() - now;
-        if (++ticks < 40) return;
+        times.push(performance.now() - now);
+        if (times.length < 40) return;
+        const ticks = times.length;
         const cost = Object.fromEntries(ordered.filter((m) => m.ms).sort((a, b) => b.ms - a.ms).map((m) => [m.name, +(m.ms / ticks).toFixed(2)]));
-        post({ t: "perf", msPerTick: +(busy / ticks).toFixed(2), mods: cost });
+        const sorted = times.sort((a, b) => a - b);
+        const at = (p: number) => +sorted[Math.floor(ticks * p)].toFixed(2);
+        post({ t: "perf", msPerTick: +(sorted.reduce((a, b) => a + b, 0) / ticks).toFixed(2), p50: at(0.5), p95: at(0.95), max: +sorted[ticks - 1].toFixed(2), mods: cost });
         for (const m of ordered) m.ms = 0;
-        busy = ticks = 0;
+        times = [];
       }, 50);
       return post({ t: "ready" });
     }
@@ -342,6 +344,7 @@ self.onmessage = async ({ data: msg }) => {
 
 /** Every live mod runs with the candidate swapped in, but only the candidate's errors fail the test. */
 function runTrial() {
+  post({ t: "ticking" });
   const bot: Player = { id: "trial-bot", name: "trial-bot" };
   world.players.set(bot.id, bot);
   for (const m of ordered) call(m, "join", bot);
