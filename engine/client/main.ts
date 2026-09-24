@@ -1,6 +1,7 @@
 import { toCanvas } from "html-to-image";
 import * as THREE from "three";
 import type { ClientCtx, ClientHooks, ClientMod, Entity } from "../api";
+import { PhysicsIndex } from "../physics";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const hashParams = new URLSearchParams(location.hash.slice(1));
@@ -80,6 +81,7 @@ const entities = new Map<number, Entity>();
 const objects = new Map<number, THREE.Object3D>();
 const looks = new Map<number, string>();
 const custom = new Set<THREE.Object3D>();
+const physics = new PhysicsIndex();
 
 const geometries = new Map<string, { geometry: THREE.BufferGeometry; users: number }>();
 
@@ -150,7 +152,7 @@ function build(id: number, e: Entity) {
 
 function defaultObject(e: Entity) {
   const group = new THREE.Group();
-  if (e.mesh) {
+  if (e.mesh && e.mesh.opacity !== 0) {
     const size = typeof e.mesh.size === "number" ? [e.mesh.size] : (e.mesh.size ?? [1]);
     const material = new THREE.MeshStandardMaterial({
       color: e.mesh.color ?? "#cccccc",
@@ -221,23 +223,27 @@ function applyTick({ reset, set, unset, removed, events }: Tick) {
     const e = reset ? changes : Object.assign(entities.get(id) ?? {}, changes);
     entities.set(id, e);
     syncObject(id, e, !!reset);
+    physics.update(id, e);
   }
   for (const [key, gone] of Object.entries(unset)) {
     const e = entities.get(Number(key));
     if (!e) continue;
     for (const k of gone) delete e[k];
     syncObject(Number(key), e, false);
+    physics.update(Number(key), e);
   }
   for (const id of removed) {
     entities.delete(id);
     syncObject(id, undefined, false);
+    physics.update(id, undefined);
   }
   for (const ev of events ?? []) for (const m of ordered) if (m.mod.event) call(m, "event", ev.name, ev.data, ev.from);
 }
 
 // ---------- mods ----------
 type Action = Parameters<ClientCtx["interact"]>[0];
-type Loaded = { name: string; url: string; mod: ClientMod; ctx: ClientCtx; errors: number; ms: number; owned: HTMLElement[]; actions: Set<Action> };
+type Ground = (x: number, z: number, fromY: number) => number | null;
+type Loaded = { name: string; url: string; mod: ClientMod; ctx: ClientCtx; errors: number; ms: number; owned: HTMLElement[]; actions: Set<Action>; grounds: Set<Ground> };
 const mods = new Map<string, Loaded>();
 let ordered: Loaded[] = [];
 const keys = new Set<string>();
@@ -246,6 +252,7 @@ const send = (msg: object) => socket?.readyState === WebSocket.OPEN && socket.se
 
 function reorder() {
   ordered = [...mods.values()].sort((a, b) => (a.mod.order ?? 0) - (b.mod.order ?? 0) || a.name.localeCompare(b.name));
+  physics.grounds = ordered.flatMap((m) => [...m.grounds]);
 }
 
 function guarded<T>(m: Loaded, label: string, fn: () => T): T | undefined {
@@ -313,6 +320,18 @@ async function loadMod(name: string, url: string | null) {
     renderer,
     entities,
     objects,
+    physics: {
+      boxes: (x, z, radius) => physics.boxes(x, z, radius),
+      groundAt: (x, z, fromY) => physics.groundAt(x, z, fromY),
+      move: (pos, vel, dt, body) => physics.move(pos, vel, dt, body),
+      ray: (origin, dir, maxDistance) => physics.ray(origin, dir, maxDistance),
+      ground(fn) {
+        const g: Ground = (x, z, fromY) => guarded(loaded, "ground", () => fn(x, z, fromY)) ?? null;
+        loaded.grounds.add(g);
+        reorder();
+        return () => void (loaded.grounds.delete(g) && reorder());
+      },
+    },
     playerId: me,
     keys,
     send: (msg) => send({ t: "m", mod: name, msg }),
@@ -335,7 +354,7 @@ async function loadMod(name: string, url: string | null) {
       return () => void loaded.actions.delete(action);
     },
   };
-  const loaded: Loaded = { name, url, mod, ctx, errors: 0, ms: 0, owned: [], actions: new Set() };
+  const loaded: Loaded = { name, url, mod, ctx, errors: 0, ms: 0, owned: [], actions: new Set(), grounds: new Set() };
   mods.set(name, loaded);
   reorder();
   call(loaded, "init");

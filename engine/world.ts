@@ -59,6 +59,7 @@ export class GameWorld implements World {
   use!: World["use"];
   later!: World["later"];
   async!: World["async"];
+  physics!: World["physics"];
   /** What players last received of each entity, as JSON. */
   private sent = new Map<number, string>();
   private cursor: number[] = [];

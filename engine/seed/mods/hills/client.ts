@@ -1,15 +1,21 @@
 import type { ClientMod } from "../../api";
+import { groundOf } from "./ground";
 
 import type * as THREE from "three";
 
 let meshes: THREE.InstancedMesh[] = [];
 let drawn: unknown = null;
+let ground: ((x: number, z: number) => number | null) | null = null;
 
 export default {
+  init(ctx) {
+    ctx.physics.ground((x, z) => ground?.(x, z) ?? null);
+  },
   frame(ctx) {
     const t = [...ctx.entities.values()].find((e) => e.terrain)?.terrain;
     if (t === drawn) return;
     drawn = t;
+    ground = t ? groundOf(t) : null;
     ctx.scene.remove(...meshes);
     meshes.forEach((m) => m.dispose());
     meshes = [];
@@ -39,6 +45,6 @@ export default {
     ctx.scene.remove(...meshes);
     meshes.forEach((m) => m.dispose());
     meshes = [];
-    drawn = null;
+    drawn = ground = null;
   },
 } satisfies ClientMod;

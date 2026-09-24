@@ -59,10 +59,12 @@ tick(world) { const recent = world.db.all("select author, count(*) n from notes 
 Entities with `pos` and either `mesh` or `label` are drawn automatically:
 
 - `pos: [x, y, z]` and optional `rot: [x, y, z]` in radians. Y is up.
-- `mesh: { shape: "box" | "sphere" | "cylinder" | "cone" | "plane", size: number | [x, y, z], color, emissive?, opacity?, roughness?, metalness? }`
+- `mesh: { shape: "box" | "sphere" | "cylinder" | "cone" | "plane", size: number | [x, y, z], color, emissive?, opacity?, roughness?, metalness? }`; `opacity: 0` draws nothing.
 - `label: "text"` floats above the entity.
 
 Each drawn entity is its own draw call, which stays smooth up to a couple of thousand. For more (voxel terrain, a forest, a crowd, particles), keep them as data without `mesh` and draw them yourself in `client.ts` with one `THREE.InstancedMesh` per look, updating it from `ctx.entities`.
+
+Collision is part of the engine. An entity with `pos` and `solid` is a box that bodies collide with: `solid: { size: [x, y, z] }`, or `solid: true` to use its `mesh.size`, centred on `pos` and turned by `rot[1]`. Leave out `mesh` for an invisible collider under a model you draw yourself. `world.physics` on the server and `ctx.physics` on the client answer the same queries from an index kept current as entities change: `move(feet, vel, dt, { radius, height, step })` slides a body along boxes, steps up ledges and lands it (`{ pos, vel, grounded }`), `groundAt(x, z, fromY?)` gives the floor height, `ray(origin, dir, maxDistance)` the first hit, `boxes(x, z, radius)` the boxes nearby. Terrain that is not boxes joins in with `physics.ground((x, z, fromY) => height | null)`. Use these instead of scanning entities for your own collision, so everything that moves agrees on what is solid.
 
 For anything richer, such as models, particles, shaders, sound, UI or post-processing, write it in `client.ts` with full access to Three.js (`ctx.THREE`, `ctx.scene`, `ctx.camera`, `ctx.renderer`, `import ... from "three/addons/..."`) and the DOM.
 
