@@ -16,6 +16,7 @@ export type McpContext = {
   feed(text: string, kind?: string): void;
   chat(from: string, text: string): void;
   status(): object;
+  screenshot(who: string): Promise<string>;
 };
 
 const hash = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex").slice(0, 12);
@@ -108,6 +109,17 @@ const tools = [
     inputSchema: { type: "object", properties: { mod: { type: "string" }, commit: { type: "string" } }, required: ["mod", "commit"] },
   },
   {
+    name: "screenshot",
+    description: "See the 3D view your player sees right now (they must have the game open; HTML overlays are not included). Use it to check your visuals.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "add_package",
+    description:
+      "Install an npm package (e.g. \"@dimforge/rapier3d-compat\", \"simplex-noise@4\") so any mod can import it on the server or client. Packages are shared by every mod and cannot be removed.",
+    inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+  },
+  {
     name: "say",
     description: "Post a short message in the in-game chat, shown as your player's Claude. Tell people what you just built.",
     inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
@@ -117,7 +129,7 @@ const tools = [
 export const instructions = `This is a live multiplayer game that the players build together while playing. Every player's Claude edits the same shared file tree on the game server.
 Workflow: call status, read GUIDE.md and api.ts, then write or edit files under mods/<your-mod>/ and call reload to put them live for everyone. Nothing you write affects the game until reload succeeds.
 Other Claudes are editing at the same time: always re-read a file right before changing it, and keep each feature in its own mod folder.
-Mods can hide entities per player, send one-off events, call each other's exports, fetch any HTTP or MCP API asynchronously, and load models or sounds added with add_asset; GUIDE.md shows how.`;
+Mods can hide entities per player, send one-off events, call each other's exports, fetch any HTTP or MCP API asynchronously, load models or sounds added with add_asset, and import npm packages added with add_package. Use screenshot to see what your player sees; GUIDE.md shows how.`;
 
 class ToolError extends Error {}
 
@@ -163,7 +175,7 @@ export function createMcp(ctx: McpContext) {
 
   function list(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {
-      if (name === ".git") return [];
+      if (name === ".git" || name === "node_modules") return [];
       const abs = join(dir, name);
       return statSync(abs).isDirectory() ? list(abs) : [relative(ctx.root, abs)];
     });
@@ -176,7 +188,7 @@ export function createMcp(ctx: McpContext) {
     return out;
   }
 
-  async function call(name: string, args: any, who: string): Promise<string> {
+  async function call(name: string, args: any, who: string): Promise<string | { image: string }> {
     switch (name) {
       case "status":
         return JSON.stringify(ctx.status(), null, 2);
@@ -282,6 +294,25 @@ export function createMcp(ctx: McpContext) {
         await git("reset", "-q");
         return `Restored mods/${args.mod} to ${args.commit}. Call reload to put it live.`;
       }
+      case "screenshot":
+        return {
+          image: await ctx.screenshot(who).catch((e) => {
+            throw new ToolError(e.message);
+          }),
+        };
+      case "add_package": {
+        const spec = String(args.name);
+        if (!/^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(@[\w.^~<>=*-]+)?$/.test(spec)) throw new ToolError("Give an npm package name, optionally with @version.");
+        const proc = Bun.spawn([process.execPath, "add", spec], { cwd: ctx.root, stdout: "pipe", stderr: "pipe", env: { ...process.env, BUN_BE_BUN: "1" } });
+        const timer = setTimeout(() => proc.kill(), 120_000);
+        const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+        clearTimeout(timer);
+        if (code) throw new ToolError(`bun add ${spec} failed:\n${(err || out).trim().slice(-2000)}`);
+        await git("add", "package.json", "bun.lock");
+        await git("commit", "-qm", `add package ${spec}`, `--author=${who} <${who}@sandbox>`).catch(() => {});
+        ctx.feed(`${who}'s Claude added the ${spec} package`, "info");
+        return `${out.trim().split("\n").slice(-3).join("\n")}\nImport it from any mod, then reload that mod.`;
+      }
       case "say":
         ctx.chat(`${who}'s Claude`, String(args.text).slice(0, 300));
         return "Said.";
@@ -305,7 +336,8 @@ export function createMcp(ctx: McpContext) {
         return reply({ tools });
       case "tools/call":
         try {
-          return reply({ content: [{ type: "text", text: await call(msg.params.name, msg.params.arguments ?? {}, who) }] });
+          const result = await call(msg.params.name, msg.params.arguments ?? {}, who);
+          return reply({ content: [typeof result === "string" ? { type: "text", text: result } : { type: "image", data: result.image, mimeType: "image/jpeg" }] });
         } catch (e: any) {
           if (!(e instanceof ToolError)) console.error(e);
           return reply({ content: [{ type: "text", text: e.message }], isError: true });

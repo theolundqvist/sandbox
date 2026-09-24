@@ -52,6 +52,8 @@ for (const file of new Bun.Glob("mods/**/*").scanSync(join(ENGINE, "seed"))) {
 }
 writeJson("seeded.json", seeded);
 cpSync(join(ENGINE, "api.ts"), join(ROOT, "api.ts"));
+writeFileSync(join(ROOT, ".gitignore"), "node_modules\n");
+if (!existsSync(join(ROOT, "package.json"))) writeFileSync(join(ROOT, "package.json"), JSON.stringify({ private: true }, null, 2));
 cpSync(join(ENGINE, "GUIDE.md"), join(ROOT, "GUIDE.md"));
 writeFileSync(
   join(ROOT, "tsconfig.json"),
@@ -139,6 +141,7 @@ const status = () => ({
   recent: feedLog.slice(-15).map((f) => f.text),
 });
 
+const shots = new Map<string, (data: string) => void>();
 const mcp = createMcp({
   root: ROOT,
   dbDir: DB,
@@ -151,6 +154,19 @@ const mcp = createMcp({
   feed,
   chat: (from, text) => broadcast({ t: "chat", from, text }),
   status,
+  screenshot: (who) =>
+    new Promise((resolve, reject) => {
+      const ws = sockets.get(who);
+      if (!ws) return reject(new Error(`${who} doesn't have the game open, so there is nothing to see.`));
+      const id = crypto.randomUUID();
+      const timer = setTimeout(() => shots.delete(id) && reject(new Error("The game didn't answer within 5 s.")), 5000);
+      shots.set(id, (data) => {
+        clearTimeout(timer);
+        shots.delete(id);
+        resolve(data);
+      });
+      ws.send(JSON.stringify({ t: "shot", id }));
+    }),
 });
 
 const html = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });
@@ -243,6 +259,7 @@ const server = Bun.serve<Conn>({
       const msg = JSON.parse(String(raw));
       if (msg.t === "m") sim.send({ t: "msg", id: ws.data.name, mod: msg.mod, msg: msg.msg });
       else if (msg.t === "chat") broadcast({ t: "chat", from: ws.data.name, text: String(msg.text).slice(0, 300) });
+      else if (msg.t === "shot") shots.get(msg.id)?.(String(msg.data));
       else if (msg.t === "error") log(msg.mod, "client-error", `${ws.data.name}'s game: ${String(msg.text).slice(0, 2000)}`);
     },
     close(ws) {

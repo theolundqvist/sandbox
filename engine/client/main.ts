@@ -316,6 +316,9 @@ function connect() {
         return applyTick(msg);
       case "mod":
         return loadMod(msg.name, msg.url);
+      case "shot":
+        draw(0);
+        return send({ t: "shot", id: msg.id, data: renderer.domElement.toDataURL("image/jpeg", 0.8).split(",")[1] });
       case "feed":
         addLine(msg.text, msg.kind);
         if (msg.kind !== "info") toast(msg.text, msg.kind);
@@ -431,14 +434,18 @@ renderer.setAnimationLoop(() => {
     if (e.rot) obj.rotation.set(e.rot[0] ?? 0, e.rot[1] ?? 0, e.rot[2] ?? 0);
   }
   for (const m of ordered) call(m, "frame", dt);
-  let draw = () => renderer.render(scene, camera);
+  draw(dt);
+});
+
+function draw(dt: number) {
+  let next = () => renderer.render(scene, camera);
   for (const m of ordered) {
     if (!m.mod.render) continue;
-    const inner = draw;
-    draw = () => call(m, "render", inner, dt);
+    const inner = next;
+    next = () => call(m, "render", inner, dt);
   }
-  draw();
-});
+  next();
+}
 
 await start();
 $("hud").hidden = false;
