@@ -483,8 +483,8 @@ async function openMenu() {
   menu.hidden = false;
   $("invite-link").textContent = `${location.origin}/#invite=${invite}`;
   const name = slug(world);
-  const prompt = `We're playing ${world.replace(/['"`$\\]/g, "")} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I'm ${me} in the game. You're connected to the game server through the ${name} MCP tools, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Start with the status tool and read GUIDE.md, then tell me in a few lines what the world has so far and suggest three things we could build next.`;
-  $("claude-command").textContent = `claude mcp add -s user --transport http ${name} ${location.origin}/mcp --header "Authorization: Bearer ${key}"; claude '${prompt}'`;
+  const prompt = `We're playing ${world.replace(/['"`$\\]/g, "")} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I'm ${me} in the game. You're connected to the game server through the ${name} MCP tools, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat: call wait_for_chat with seconds 600, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`;
+  $("claude-command").textContent = `claude mcp add -s user --transport http ${name} ${location.origin}/mcp --header "Authorization: Bearer ${key}"; claude --allowedTools mcp__${name} '${prompt}'`;
   const status = await (await fetch("/api/status", { headers: { authorization: `Bearer ${key}` } })).json();
   $("menu-players").replaceChildren(...status.online.map((p: string) => Object.assign(document.createElement("li"), { textContent: p === me ? `${p} (you)` : p })));
   $("menu-mods").replaceChildren(
