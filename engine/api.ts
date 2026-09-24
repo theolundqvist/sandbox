@@ -88,6 +88,7 @@ export interface ServerMod extends ServerHooks {
 export interface ClientCtx {
   THREE: typeof THREE;
   scene: THREE.Scene;
+  /** The engine's perspective camera, which draws the scene unless a mod's ctx.screen gives another. */
   camera: THREE.PerspectiveCamera;
   renderer: THREE.WebGLRenderer;
   /** Replicated copy of the server world. Entities with `pos` and `mesh` are drawn automatically. */
@@ -111,6 +112,23 @@ export interface ClientCtx {
   menuTab(title: string): HTMLElement;
   /** Your element in one of the engine's screen areas, where every mod's elements stack instead of overlapping: "left" (middle of the left edge), "right" (bottom right, growing up), "bottom" (bottom centre, growing up). Removed when this mod reloads. */
   hud(area: "left" | "right" | "bottom"): HTMLElement;
+  /** A full-screen element above the scene and below the engine's menu, chat and HUD, for a game drawn on your own canvas or in HTML. It takes the clicks the scene would get; set `pointer-events: none` to pass them through. Removed when this mod reloads. */
+  layer(): HTMLElement;
+  /** How the game is shown and controlled. Each call replaces this mod's settings (`{}` withdraws them) and reloading withdraws them; for each setting the highest-`order` mod that gives it wins. Without any, the cursor stays free, the scene is drawn through ctx.camera at the display's resolution, and phones get no stick. */
+  screen(settings: {
+    /** Draw the scene through this camera, e.g. a THREE.OrthographicCamera; perspective and orthographic cameras are fitted to the window. */
+    camera?: THREE.Camera;
+    /** Clicking the game locks the mouse for looking around (read `movementX`/`movementY`); otherwise the cursor stays free to point and click. */
+    lockPointer?: boolean;
+    /** Scene pixels per screen pixel, e.g. 0.25 for big low-resolution pixels. */
+    resolution?: number;
+    /** Scale the scene up with hard pixel edges instead of smoothing. */
+    pixelated?: boolean;
+    /** false stops drawing the scene, for games drawn entirely in a ctx.layer. */
+    scene?: boolean;
+    /** On touch screens, show a move stick (KeyW/A/S/D in ctx.keys) and a jump button (Space). */
+    stick?: boolean;
+  }): void;
   /** Offers an action on E. The engine shows one prompt for the nearest available action of any mod, and E (or tapping the prompt) runs only that one. `distance` returns how far the player is from it, or null while it is out of reach. Returns a function that withdraws it; reloading withdraws it too. */
   interact(action: { label: string | (() => string); distance(): number | null; run(): void }): () => void;
   /** Binds a key (KeyboardEvent.code, e.g. "KeyM") labelled in Cmd+K and Help: run(true) on press, run(false) on release with `hold`, or { down, up }. Never fires while the player types, has the menu, Cmd+K, chat or another mod's panel open. The later of two mods declaring a key wins and both are warned. Tab, Enter, T and E are the engine's and throw; 1 and 2 go to votes while the vote bar shows. Returns a remover; reloading removes it too. */

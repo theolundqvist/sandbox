@@ -78,6 +78,8 @@
   @media (max-width: 900px) { body:not(.touch) #hud-bottom { bottom: 72px; } }
   #interact { display: flex; align-items: center; gap: 12px; padding: 10px 18px 10px 10px; background: var(--veil); border-left: 3px solid var(--accent); cursor: pointer; }
   #interact kbd { margin: 0; }
+  #layers { position: fixed; inset: 0; isolation: isolate; pointer-events: none; }
+  #layers > * { position: absolute; inset: 0; pointer-events: auto; }
   .mod-panel { position: fixed; left: 50%; top: 50%; translate: -50% -50%; z-index: 1000; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); overflow: auto; outline: none; }
   #react { display: flex; gap: 8px; align-items: center; padding: 8px 8px 8px 16px; background: var(--veil); border-left: 3px solid var(--c); animation: in .25s ease-out; }
   #react-mod { color: var(--c); margin-right: 8px; max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -151,6 +153,7 @@
   .keys dt { font-weight: 700; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; }
   .keys dt span { display: inline-block; min-width: 26px; text-align: center; border: 1px solid rgba(255,255,255,.35); padding: 4px 7px; margin-right: 4px; }
   .keys dd { margin: 0; color: var(--dim); }
+  .mod-keys:empty { display: none; }
   body.touch .desk, body:not(.touch) .touchonly { display: none; }
 
   #top, #status, #chat, #hint, #toasts, #builders, #react, #replay, #stick, #jump, #announce { z-index: 1000; } .overlay { z-index: 1001; }
@@ -164,6 +167,7 @@
 </style>
 </head>
 <body>
+<div id="layers"></div>
 <div id="hud" hidden>
   <div id="top" class="shadow">
     <div id="world-name"></div>
@@ -186,7 +190,7 @@
   <div id="announce" hidden><div class="caps"></div><b></b><p></p></div>
   <div id="stick" hidden><div></div></div>
   <button id="jump" hidden>Jump</button>
-  <div id="empty" class="shadow" hidden><b>Nothing exists yet</b>Press Tab, connect your Claude, and ask it for ground to stand on.</div>
+  <div id="empty" class="shadow" hidden><b>Nothing exists yet</b>Press Tab, connect your Claude, and ask it for the game you want to play.</div>
 </div>
 
 <div id="join" class="overlay" hidden>
@@ -207,21 +211,16 @@
     <h1 id="howto-world"></h1>
     <p>Nothing here is fixed. Every player's Claude changes this world while you play: new rules, weapons, whole games. Ask yours for anything in the chat, then watch it go live for everyone.</p>
     <dl class="keys desk">
-      <dt><span>W</span><span>A</span><span>S</span><span>D</span></dt><dd>Move</dd>
-      <dt>Mouse</dt><dd>Look around</dd>
-      <dt><span>Space</span></dt><dd>Jump</dd>
       <dt><span>Enter</span></dt><dd>Chat with everyone and your Claude, typed or spoken</dd>
       <dt><span>T</span></dt><dd>Hold to talk</dd>
       <dt><span>⌘</span><span>K</span></dt><dd>Search every menu and setting</dd>
       <dt><span>Tab</span></dt><dd>Menu: connect your Claude, invite friends, see what everyone builds</dd>
     </dl>
     <dl class="keys touchonly">
-      <dt>Left stick</dt><dd>Move</dd>
-      <dt>Drag</dt><dd>Look around</dd>
-      <dt>Jump</dt><dd>Jump</dd>
       <dt>Chat</dt><dd>Chat with everyone and your Claude</dd>
       <dt>Menu</dt><dd>Connect your Claude, invite friends</dd>
     </dl>
+    <dl class="keys desk mod-keys"></dl>
     <div class="actions"><button id="howto-play" class="primary">Play</button></div>
   </div>
 </div>
@@ -260,7 +259,6 @@
     <section data-tab="help" hidden>
       <p>Nothing here is fixed. Every player's Claude changes this world while you play: new rules, weapons, whole games. Ask yours for anything in the chat, then watch it go live for everyone.</p>
       <div id="help-keys"></div>
-      <dl id="mod-keys" class="keys desk"></dl>
       <h2>Votes</h2>
       <p>When a mod goes live, press 1 to love it or 2 to vote it out. If more than half of the players online vote it out, it is undone. Vote on any mod at any time in the Mods tab.</p>
       <h2>Game master</h2>
