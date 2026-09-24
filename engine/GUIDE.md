@@ -47,7 +47,7 @@ export default {
 } satisfies ClientMod;
 ```
 
-`ctx.entities` is the live replicated world, `ctx.playerId` is this player, `ctx.keys` holds pressed key codes.
+`ctx.entities` is the live replicated world, `ctx.playerId` is this player, `ctx.keys` holds pressed key codes. The engine's own HUD takes the top 70 px, the top-right corner below it for notifications, and the bottom-left corner for chat, so put your DOM elsewhere.
 
 ## Power over other mods
 
