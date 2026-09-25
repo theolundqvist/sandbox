@@ -158,7 +158,7 @@ export interface ClientHooks {
   replay?(ctx: ClientCtx, shot: ReplayShot, dt: number): boolean | void;
 }
 
-/** One timelapse shot. While it plays, ctx.entities holds the world as it was and every hook runs on it as in live play; ctx.playerId is the player the shot is about, ctx.keys stays empty and ctx.send is dropped. */
+/** One timelapse shot. While it plays, ctx.entities holds the world as it was and every hook runs on it as in live play; ctx.playerId is the player the shot is about (or "timelapse", a stand-in avatar at the place when that player is far from it), ctx.keys stays empty and ctx.send is dropped. */
 export interface ReplayShot {
   /** "place": where something was built; "follow": a player at play; "overview": the whole world. */
   kind: "place" | "follow" | "overview";

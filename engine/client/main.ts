@@ -112,7 +112,7 @@ function applyScreen() {
 
 /** Perspective cameras take the window's shape; orthographic ones keep their height and centre and widen to it. */
 function fit(c: THREE.Camera) {
-  const aspect = innerWidth / innerHeight;
+  const aspect = document.body.clientWidth / document.body.clientHeight;
   if (c instanceof THREE.PerspectiveCamera) c.aspect = aspect;
   else if (c instanceof THREE.OrthographicCamera) {
     const mid = (c.left + c.right) / 2;
@@ -122,7 +122,7 @@ function fit(c: THREE.Camera) {
   c.updateProjectionMatrix();
 }
 function resize() {
-  renderer.setSize(innerWidth, innerHeight);
+  renderer.setSize(document.body.clientWidth, document.body.clientHeight);
   fit(camera);
   if (view !== camera) fit(view);
 }
@@ -408,6 +408,8 @@ function guarded<T>(m: Loaded, label: string, fn: () => T): T | undefined {
     return fn();
   } catch (e: any) {
     console.error(`[${m.name}] ${label}`, e);
+    // The past can hold states a mod's current version never saw: that is no live fault to report or switch the mod off for.
+    if (replay) return;
     send({ t: "error", mod: m.name, text: `${label}: ${e?.stack ?? e}` });
     if (++m.errors >= 10 && mods.get(m.name) === m) {
       mods.delete(m.name);
@@ -805,6 +807,7 @@ function startReplay(frames: Moment[]) {
   keys.clear();
   replay = { frames, plan: planned, at: 0, clock: 0, step, speed: 1, playing: true, free: false, ended: 0, fog: scene.fog, far: camera.far };
   document.body.classList.add("replaying");
+  dispatchEvent(new Event("resize"));
   for (const id of ["replay", "replay-bar", "replay-feed"]) $(id).hidden = false;
   camera.far = 10_000;
   camera.updateProjectionMatrix();
@@ -818,13 +821,17 @@ function startReplay(frames: Moment[]) {
     }),
   );
   $("replay-chapters").querySelector("ul")!.replaceChildren(
-    ...planned.shots.map((shot) => {
+    ...planned.chapters.map((first) => {
+      const shot = planned.shots[first]!;
       const li = document.createElement("li");
       const [time, ...what] = shot.caption.split(" · ");
       li.innerHTML = "<span class=caps></span><b></b>";
       li.querySelector("span")!.textContent = time!;
       li.querySelector("b")!.textContent = what.join(" · ");
-      li.onclick = () => seek(shot.from);
+      li.onclick = () => {
+        seek(shot.from);
+        toggleChapters();
+      };
       return li;
     }),
   );
@@ -839,8 +846,10 @@ function leaveReplay() {
   replayKeys.clear();
   freeCam.pointers.clear();
   document.body.classList.remove("replaying");
+  dispatchEvent(new Event("resize"));
   for (const id of ["replay", "replay-bar", "replay-feed", "replay-caption", "replay-chapters", "announce"]) $(id).hidden = true;
   for (const m of mods.values()) m.ctx.playerId = me;
+  entities.delete(VIEWER);
   scene.remove(replayLayer);
   for (const t of trails.values()) forget(t.tag, t.dots);
   trails.clear();
@@ -932,7 +941,7 @@ function cycleSpeed() {
 function skip(by: number, chapter: boolean) {
   const r = replay!;
   if (!chapter) return seek(r.at + by * Math.max(1, Math.round(r.frames.length / 20)));
-  const starts = r.plan.shots.map((s) => Math.min(s.from, r.frames.length - 1));
+  const starts = r.plan.chapters.map((first) => Math.min(r.plan.shots[first]!.from, r.frames.length - 1));
   seek(by > 0 ? (starts.find((s) => s > r.at) ?? r.frames.length - 1) : (starts.findLast((s) => s < r.at - 2) ?? 0));
 }
 function toggleChapters() {
@@ -982,6 +991,7 @@ $("replay-play").onclick = togglePlay;
 $("replay-speed").onclick = cycleSpeed;
 $("replay-free").onclick = toggleFree;
 $("replay-chapters-button").onclick = toggleChapters;
+$("replay-chapters").onclick = (e) => e.target === e.currentTarget && toggleChapters();
 $("replay-leave").onclick = () => {
   leaveReplay();
   capture();
@@ -1101,7 +1111,6 @@ function forget(...objects: (THREE.Sprite | THREE.Points)[]) {
 /** Starts a shot: a cut when the new place is far from what the camera shows, otherwise a quick flight there. */
 function direct(shot: Shot) {
   director.cut = !director.shot || !shot.target || director.focus.distanceTo(new THREE.Vector3(...shot.target)) > director.distance * 2.5;
-  for (const m of mods.values()) m.ctx.playerId = shot.player ?? me;
   if (director.cut) director.angle += 2.2;
   director.shot = shot;
   director.started = performance.now();
@@ -1124,7 +1133,8 @@ function direct(shot: Shot) {
 
 function showChapter() {
   const list = $("replay-chapters");
-  const index = replay && director.shot ? replay.plan.shots.indexOf(director.shot) : -1;
+  const shot = replay && director.shot ? replay.plan.shots.indexOf(director.shot) : -1;
+  const index = shot < 0 ? -1 : replay!.plan.chapters.findLastIndex((first) => first <= shot);
   list.querySelectorAll("li").forEach((li, i) => {
     if (li.classList.toggle("active", i === index) && !list.hidden) li.scrollIntoView({ block: "nearest" });
   });
@@ -1134,7 +1144,7 @@ function showChapter() {
 function trace() {
   const present = new Set<string>();
   for (const [id, e] of entities) {
-    if (!isAvatar(e) || !Array.isArray(e.pos)) continue;
+    if (!isAvatar(e) || !Array.isArray(e.pos) || id === VIEWER) continue;
     present.add(e.player);
     let t = trails.get(e.player);
     if (!t) {
@@ -1168,6 +1178,17 @@ function trace() {
 }
 
 /** Mods frame the shot first; otherwise the engine's camera orbits the shot's place slowly at a distance that frames what was built, overviews without fog. */
+const VIEWER = -1;
+/** When a shot's place is far from its player, the local player is a stand-in avatar at the place, so games that draw what is around their player (a room, a realm, nearby chunks) show it. */
+function stand(shot: Shot) {
+  const own = shot.player ? [...entities.values()].find((e) => isAvatar(e) && e.player === shot.player && Array.isArray(e.pos)) : undefined;
+  const at = shot.target && (director.orbiting ? director.focus.toArray() : shot.target);
+  const away = shot.kind !== "follow" && !!at && (!own || Math.hypot(own.pos[0] - at[0], own.pos[1] - at[1], own.pos[2] - at[2]) > Math.max(60, shot.radius));
+  if (away) entities.set(VIEWER, { avatar: true, player: "timelapse", pos: at });
+  else entities.delete(VIEWER);
+  for (const m of mods.values()) m.ctx.playerId = away ? "timelapse" : (shot.player ?? me);
+}
+
 function film(dt: number, now: number) {
   const r = replay!;
   const shot = director.shot;
@@ -1176,6 +1197,7 @@ function film(dt: number, now: number) {
     const obj = objects.get(t.id);
     if (obj) t.tag.position.copy(obj.position).setY(obj.position.y + 2.4);
   }
+  stand(shot);
   const about: ReplayShot = { kind: shot.kind, target: shot.target, radius: shot.radius, ids: shot.ids, mod: shot.mod, player: shot.player, caption: shot.caption, elapsed: (now - director.started) / 1000 };
   const framed = !r.free && [...ordered].reverse().some((m) => m.mod.replay && call(m, "replay", about, dt) === true);
   // A game with its own ctx.screen camera or no scene, or whose things have no place, keeps its own view: its hooks already show ctx.playerId's past.
