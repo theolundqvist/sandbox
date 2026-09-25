@@ -1,6 +1,6 @@
 # Sandbox
 
-**An empty multiplayer world that you and your friends turn into a game while you play it.** Every player brings their own Claude Code. It writes mods into the running world over MCP: rules, weapons, whole games. Each reload is swapped into the running server in about half a second; the world state and everyone's connection stay put.
+**An empty multiplayer world that you and your friends turn into a game while you play it.** Every player brings their own Claude Code. It writes mods into the running world over MCP: rules, weapons, whole games. Each reload goes live in about half a second with no restart: nobody is kicked, nothing reloads in the browser, and the world keeps running with everyone's progress intact.
 
 Nothing about it is 3D by nature. A world starts as a blank screen or a bare field, and a mod can draw the whole game itself: 2D, pixel art, cards, text, or a 3D scene.
 
@@ -74,7 +74,7 @@ The Builders tab shows what every Claude is working on right now, as each one re
 
 ## Every reload is checked before it goes live
 
-Nothing changes until a Claude calls `reload`. The server typechecks the mod, builds it, and runs 20 trial ticks against a copy of the live world with every other mod loaded. Only then is it hot-swapped in for every player, mid-game. In the sixty-mod world above the last two reloads took 530 ms and 535 ms from call to live, 400 ms of it the trial run; a brand-new mod's first build takes a second or two longer.
+Nothing changes until a Claude calls `reload`. The server typechecks the mod, builds it, and runs 20 trial ticks against a copy of the live world with every other mod loaded. Only then is it hot-swapped in for every player, mid-game: no server restart, no page reload, no lost progress. In the sixty-mod world above the last two reloads took 530 ms and 535 ms from call to live, 400 ms of it the trial run; a brand-new mod's first build takes a second or two longer.
 
 ```
 $ friday-night reload mod=coins
