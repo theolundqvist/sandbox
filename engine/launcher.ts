@@ -18,7 +18,8 @@ const saveState = () => writeFileSync(STATE, JSON.stringify(state, null, 2));
 saveState();
 
 type Pipe = { target: string; upstream?: WebSocket; queue: string[] };
-let running: { id: string; proc: Subprocess; port: number; record: Recorder } | null = null;
+let running: { id: string; proc: Subprocess; port: number; record: Recorder; recorded: Promise<void> } | null = null;
+const stopping = new WeakSet<Subprocess>();
 /** How long requests take through this launcher, and through the relay end to end; the running world's record keeps it. */
 const proxy = latencies();
 const sampleProxy = (record: Recorder) => {
@@ -58,8 +59,9 @@ async function stop() {
   if (!current) return;
   running = null;
   for (const ws of players) ws.close(4001, "The host switched worlds");
+  stopping.add(current.proc);
   current.proc.kill("SIGTERM");
-  await current.proc.exited;
+  await current.recorded;
 }
 
 async function host(id: string) {
@@ -85,8 +87,8 @@ async function host(id: string) {
     }
   };
   const output = [forward(proc.stdout, process.stdout), forward(proc.stderr, process.stderr)];
-  proc.exited.then(async () => {
-    const stopped = running?.proc !== proc;
+  const recorded = proc.exited.then(async () => {
+    const stopped = stopping.has(proc);
     await Promise.allSettled(output);
     const how = proc.signalCode ?? `code ${proc.exitCode}`;
     console.log(`[launcher] world ${id} exited with ${how} after ${Math.round((Date.now() - started) / 1000)} s${stopped ? "" : " without being stopped"}`);
@@ -99,7 +101,7 @@ async function host(id: string) {
     reportPort = resolve;
     proc.exited.then(() => reject(new Error("The world crashed while starting; the terminal shows why.")));
   });
-  running = { id, proc, port, record };
+  running = { id, proc, port, record, recorded };
   state.hosting = id;
   saveState();
   await publish();
