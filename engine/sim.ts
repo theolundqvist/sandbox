@@ -15,6 +15,9 @@ const world = new GameWorld();
 const physics = new PhysicsIndex();
 const mods = new Map<string, Loaded>();
 let ordered: Loaded[] = [];
+/** The mods that wrap other mods' hooks, and the mods that hide entities, kept apart because hooks run per entity per player. */
+let wrappers: Loaded[] = [];
+let seers: Loaded[] = [];
 let beat: Int32Array;
 let trial: string | null = null;
 let current: Loaded | null = null;
@@ -123,6 +126,8 @@ world.use = (name) => {
 // ---------- hooks ----------
 function reorder() {
   ordered = [...mods.values()].sort((a, b) => (a.mod.order ?? 0) - (b.mod.order ?? 0) || a.name.localeCompare(b.name));
+  wrappers = ordered.filter((m) => m.mod.wrap);
+  seers = ordered.filter((m) => m.mod.see);
   physics.grounds = ordered.flatMap((m) => [...m.grounds]);
   fullPass = true;
 }
@@ -146,7 +151,7 @@ function call(m: Loaded, hook: keyof ServerHooks, ...args: any[]): any {
   const base = m.mod[hook] as ((...a: any[]) => any) | undefined;
   let next = (...a: any[]) => guarded(m, hook, () => base?.call(m.mod, world, ...a));
   let wrapped = false;
-  for (const w of ordered) {
+  for (const w of wrappers) {
     const fn = w !== m ? (w.mod.wrap?.[m.name]?.[hook] as ((...a: any[]) => any) | undefined) : undefined;
     if (!fn) continue;
     const inner = next;
@@ -197,7 +202,7 @@ let tickCount = 0;
 
 function visible(p: Player, id: number, e: Entity) {
   if (Array.isArray(e.only) && !e.only.includes(p.id)) return false;
-  for (const m of ordered) if (m.mod.see && call(m, "see", p, id, e) === false) return false;
+  for (const m of seers) if (call(m, "see", p, id, e) === false) return false;
   return true;
 }
 
@@ -234,10 +239,11 @@ function flush() {
   for (const id in d.set) physics.update(+id, world.entities.peek(+id));
   for (const id in d.unset) physics.update(+id, world.entities.peek(+id));
   for (const id of d.removed) physics.update(id, undefined);
-  const full = fullPass || (tickCount % 5 === 0 && ordered.some((m) => m.mod.see));
   const outs: Record<string, string> = {};
+  // Each player gets a full visibility pass every 5th tick, on a different tick from the others so the passes don't pile up.
+  let i = 0;
   for (const p of world.players.values()) {
-    const out = stream(p, d, full);
+    const out = stream(p, d, fullPass || (seers.length > 0 && (tickCount + i++) % 5 === 0));
     if (out.reset || Object.keys(out.set).length || Object.keys(out.unset).length || out.removed.length || out.events) outs[p.id] = JSON.stringify({ t: "tick", ...out });
   }
   fullPass = false;
