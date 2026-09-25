@@ -4,16 +4,20 @@ Play any Sandbox world in its own window instead of a browser tab: right-click r
 
 ## Get it
 
-Download the file for your computer from the [latest release](https://github.com/theolundqvist/sandbox/releases/latest):
+On a Mac or Linux (and Windows through WSL), one command installs Bun if it's missing, puts the app in `~/.sandbox-app` and opens it. Add your invite link at the end to go straight into that world:
 
-- **Mac with Apple silicon:** `Sandbox-mac-arm64.zip`. **Older Intel Mac:** `Sandbox-mac-x64.zip`.
-- **Windows:** `Sandbox-win-x64.exe`. It runs straight away without installing.
-- **Linux:** `Sandbox-linux-x86_64.AppImage`. Make it executable with `chmod +x`, then run it.
+```sh
+curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- 'http://host:7777/#invite=…'
+```
 
-The app isn't signed, so the first launch needs one extra step:
+After that, `sandbox` opens it, with or without a link, and running the command again updates it. If `sandbox` isn't found, add `~/.local/bin` to your PATH.
 
-- **Mac:** unzip it and move `Sandbox.app` to Applications. Then run `xattr -dr com.apple.quarantine /Applications/Sandbox.app` in Terminal once. Or open it, close the warning, and click **Open Anyway** in System Settings → Privacy & Security. On macOS 14 and older, right-clicking the app and choosing **Open** also works.
-- **Windows:** when SmartScreen says "Windows protected your PC", click **More info**, then **Run anyway**.
+While the repository is private, run it from a clone instead:
+
+```sh
+git clone https://github.com/theolundqvist/sandbox && cd sandbox
+bun desktop 'http://host:7777/#invite=…'
+```
 
 ## Play
 
@@ -22,13 +26,3 @@ Paste the invite link your host sent and press Enter. The worlds you've joined s
 - **Full screen:** F11, or Ctrl+Cmd+F on a Mac. The app remembers it.
 - **Mouse:** click the game to look around. Esc, Tab (menu) and Enter (chat) free the mouse. Switching back to the app from another window picks the mouse back up.
 - **Quit:** Cmd+Q on a Mac. On every system, closing the window asks first while you're in a world.
-
-## Run from source
-
-```sh
-cd desktop
-bun install
-bun start
-```
-
-Push a `v*` tag to build the Mac, Windows and Linux apps and attach them to a GitHub release. Running the **Desktop app** workflow by hand builds them without releasing.

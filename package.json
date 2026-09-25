@@ -5,7 +5,7 @@
   "scripts": {
     "start": "bun engine/launcher.ts",
     "check": "tsc -p .",
-    "desktop": "bun install --cwd desktop --frozen-lockfile && bun --cwd desktop run start"
+    "desktop": "cd desktop && bun install --frozen-lockfile && bun run start"
   },
   "dependencies": {
     "html-to-image": "^1.11.13",

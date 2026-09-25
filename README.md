@@ -37,4 +37,4 @@ Mods run as real code on the host's machine. Only invite people you would give a
 
 ## Desktop app
 
-Friends who would rather not play in a browser tab can use the [desktop app](desktop/README.md) for Mac, Windows and Linux, where right-click, mouse look and full screen work without browser interruptions.
+Friends who would rather not play in a browser tab can use the [desktop app](desktop/README.md), installed with one command on a Mac or Linux, where right-click, mouse look and full screen work without browser interruptions.
