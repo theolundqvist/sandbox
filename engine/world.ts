@@ -143,23 +143,46 @@ export function openStore(path: string) {
   db.run("pragma journal_mode = wal");
   db.run("pragma synchronous = normal");
   db.run("create table if not exists world (id integer primary key check (id = 1), next_id integer, entities text)");
+  db.run("create table if not exists entity (id integer primary key, data text not null)");
   db.run("create table if not exists snapshots (at integer primary key, next_id integer, entities text)");
   db.run("create table if not exists timelapse (at integer primary key, full integer, data blob, activity text)");
   if (!db.query("select 1 from pragma_table_info('timelapse') where name = 'activity'").get()) db.run("alter table timelapse add column activity text");
   let pending: Moment = { set: {}, unset: {}, removed: [] };
   let sinceFull = -1;
+  /** Entities changed since the last save, or "all" when the whole world was replaced. */
+  let dirty: Set<number> | "all" = new Set();
   const read = (row: { next_id: number; entities: string } | null, world: Persisted) => {
     if (!row) return false;
     world.nextId = row.next_id;
     world.entities.clear();
     for (const [id, e] of Object.entries(JSON.parse(row.entities))) world.entities.set(Number(id), e as Entity);
+    dirty = "all";
     return true;
   };
+  const upsert = db.prepare("insert or replace into entity values (?, ?)");
+  const remove = db.prepare("delete from entity where id = ?");
   return {
-    load: (world: Persisted) => read(db.query("select next_id, entities from world").get() as any, world),
-    save(world: Persisted) {
-      db.run("insert or replace into world values (1, ?, ?)", [world.nextId, JSON.stringify(Object.fromEntries(world.entities))]);
+    load(world: Persisted) {
+      const meta = db.query("select next_id, entities from world").get() as { next_id: number; entities: string | null } | null;
+      if (!meta?.entities) {
+        if (!meta) return false;
+        world.nextId = meta.next_id;
+        for (const row of db.query("select id, data from entity").all() as { id: number; data: string }[]) world.entities.set(row.id, JSON.parse(row.data));
+        return true;
+      }
+      return read(meta as { next_id: number; entities: string }, world);
     },
+    /** Writes only the entities that changed since the last save, in one transaction. */
+    save: db.transaction((world: Persisted) => {
+      if (dirty === "all") db.run("delete from entity");
+      for (const id of dirty === "all" ? world.entities.keys() : dirty) {
+        const e = world.entities.get(id);
+        if (e) upsert.run(id, JSON.stringify(e));
+        else remove.run(id);
+      }
+      db.run("insert or replace into world values (1, ?, null)", [world.nextId]);
+      dirty = new Set();
+    }),
     /** Keeps one snapshot per call for the last hour. */
     snapshot(world: Persisted) {
       db.run("insert or replace into snapshots values (?, ?, ?)", [Date.now(), world.nextId, JSON.stringify(Object.fromEntries(world.entities))]);
@@ -167,6 +190,7 @@ export function openStore(path: string) {
     },
     /** Folds one simulation tick's changes into the next timelapse moment, so recording never diffs the whole world. */
     track(d: Diff) {
+      if (dirty !== "all") for (const id of [...Object.keys(d.set), ...Object.keys(d.unset), ...d.removed]) dirty.add(Number(id));
       for (const [id, set] of Object.entries(d.set)) {
         pending.set[id] = { ...pending.set[id], ...set };
         const lost = pending.unset[id]?.filter((k) => !(k in set));
