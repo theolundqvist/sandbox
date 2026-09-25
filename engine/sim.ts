@@ -312,6 +312,7 @@ self.onmessage = async ({ data: msg }) => {
       const whole = new Map<string, Entity>();
       const shown = new Set<string>();
       const ticks: Tick[] = [];
+      let slice = performance.now();
       for (const t of p ? (msg.ticks as Tick[]) : []) {
         const out: Tick = { at: t.at, reset: t.reset, set: {}, unset: {}, removed: [], activity: t.activity };
         for (const id of t.removed) {
@@ -334,7 +335,10 @@ self.onmessage = async ({ data: msg }) => {
         }
         ticks.push(out);
         // Lets the simulation tick between slices of a long history.
-        if (ticks.length % 50 === 0) await new Promise((r) => setTimeout(r, 0));
+        if (performance.now() - slice > 8) {
+          await new Promise((r) => setTimeout(r, 0));
+          slice = performance.now();
+        }
       }
       return post({ t: "seen", id: msg.id, ticks });
     }
