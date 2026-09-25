@@ -11,7 +11,7 @@ type Vec = [number, number, number];
 export type Shot = { from: number; to: number; kind: "place" | "overview" | "follow"; target?: Vec; radius: number; ids: number[]; mod?: string; player?: string; caption: string; marks: number[] };
 /** A reload or banner on the timeline. */
 export type Marker = { tick: number; who: string; label: string; color: string };
-export type Plan = { shots: Shot[]; density: number[]; markers: Marker[]; stateAt(tick: number): Record<string, Entity> };
+export type Plan = { shots: Shot[]; chapters: number[]; density: number[]; markers: Marker[]; stateAt(tick: number): Record<string, Entity> };
 
 type Change = { id: string; tick: number; pos?: Vec; weight: number; entity: Entity; mod?: string };
 
@@ -172,8 +172,11 @@ export function plan(ticks: Tick[], span: number): Plan {
   marks = everything;
   shots.push(overview(ticks.length, ticks.length, `${clock(ticks.at(-1)!.at)} · the world now`));
 
+  // Consecutive shots with the same caption make one chapter.
+  const about = (s: Shot) => s.caption.split(" · ").slice(1).join(" · ");
   return {
     shots,
+    chapters: shots.flatMap((s, i) => (i && about(s) === about(shots[i - 1]!) ? [] : [i])),
     density,
     markers,
     stateAt(tick) {
