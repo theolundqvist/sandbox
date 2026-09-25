@@ -117,11 +117,11 @@ In an Additive world this is the whole game: you cannot edit what someone else b
 
 ![The Mods tab listing each mod with its author, version, description and vote buttons](docs/readme/mods.png)
 
-## Watch it get built
+## Replay the last three hours
 
-The menu's Timelapse replays the last three hours through the same client code as live play, cut into chapters by who built what, where.
+The menu's Timelapse replays the world's last three hours through the same client code as live play. Its camera cuts to each new build and names who made it.
 
-![The timelapse camera flying over a whole world: a village, a lake, a forest ring, roads and a railway](docs/readme/timelapse.webp)
+![The Timelapse camera circling a finished world: a village, a lake, a forest ring, roads and a railway](docs/readme/timelapse.webp)
 
 ## What a mod can do
 
