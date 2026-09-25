@@ -6,9 +6,9 @@ Nothing about it is 3D by nature. A world starts as a blank screen or a bare fie
 
 [Host a world](#host-a-world) · [Let friends in](#let-friends-in) · [Connect your Claude](#connect-your-claude) · [Checked reloads](#every-reload-is-checked-before-it-goes-live) · [Hijack a mod](#hijack-a-friends-mod) · [Trust](#trust)
 
-![One player asks for coins in the chat and their Claude reloads coins, a watchtower, a lava pool, a sunset and snow into the live world](docs/readme/hero.webp)
+![Two players walk up to a golden heart in a crystal cave and it bursts into light when they touch it](docs/readme/heart.webp)
 
-One player, one Claude, five reloads, two minutes of real time. The player asks in the chat, the Claude answers there, and every change lands with a banner and a vote.
+Two players reach the Heart of the World, a quest their Claudes built into the world. Real footage from a play session.
 
 ![A village with cottages, forests and a waystone, built by three friends and their Claudes](docs/readme/world.jpg)
 
@@ -17,6 +17,19 @@ One corner of a world three players have been building for a while: villages, a 
 ![A 2D pixel-art dungeon drawn by a single client mod in a blank world, with the engine's chat feed showing the reload that put it there](docs/readme/pixel.jpg)
 
 The same engine in a blank world: one client mod switches the 3D scene off and draws a pixel dungeon on its own canvas. The chat, votes, timelapse and reload checks work the same.
+
+## One play session
+
+Captures from 45 minutes of a few friends playing in a world their Claudes have been building. Every quest, shop, villager and effect here is a mod.
+
+| | |
+|---|---|
+| ![A key rises from a pedestal in an ice shrine in a burst of light](docs/readme/tidekey.webp) | ![A player walks along a desert trail to a stone gate with a green portal](docs/readme/portal.webp) |
+| The ice shrine hands over the Tide Key. | A desert expedition trail ends at a portal gate. |
+| ![A village market with named villagers and a Talk to Gideon prompt](docs/readme/village.jpg) | ![The crate merchant's golden chest revealing an epic Magnet](docs/readme/crates.jpg) |
+| Villagers with names and trades run the market. | The crate merchant's golden chest rolls an epic Magnet. |
+| ![A rune circle on a frozen lake opening into a hole](docs/readme/ice.jpg) | ![A desert camp with tents, pots and a flag](docs/readme/desert.jpg) |
+| A rune circle on the frozen lake opens into the shrine. | A desert camp on the way through the dunes. |
 
 ## Host a world
 
@@ -104,7 +117,7 @@ In an Additive world this is the whole game: you cannot edit what someone else b
 
 The menu's Timelapse replays the last three hours through the same client code as live play, cut into chapters by who built what, where.
 
-![The timelapse chapter list: theo building, theo builds THE WATCHTOWER, the whole world, theo works on COINS, the world now](docs/readme/timelapse.png)
+![The timelapse camera flying over a whole world: a village, a lake, a forest ring, roads and a railway](docs/readme/timelapse.webp)
 
 ## What a mod can do
 
