@@ -8,11 +8,16 @@ const BAR = 36;
 const LOCAL = "http://localhost:7777";
 const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"]);
 
-// A second copy can't open the saved logins, so it hands over to the first.
+/** An invite or personal link passed on the command line, e.g. `sandbox http://host:7777/#invite=…`. */
+const linkIn = (argv) => argv.slice(1).find((a) => /^https?:\/\//.test(a));
+
+// A second copy can't open the saved logins, so it hands its link over to the first.
 if (!app.requestSingleInstanceLock()) app.exit();
-app.on("second-instance", () => {
+app.on("second-instance", (_event, argv) => {
   if (win.isMinimized()) win.restore();
   win.focus();
+  const link = linkIn(argv);
+  if (link) play(link);
 });
 
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -138,6 +143,8 @@ function createWindow() {
   shell.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.contentView.addChildView(shell);
   void shell.webContents.loadFile(join(__dirname, "shell.html"));
+  const link = linkIn(process.argv);
+  if (link) shell.webContents.once("did-finish-load", () => play(link));
   layout();
   win.contentView.on("bounds-changed", layout);
   for (const change of ["enter-full-screen", "leave-full-screen"])

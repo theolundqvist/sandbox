@@ -6,43 +6,9 @@
   "private": true,
   "main": "main.cjs",
   "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder --publish never"
+    "start": "electron ."
   },
-  "devDependencies": {
-    "electron": "^44.4.5",
-    "electron-builder": "^26.15.3"
-  },
-  "build": {
-    "appId": "com.theolundqvist.sandbox",
-    "productName": "Sandbox",
-    "artifactName": "Sandbox-${os}-${arch}.${ext}",
-    "files": [
-      "main.cjs",
-      "preload.cjs",
-      "shell.html"
-    ],
-    "mac": {
-      "target": {
-        "target": "zip",
-        "arch": [
-          "arm64",
-          "x64"
-        ]
-      },
-      "category": "public.app-category.games",
-      "identity": "-",
-      "hardenedRuntime": false,
-      "extendInfo": {
-        "NSMicrophoneUsageDescription": "Push to talk sends what you say to the world's chat."
-      }
-    },
-    "win": {
-      "target": "portable"
-    },
-    "linux": {
-      "target": "AppImage",
-      "category": "Game"
-    }
+  "dependencies": {
+    "electron": "^44.4.5"
   }
 }
