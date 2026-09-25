@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Installs or updates the Sandbox desktop app and opens it. Run it again to update.
+#   curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '<invite link>'
+set -euo pipefail
+
+dir="${SANDBOX_APP_DIR:-$HOME/.sandbox-app}"
+repo="${SANDBOX_REPO:-https://github.com/theolundqvist/sandbox.git}"
+bin="$HOME/.local/bin"
+
+if ! command -v bun >/dev/null; then
+  curl -fsSL https://bun.sh/install | bash
+  export PATH="$HOME/.bun/bin:$PATH"
+fi
+
+if [ -d "$dir/.git" ]; then
+  git -C "$dir" pull --ff-only --quiet
+else
+  git clone --depth 1 --quiet "$repo" "$dir"
+fi
+bun install --cwd "$dir/desktop" --frozen-lockfile
+# Electron fetches its own binary on first run; do it now so the first launch isn't a silent download.
+bun "$dir/desktop/node_modules/electron/install.js"
+
+mkdir -p "$bin"
+cat > "$bin/sandbox" <<EOF
+#!/usr/bin/env bash
+# Opens the Sandbox desktop app, with an optional invite link. Update with: curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash
+cd "$dir/desktop" && nohup "$(command -v bun)" run start "\$@" >"$dir/app.log" 2>&1 &
+EOF
+chmod +x "$bin/sandbox"
+
+"$bin/sandbox" "$@"
+echo "Sandbox is opening. Next time, run: sandbox"
+case ":$PATH:" in *":$bin:"*) ;; *) echo "(Add $bin to your PATH first, or run $bin/sandbox.)" ;; esac

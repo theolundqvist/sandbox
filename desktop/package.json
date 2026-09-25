@@ -1,0 +1,14 @@
+{
+  "name": "sandbox-desktop",
+  "productName": "Sandbox",
+  "version": "0.1.0",
+  "description": "Desktop client for Sandbox worlds",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "electron": "^44.4.5"
+  }
+}
