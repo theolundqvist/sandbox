@@ -69,10 +69,62 @@ const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
 camera.position.set(0, 10, 16);
 camera.lookAt(0, 0, 0);
 
+const listener = new THREE.AudioListener();
+camera.add(listener);
+const audio = { context: listener.context, listener, output: listener.getInput() };
+for (const type of ["pointerdown", "keydown"]) addEventListener(type, () => audio.context.state === "suspended" && void audio.context.resume(), true);
+
+/** Every mod's shakes add up into one camera offset, applied for the draw only. */
+const shakes: { strength: number; seconds: number; left: number }[] = [];
+const shakeOffset = new THREE.Vector3();
+function shakeCamera(dt: number) {
+  shakeOffset.set(0, 0, 0);
+  for (const s of shakes) {
+    const k = (s.strength * s.left) / s.seconds;
+    shakeOffset.x += (Math.random() * 2 - 1) * k;
+    shakeOffset.y += (Math.random() * 2 - 1) * k;
+    shakeOffset.z += (Math.random() * 2 - 1) * k;
+    s.left -= dt;
+  }
+  for (let i = shakes.length - 1; i >= 0; i--) if (shakes[i]!.left <= 0) shakes.splice(i, 1);
+  view.position.add(shakeOffset);
+}
+
+/** How the game is shown and controlled: every mod's ctx.screen settings merged, the highest order winning per field. */
+type Screen = Parameters<ClientCtx["screen"]>[0];
+let screen: Screen = {};
+let view: THREE.Camera = camera;
+function applyScreen() {
+  const last = screen;
+  screen = {};
+  for (const m of ordered) for (const [k, v] of Object.entries(m.screen)) if (v !== undefined) (screen as any)[k] = v;
+  if (view !== (screen.camera ?? camera)) {
+    view = screen.camera ?? camera;
+    view.add(listener);
+    fit(view);
+  }
+  if (screen.resolution !== last.resolution) renderer.setPixelRatio(screen.resolution ?? Math.min(devicePixelRatio, 2));
+  renderer.domElement.style.imageRendering = screen.pixelated ? "pixelated" : "";
+  renderer.domElement.hidden = screen.scene === false;
+  if (!screen.lockPointer && document.pointerLockElement) document.exitPointerLock();
+  showStick();
+}
+
+/** Perspective cameras take the window's shape; orthographic ones keep their height and centre and widen to it. */
+function fit(c: THREE.Camera) {
+  const aspect = innerWidth / innerHeight;
+  if (c instanceof THREE.PerspectiveCamera) c.aspect = aspect;
+  else if (c instanceof THREE.OrthographicCamera) {
+    const mid = (c.left + c.right) / 2;
+    const half = ((c.top - c.bottom) / 2) * aspect;
+    [c.left, c.right] = [mid - half, mid + half];
+  } else return;
+  c.updateProjectionMatrix();
+}
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
+  fit(camera);
+  if (view !== camera) fit(view);
 }
 addEventListener("resize", resize);
 resize();
@@ -244,16 +296,111 @@ function applyTick({ reset, set, unset, removed, events }: Tick) {
 // ---------- mods ----------
 type Action = Parameters<ClientCtx["interact"]>[0];
 type Ground = (x: number, z: number, fromY: number) => number | null;
-type Loaded = { name: string; url: string; mod: ClientMod; ctx: ClientCtx; errors: number; ms: number; owned: HTMLElement[]; actions: Set<Action>; grounds: Set<Ground> };
+type Loaded = { name: string; url: string; mod: ClientMod; ctx: ClientCtx; errors: number; ms: number; owned: HTMLElement[]; actions: Set<Action>; grounds: Set<Ground>; screen: Screen };
 const mods = new Map<string, Loaded>();
 let ordered: Loaded[] = [];
 const keys = new Set<string>();
 let socket: WebSocket | null = null;
 const send = (msg: object) => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(msg));
+const warn = console.warn.bind(console);
+
+/** Keys mods declare with ctx.key: the engine dispatches them, so they never fire while the player types or has a window open. */
+type Binding = { mod: Loaded; code: string; label: string; down?: () => void; up?: () => void };
+const ENGINE_OWNED = ["Tab", "Enter", "KeyT", "KeyE"];
+let bindings: Binding[] = [];
+const held = new Map<string, Binding>();
+const keyLabel = (code: string) => code.replace(/^(Key|Digit)/, "");
+
+function declareKey(mod: Loaded, code: string, label: string, run: Parameters<ClientCtx["key"]>[2], opts?: { hold?: boolean }) {
+  if (ENGINE_OWNED.includes(code)) throw new Error(`${code} belongs to the engine; pick another key`);
+  const b: Binding = typeof run === "function" ? { mod, code, label, down: () => run(true), up: opts?.hold ? () => run(false) : undefined } : { mod, code, label, down: run.down, up: run.up };
+  const other = bindings.findLast((x) => x.code === code && x.mod.name !== mod.name);
+  if (other) {
+    const text = `${code} is declared by both ${other.mod.name} ("${other.label}") and ${mod.name} ("${label}"); only ${mod.name}'s runs. Pick a free key (status lists them).`;
+    warn(text);
+    for (const name of [other.mod.name, mod.name]) send({ t: "log", mod: name, level: "warn", text });
+  }
+  bindings.push(b);
+  keysChanged(mod.name);
+  return () => {
+    bindings = bindings.filter((x) => x !== b);
+    if (held.get(code) === b) held.delete(code);
+    keysChanged(mod.name);
+  };
+}
+/** The latest live binding for each key; while a panel is open, only its mod's. */
+function activeBindings() {
+  const seen = new Map<string, Binding>();
+  for (const b of bindings.toReversed()) if (!seen.has(b.code) && mods.get(b.mod.name) === b.mod && (!panel || b.mod === panel.mod)) seen.set(b.code, b);
+  return [...seen.values()];
+}
+function press(b: Binding, down: boolean) {
+  const fn = down ? b.down : b.up;
+  if (fn) guarded(b.mod, `key ${b.code}`, fn);
+}
+function releaseKeys() {
+  for (const b of held.values()) press(b, false);
+  held.clear();
+}
+
+let changedMods: Set<string> | null = null;
+/** Tells the server each changed mod's declared keys, once per batch of changes, so status and reload reports list them. */
+function keysChanged(mod: string) {
+  if (!changedMods) {
+    changedMods = new Set();
+    setTimeout(() => {
+      const declared = Object.fromEntries([...changedMods!].map((name) => [name, bindings.filter((b) => b.mod.name === name).map((b) => ({ code: b.code, label: b.label }))]));
+      send({ t: "keys", keys: declared });
+      changedMods = null;
+      showModKeys();
+    });
+  }
+  changedMods.add(mod);
+}
+function showModKeys() {
+  for (const list of document.querySelectorAll(".mod-keys"))
+    list.replaceChildren(
+      ...activeBindings().flatMap((b) => {
+        const dt = document.createElement("dt");
+        dt.append(Object.assign(document.createElement("span"), { textContent: keyLabel(b.code) }));
+        return [dt, Object.assign(document.createElement("dd"), { textContent: `${b.label} (${b.mod.name})` })];
+      }),
+    );
+}
+
+/** One mod window at a time: it holds the mouse and the keyboard until Esc or close(). */
+let panel: { mod: Loaded; el: HTMLElement; added: boolean; relock: boolean; onClose?: () => void } | null = null;
+function openPanel(mod: Loaded, el: HTMLElement, onClose?: () => void) {
+  const relock = panel ? panel.relock : !!document.pointerLockElement;
+  closePanel(false);
+  const p = { mod, el, added: !el.isConnected, relock, onClose };
+  if (p.added) {
+    el.classList.add("mod-panel");
+    document.body.append(el);
+  }
+  el.hidden = false;
+  if (!el.hasAttribute("tabindex")) el.tabIndex = -1;
+  releaseKeys();
+  keys.clear();
+  panel = p;
+  if (document.pointerLockElement) document.exitPointerLock();
+  el.focus({ preventScroll: true });
+  return { close: () => panel === p && closePanel() };
+}
+function closePanel(relock = true) {
+  const p = panel;
+  if (!p) return;
+  panel = null;
+  if (p.added) p.el.remove();
+  else p.el.hidden = true;
+  if (p.onClose) guarded(p.mod, "panel onClose", p.onClose);
+  if (relock && p.relock) capture();
+}
 
 function reorder() {
   ordered = [...mods.values()].sort((a, b) => (a.mod.order ?? 0) - (b.mod.order ?? 0) || a.name.localeCompare(b.name));
   physics.grounds = ordered.flatMap((m) => [...m.grounds]);
+  applyScreen();
 }
 
 function guarded<T>(m: Loaded, label: string, fn: () => T): T | undefined {
@@ -293,6 +440,10 @@ function use(name: string) {
   return Object.fromEntries(Object.entries(target.mod.exports).map(([k, fn]) => [k, (...a: any[]) => fn.call(target.mod.exports, target.ctx, ...a)])) as any;
 }
 
+/** Mods load one at a time in the order the server sent them, so a slow import never lands an old version over a newer one. */
+let loading = Promise.resolve();
+const queue = (load: () => Promise<unknown>) => (loading = loading.then(load).then(() => {}, (e) => console.error(e)));
+
 async function loadMod(name: string, url: string | null, rebuild = true) {
   const old = mods.get(name);
   if (old?.url === url) return;
@@ -308,9 +459,13 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
   if (old) {
     call(old, "dispose");
     for (const el of old.owned) el.remove();
+    if (panel?.mod === old) closePanel();
+    bindings = bindings.filter((b) => b.mod !== old);
+    for (const [code, b] of held) if (b.mod === old) held.delete(code);
     mods.delete(name);
     pruneTabs();
   }
+  keysChanged(name);
   if (!mod || !url) {
     reorder();
     return rebuild && rebuildAll();
@@ -346,6 +501,16 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
       loaded.owned.push(block);
       return block;
     },
+    layer: () => {
+      const el = document.createElement("div");
+      $("layers").append(el);
+      loaded.owned.push(el);
+      return el;
+    },
+    screen: (settings) => {
+      loaded.screen = settings;
+      if (mods.get(name) === loaded) applyScreen();
+    },
     hud: (area) => {
       const el = document.createElement("div");
       $(`hud-${area}`).append(el);
@@ -356,8 +521,13 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
       loaded.actions.add(action);
       return () => void loaded.actions.delete(action);
     },
+    key: (code, label, run, opts) => declareKey(loaded, code, label, run, opts),
+    panel: (el, opts) => openPanel(loaded, el, opts?.onClose),
+    inputFree,
+    audio,
+    shake: (strength, seconds) => void (seconds > 0 && shakes.push({ strength, seconds, left: seconds })),
   };
-  const loaded: Loaded = { name, url, mod, ctx, errors: 0, ms: 0, owned: [], actions: new Set(), grounds: new Set() };
+  const loaded: Loaded = { name, url, mod, ctx, errors: 0, ms: 0, owned: [], actions: new Set(), grounds: new Set(), screen: {} };
   mods.set(name, loaded);
   reorder();
   call(loaded, "init");
@@ -420,7 +590,7 @@ function runAction() {
   }
 }
 function showAction() {
-  let near = menu.hidden && palette.hidden ? nearestAction() : null;
+  let near = menu.hidden && palette.hidden && !panel ? nearestAction() : null;
   let label = "";
   try {
     label = near ? (typeof near.action.label === "function" ? near.action.label() : near.action.label) : "";
@@ -464,14 +634,16 @@ function connect() {
         for (const line of msg.talk) addTalk(line.from, line.text);
         const wanted = new Map<string, string>(msg.mods.map((m: any) => [m.name, m.url]));
         // Every mod downloads at once; they still start in order, and entities are rebuilt once for all of them.
-        await Promise.allSettled([...wanted.values()].map((url) => import(url)));
+        queue(() => Promise.allSettled([...wanted.values()].map((url) => import(url))));
         const modMs: [string, number][] = [];
-        for (const name of mods.keys()) if (!wanted.has(name)) await loadMod(name, null, false);
-        for (const [name, url] of wanted) {
-          const started = performance.now();
-          await loadMod(name, url, false);
-          modMs.push([name, Math.round(performance.now() - started)]);
-        }
+        for (const name of mods.keys()) if (!wanted.has(name)) queue(() => loadMod(name, null, false));
+        for (const [name, url] of wanted)
+          queue(async () => {
+            const started = performance.now();
+            await loadMod(name, url, false);
+            modMs.push([name, Math.round(performance.now() - started)]);
+          });
+        await loading;
         rebuildAll();
         for (const f of msg.feed) addLine(f.text, f.kind);
         const modsMs = Math.round(performance.now() - welcomedAt);
@@ -497,7 +669,7 @@ function connect() {
         if (!replay) applyTick(msg);
         return;
       case "mod":
-        return loadMod(msg.name, msg.url);
+        return queue(() => loadMod(msg.name, msg.url));
       case "shot":
         return send({ t: "shot", id: msg.id, data: await screenshot() });
       case "feed":
@@ -538,18 +710,20 @@ function connect() {
   };
 }
 
-/** The 3D view with every HTML overlay (engine HUD and mod UI) drawn on top, as base64 JPEG. */
+/** The scene with every mod layer and HTML overlay (engine HUD and mod UI) drawn on top, as base64 JPEG. */
 async function screenshot() {
-  draw(0);
+  const drawn = screen.scene !== false;
+  if (drawn) draw(0);
   const scene3d = new Image();
-  scene3d.src = renderer.domElement.toDataURL("image/png");
+  scene3d.src = drawn ? renderer.domElement.toDataURL("image/png") : "";
   const [overlay] = await Promise.all([
     toCanvas(document.body, { filter: (node) => node !== renderer.domElement && !(node as HTMLElement).hidden, skipFonts: true, pixelRatio: 1, style: { background: "transparent" } }),
-    scene3d.decode(),
+    drawn && scene3d.decode(),
   ]);
   const out = Object.assign(document.createElement("canvas"), { width: innerWidth, height: innerHeight });
   const g = out.getContext("2d")!;
-  g.drawImage(scene3d, 0, 0, innerWidth, innerHeight);
+  g.imageSmoothingEnabled = !screen.pixelated;
+  if (drawn) g.drawImage(scene3d, 0, 0, innerWidth, innerHeight);
   g.drawImage(overlay, 0, 0, innerWidth, innerHeight);
   return out.toDataURL("image/jpeg", 0.8).split(",")[1]!;
 }
@@ -1002,10 +1176,10 @@ function film(dt: number, now: number) {
     const obj = objects.get(t.id);
     if (obj) t.tag.position.copy(obj.position).setY(obj.position.y + 2.4);
   }
-  const view: ReplayShot = { kind: shot.kind, target: shot.target, radius: shot.radius, ids: shot.ids, mod: shot.mod, player: shot.player, caption: shot.caption, elapsed: (now - director.started) / 1000 };
-  const framed = !r.free && [...ordered].reverse().some((m) => m.mod.replay && call(m, "replay", view, dt) === true);
-  // A game drawn through its own camera, or whose things have no place, keeps its own view: its hooks already show ctx.playerId's past.
-  const orbiting = !framed && !!shot.target && [...mods.values()].every((m) => m.ctx.camera === camera);
+  const about: ReplayShot = { kind: shot.kind, target: shot.target, radius: shot.radius, ids: shot.ids, mod: shot.mod, player: shot.player, caption: shot.caption, elapsed: (now - director.started) / 1000 };
+  const framed = !r.free && [...ordered].reverse().some((m) => m.mod.replay && call(m, "replay", about, dt) === true);
+  // A game with its own ctx.screen camera or no scene, or whose things have no place, keeps its own view: its hooks already show ctx.playerId's past.
+  const orbiting = !framed && !!shot.target && view === camera && screen.scene !== false;
   if (orbiting !== director.orbiting) {
     director.orbiting = orbiting;
     showControls();
@@ -1081,18 +1255,23 @@ const chat = $<HTMLInputElement>("chat");
 const menu = $("menu");
 const howto = $("howto");
 const palette = $("palette");
-const typing = () => document.activeElement instanceof HTMLInputElement;
+const typing = () => {
+  const el = document.activeElement;
+  return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || (el instanceof HTMLElement && el.isContentEditable);
+};
+const inputFree = () => !(replay || typing() || panel || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden);
 
-/** During play the mouse steers the camera; the cursor is free only while chat, the menu or an overlay is open. */
+/** When a mod asks for mouse-look, clicking the game locks the mouse; the cursor is free again while chat, the menu, a panel or an overlay is open. */
 function capture() {
-  if (!replay && !document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !document.pointerLockElement) renderer.domElement.requestPointerLock();
+  if (!replay && screen.lockPointer && !document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !panel && !document.pointerLockElement) renderer.domElement.requestPointerLock();
 }
 renderer.domElement.addEventListener("click", capture);
-const ideas = ["add coins that respawn and a scoreboard", "make the floor lava every 30 seconds", "give me a grappling hook", "spawn a boss that chases whoever is winning", "let us build with blocks", "add a race track with a timer", "make me tiny and everyone else huge"];
+const ideas = ["add a scoreboard", "make it harder every round", "let us play in teams", "add sound effects", "add a timer and a winner", "give everyone a secret role", "surprise us with a twist"];
 function openChat() {
   chat.placeholder = `Chat, or ask your Claude: "${ideas[Math.floor(Math.random() * ideas.length)]}"`;
   chat.hidden = false;
   chat.focus();
+  releaseKeys();
   startTalking();
   if (document.pointerLockElement) document.exitPointerLock();
 }
@@ -1153,6 +1332,23 @@ $("mic").onpointerup = $("mic").onpointerleave = () => stopTalking(true);
 showMic();
 $("howto-play").onclick = play;
 
+// Capture phase, so mods' own listeners can't swallow declared keys.
+addEventListener("keydown", (e: KeyboardEvent) => {
+  if (e.code === "Escape" && panel && menu.hidden && chat.hidden && palette.hidden) return closePanel();
+  if (replay || e.repeat || e.metaKey || e.ctrlKey || held.has(e.code) || typing() || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden) return;
+  if ((e.code === "Digit1" || e.code === "Digit2") && !$("react").hidden) return;
+  const b = activeBindings().find((x) => x.code === e.code);
+  if (!b) return;
+  if (b.up) held.set(e.code, b);
+  press(b, true);
+}, true);
+addEventListener("keyup", (e: KeyboardEvent) => {
+  const b = held.get(e.code);
+  if (!b) return;
+  held.delete(e.code);
+  press(b, false);
+}, true);
+
 addEventListener("keydown", (e: KeyboardEvent) => {
   if ((e.metaKey || e.ctrlKey) && e.code === "KeyK") {
     e.preventDefault();
@@ -1173,14 +1369,15 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     return;
   }
   // Only Tab opens the game menu, so Esc and every other key stay free for mods.
-  if (e.code === "Tab" && !typing()) {
+  if (e.code === "Tab" && (!typing() || document.activeElement!.closest("#layers"))) {
     e.preventDefault();
+    (document.activeElement as HTMLElement).blur();
     return menu.hidden ? openMenu() : closeMenu();
   }
   if (e.code === "Escape" && !typing() && !menu.hidden) return closeMenu();
   if (e.code === "KeyT" && !typing() && menu.hidden) return startTalking();
-  if (e.code === "KeyE" && !e.repeat && !typing() && menu.hidden) runAction();
-  if (typing()) return;
+  if (e.code === "KeyE" && !e.repeat && !typing() && menu.hidden && !panel) runAction();
+  if (typing() || panel) return;
   keys.add(e.code);
   if (!e.repeat) pressed[e.code] = (pressed[e.code] ?? 0) + 1;
 });
@@ -1191,6 +1388,7 @@ addEventListener("keyup", (e: KeyboardEvent) => {
 });
 addEventListener("blur", () => {
   keys.clear();
+  releaseKeys();
   stopTalking(true);
 });
 chat.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -1257,10 +1455,13 @@ function showClaude(state: keyof typeof claudeLabels) {
 }
 $("claude").onclick = () => $("claude").dataset.state === "offline" && openMenu();
 
+function showStick() {
+  $("stick").hidden = $("jump").hidden = !(screen.stick && document.body.classList.contains("touch"));
+}
 // Touch screens drive the same key codes as a keyboard, so every mod that reads ctx.keys works on phones.
 function enableTouch() {
   document.body.classList.add("touch");
-  $("stick").hidden = $("jump").hidden = false;
+  showStick();
   $("menu-button").textContent = "Menu";
   $("hint").textContent = "Chat";
   $("hint").onclick = openChat;
@@ -1339,9 +1540,11 @@ function menuCommands(): Command[] {
     }
   }
   for (const b of menu.querySelectorAll<HTMLElement>(".actions button")) if (!b.hidden) list.push({ label: textOf(b), where: "Menu", run: () => b.click() });
+  for (const b of activeBindings()) list.push({ label: b.label, where: `Key ${keyLabel(b.code)} · ${b.mod.name}`, run: () => (press(b, true), press(b, false)) });
   return list;
 }
 function openPalette() {
+  releaseKeys();
   commands = menuCommands();
   palette.hidden = false;
   if (document.pointerLockElement) document.exitPointerLock();
@@ -1433,12 +1636,13 @@ async function openMenu() {
   send({ t: "act", what: "menu" });
   keys.clear();
   leaveReplay();
+  releaseKeys();
   menu.hidden = false;
   if (document.pointerLockElement) document.exitPointerLock();
   $("menu-world").textContent = world;
   $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;
   $("claude-command").textContent = connectCommand(
-    (tools) => `We are playing ${world} together right now: a live multiplayer 3D game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through ${tools}, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and when I hold T or have the chat open my voice is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 240, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
+    (tools) => `We are playing ${world} together right now: a live multiplayer game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through ${tools}, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and when I hold T or have the chat open my voice is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 240, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
     key,
     slug(world),
   );
@@ -1450,7 +1654,7 @@ const myVotes = new Map<string, string>();
 async function refreshMenu() {
   const status = await (await fetch("/api/status", { headers: { authorization: `Bearer ${key}` } })).json();
   $("gm-command").textContent = connectCommand(
-    (tools) => `You are the game master of ${world}, a live multiplayer 3D game that my friends and I build with our own Claudes while we play it. You are connected to the game server through ${tools} as the game master, shared by every player. Start with the status tool, read GUIDE.md (especially its Game master section), then run the game master loop it describes until I tell you to stop.`,
+    (tools) => `You are the game master of ${world}, a live multiplayer game that my friends and I build with our own Claudes while we play it. You are connected to the game server through ${tools} as the game master, shared by every player. Start with the status tool, read GUIDE.md (especially its Game master section), then run the game master loop it describes until I tell you to stop.`,
     status.gameMaster.key,
     `${slug(world)}-gm`,
   );
@@ -1510,8 +1714,10 @@ renderer.setAnimationLoop(() => {
   showAction();
   if (replay) advance(dt, now);
   if (replay) film(dt, now);
+  shakeCamera(dt);
   const drawStart = performance.now();
-  draw(dt);
+  if (screen.scene !== false) draw(dt);
+  view.position.sub(shakeOffset);
   stats.drawMs += performance.now() - drawStart;
   stats.loopMs += performance.now() - now;
   stats.calls += renderer.info.render.calls;
@@ -1521,7 +1727,7 @@ renderer.setAnimationLoop(() => {
 });
 
 function draw(dt: number) {
-  let next = () => renderer.render(scene, camera);
+  let next = () => renderer.render(scene, view);
   for (const m of ordered) {
     if (!m.mod.render) continue;
     const inner = next;

@@ -32,6 +32,7 @@ const noMenu = (e: Event) => e.preventDefault();
 export default {
   init(ctx) {
     const { THREE, scene } = ctx;
+    ctx.screen({ lockPointer: true, stick: true });
     scene.background = new THREE.Color("#9fc7e8");
     scene.fog = new THREE.Fog("#9fc7e8", 60, 220);
     const sun = new THREE.DirectionalLight("#fff4e0", 2.2);

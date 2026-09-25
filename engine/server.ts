@@ -199,7 +199,10 @@ function feed(text: string, kind = "info") {
 }
 
 const mods = new Mods(ROOT, BUILD, join(DATA, "mods.json"), {
-  client: (name, url) => broadcast({ t: "mod", name, url }),
+  client: (name, url) => {
+    broadcast({ t: "mod", name, url });
+    return sockets.size > 0;
+  },
   feed,
   record: record.add,
 });
@@ -543,6 +546,7 @@ const server = Bun.serve<Conn>({
       else if (msg.t === "chat") chat(ws.data.name, String(msg.text).slice(0, 300));
       else if (msg.t === "resync") sim.resync(ws.data.name);
       else if (msg.t === "react") react(ws.data.name, String(msg.mod), String(msg.kind));
+      else if (msg.t === "keys") mods.reportKeys(msg.keys);
       else if (msg.t === "shot") shots.get(msg.id)?.(String(msg.data));
       else if (msg.t === "error") log(msg.mod, "client-error", `${ws.data.name}'s game: ${String(msg.text).slice(0, 2000)}`, ws.data.name);
       else if (msg.t === "log") log(String(msg.mod), `client-${msg.level}`, `${ws.data.name}'s game: ${String(msg.text).slice(0, 2000)}`, ws.data.name);

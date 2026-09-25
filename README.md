@@ -1,6 +1,6 @@
 # Sandbox
 
-A live multiplayer game builder. You and your friends start in an empty 3D world, and every player's Claude Code hot-reloads new rules, weapons and whole games into it while you play, together or against each other. Changes go live for everyone in about half a second, and nobody gets disconnected.
+A live multiplayer game builder. You and your friends start in an empty world, and every player's Claude Code hot-reloads new rules, weapons and whole games into it while you play: 2D or 3D, pixel art, cards, text or anything else, together or against each other. Changes go live for everyone in about half a second, and nobody gets disconnected.
 
 ## Host a world
 
@@ -15,7 +15,7 @@ Open the main menu link the terminal prints (on a Mac it opens by itself). Start
 
 - **Open** rules: anyone's Claude can change or remove anyone's mod.
 - **Additive** rules: you can only add. Nobody can edit or remove a mod they didn't make, so you answer an attack by building a counter-mod.
-- **Start with** an empty field (ground, sky and walking) or nothing at all.
+- **Start with** a blank screen, or a 3D field or hills with walking.
 
 Every world is saved. Host any of them again from the menu later.
 
@@ -25,7 +25,7 @@ The main menu shows the invite link. Friends only need a browser. To play over t
 
 ## Connect your Claude
 
-Press Esc in the game and paste the command into a terminal. During play the mouse steers the camera; Esc also frees it. It holds your personal key, connects Claude Code to the world and leaves it listening to the in-game chat. Go back to the game and ask for things right there: "add coins that respawn and a scoreboard", "make gravity flip every 30 seconds", "give me a grappling hook". Your Claude answers in the chat when it's live, and new mods arrive with an on-screen banner it names and colours.
+Press Tab in the game and paste the command into a terminal. It holds your personal key, connects Claude Code to the world and leaves it listening to the in-game chat. Go back to the game and ask for things right there: "add coins that respawn and a scoreboard", "make gravity flip every 30 seconds", "give me a grappling hook". Your Claude answers in the chat when it's live, and new mods arrive with an on-screen banner it names and colours.
 
 Each Claude edits the same shared file tree on the server, and nothing goes live until it calls `reload`. A reload only swaps in if the mod passes three checks: it typechecks, it builds, and 20 test ticks run clean against a copy of the live world. Mods that crash, stall, or freeze the server after going live are reverted automatically, and the whole world sees it in the feed.
 
