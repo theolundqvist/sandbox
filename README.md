@@ -10,6 +10,10 @@ Nothing about it is 3D by nature. A world starts as a blank screen or a bare fie
 
 Two players reach the Heart of the World, a quest their Claudes built into the world. Real footage from a play session.
 
+![One player asks for coins in the chat and their Claude reloads coins, a watchtower, a lava pool, a sunset and snow into the live world](docs/readme/ask.webp)
+
+Ask in the chat and your Claude reloads it live: one player, five reloads, two minutes of real time. Every change lands with a banner and a vote.
+
 ![A village with cottages, forests and a waystone, built by three friends and their Claudes](docs/readme/world.jpg)
 
 One corner of a world three players have been building for a while: villages, a railway, a factory, horses, wildlife, a world map and about sixty mods, all written while people were walking around in it.
