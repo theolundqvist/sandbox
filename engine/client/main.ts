@@ -28,6 +28,26 @@ async function join(body: object) {
   history.replaceState(null, "", "/");
 }
 
+/** Offers the desktop app on the join screen: browsers on computers only, until dismissed. The app marks its user agent with SandboxDesktop. */
+function offerApp(link: string) {
+  const dismissed = "sandbox-app-offer";
+  try {
+    if (localStorage.getItem(dismissed)) return;
+  } catch {}
+  if (navigator.userAgent.includes("SandboxDesktop") || matchMedia("(pointer: coarse)").matches) return;
+  const arg = link && ` '${link}'`;
+  $("app-install").textContent = `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash${link && ` -s --${arg}`}`;
+  $("app-clone").textContent = `git clone https://github.com/theolundqvist/sandbox && cd sandbox && bun desktop${arg}`;
+  $("app-offer").hidden = false;
+  $("app-get").onclick = () => ($("app-panel").hidden = !$("app-panel").hidden);
+  $("app-dismiss").onclick = () => {
+    $("app-offer").hidden = true;
+    try {
+      localStorage.setItem(dismissed, "1");
+    } catch {}
+  };
+}
+
 async function start() {
   if (key) {
     try {
@@ -40,6 +60,7 @@ async function start() {
   $("join-online").textContent = info.online ? `${info.online} playing now` : "Nobody is here yet";
   $("join").hidden = false;
   if (!hashParams.get("invite")) $("join-error").textContent = "Ask the host for an invite link to join.";
+  offerApp(hashParams.get("invite") ? `${origin}/#invite=${hashParams.get("invite")}` : "");
   $<HTMLInputElement>("join-name").value = localStorage.getItem("sandbox-name") ?? "";
   $("join-name").focus();
   await new Promise<void>((resolve) => {
@@ -1722,7 +1743,13 @@ async function refreshMenu() {
 
 for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy]"))
   button.onclick = async () => {
-    await navigator.clipboard.writeText($(button.dataset.copy!).textContent!);
+    const code = $(button.dataset.copy!);
+    // Plain-http LAN links have no clipboard API.
+    if (navigator.clipboard) await navigator.clipboard.writeText(code.textContent!);
+    else {
+      getSelection()!.selectAllChildren(code);
+      document.execCommand("copy");
+    }
     button.textContent = "Copied";
     setTimeout(() => (button.textContent = "Copy"), 1500);
   };

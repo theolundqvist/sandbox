@@ -63,6 +63,9 @@
   .title { font: 800 30px/1.1 "SF Pro Display", "Segoe UI", Inter, system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; margin: 28px 0 0; overflow-wrap: anywhere; }
   .actions { display: flex; gap: 8px; margin-top: 18px; }
   .actions .btn { flex: 1; padding: 16px; }
+  #app-offer { margin-top: 28px; }
+  #app-offer code { white-space: normal; word-break: break-all; padding: 12px 0; }
+  #app-offer > button.quiet { padding-left: 0; }
 </style>
 </head>
 <body>
@@ -73,6 +76,18 @@
     <p class="tagline">Live multiplayer game builder</p>
     <p class="lead">Start from nothing. Every player's Claude hot-reloads new rules, weapons and worlds while you play, together or against each other.</p>
   </header>
+
+  <section id="app-offer" hidden>
+    <div class="row"><span class="meta grow">Play in the desktop app: real fullscreen, right-click and no browser shortcuts in the way.</span><button id="app-get" class="btn">Get the app</button></div>
+    <div id="app-panel" hidden>
+      <h2>Install and open this menu</h2>
+      <div class="row"><code id="app-install" class="grow"></code><button class="quiet" data-copy="app-install">Copy</button></div>
+      <h2>While the repo is private</h2>
+      <div class="row"><code id="app-clone" class="grow"></code><button class="quiet" data-copy="app-clone">Copy</button></div>
+      <p class="note">Mac and Linux. On Windows, run it in WSL.</p>
+    </div>
+    <button id="app-dismiss" class="quiet">Continue in browser</button>
+  </section>
 
   <section id="guest" hidden>
     <p class="title">No game running</p>
@@ -335,10 +350,29 @@
       setTimeout(() => (button.textContent = "Copy"), 1500);
     };
 
+  function offerApp(link) {
+    const dismissed = "sandbox-app-offer";
+    try {
+      if (localStorage.getItem(dismissed)) return;
+    } catch {}
+    if (navigator.userAgent.includes("SandboxDesktop") || matchMedia("(pointer: coarse)").matches) return;
+    $("app-install").textContent = `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '${link}'`;
+    $("app-clone").textContent = `git clone https://github.com/theolundqvist/sandbox && cd sandbox && bun desktop '${link}'`;
+    $("app-offer").hidden = false;
+    $("app-get").onclick = () => ($("app-panel").hidden = !$("app-panel").hidden);
+    $("app-dismiss").onclick = () => {
+      $("app-offer").hidden = true;
+      try {
+        localStorage.setItem(dismissed, "1");
+      } catch {}
+    };
+  }
+
   if (!key) {
     $("guest").hidden = false;
     setInterval(async () => (await fetch("/api/info")).ok && location.assign("/"), 2000);
   } else {
+    offerApp(`${location.origin}/menu#key=${key}`);
     api("state").catch((e) => {
       localStorage.removeItem("sandbox-menu");
       location.reload();

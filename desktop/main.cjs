@@ -80,6 +80,8 @@ function play(raw) {
   const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
   game = { view, name: url.host };
   const wc = view.webContents;
+  // Lets the web client skip its "get the desktop app" offer.
+  wc.setUserAgent(`${wc.getUserAgent()} SandboxDesktop`);
   const stayHome = (event, to) => {
     if (new URL(to).origin !== url.origin) event.preventDefault();
   };
