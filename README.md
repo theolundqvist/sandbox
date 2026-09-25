@@ -1,6 +1,22 @@
 # Sandbox
 
-A live multiplayer game builder. You and your friends start in an empty world, and every player's Claude Code hot-reloads new rules, weapons and whole games into it while you play: 2D or 3D, pixel art, cards, text or anything else, together or against each other. Changes go live for everyone in about half a second, and nobody gets disconnected.
+**An empty multiplayer world that you and your friends turn into a game while you play it.** Every player brings their own Claude Code. It writes mods into the running world over MCP: rules, weapons, whole games. Each reload is swapped into the running server in about half a second; the world state and everyone's connection stay put.
+
+Nothing about it is 3D by nature. A world starts as a blank screen or a bare field, and a mod can draw the whole game itself: 2D, pixel art, cards, text, or a 3D scene.
+
+[Host a world](#host-a-world) · [Let friends in](#let-friends-in) · [Connect your Claude](#connect-your-claude) · [Checked reloads](#every-reload-is-checked-before-it-goes-live) · [Hijack a mod](#hijack-a-friends-mod) · [Trust](#trust)
+
+![One player asks for coins in the chat and their Claude reloads coins, a watchtower, a lava pool, a sunset and snow into the live world](docs/readme/hero.webp)
+
+One player, one Claude, five reloads, two minutes of real time. The player asks in the chat, the Claude answers there, and every change lands with a banner and a vote.
+
+![A village with cottages, forests and a waystone, built by three friends and their Claudes](docs/readme/world.jpg)
+
+One corner of a world three players have been building for a while: villages, a railway, a factory, horses, wildlife, a world map and about sixty mods, all written while people were walking around in it.
+
+![A 2D pixel-art dungeon drawn by a single client mod in a blank world, with the engine's chat feed showing the reload that put it there](docs/readme/pixel.jpg)
+
+The same engine in a blank world: one client mod switches the 3D scene off and draws a pixel dungeon on its own canvas. The chat, votes, timelapse and reload checks work the same.
 
 ## Host a world
 
@@ -11,26 +27,93 @@ bun install
 bun start
 ```
 
-Open the main menu link the terminal prints (on a Mac it opens by itself). Start a new game and pick its settings:
+Open the main menu link the terminal prints (on a Mac it opens by itself). Name a world, pick its house rules and what it starts with, and host it. The world runs on your machine, so friends can play while `bun start` is running.
 
-- **Open** rules: anyone's Claude can change or remove anyone's mod.
-- **Additive** rules: you can only add. Nobody can edit or remove a mod they didn't make, so you answer an attack by building a counter-mod.
-- **Start with** a blank screen, or a 3D field or hills with walking.
+![The main menu's New world tab: world name, house rules Open, Start with Blank, and a Create and host button](docs/readme/menu-new.jpg)
 
-Every world is saved. Host any of them again from the menu later.
+**Open** lets anyone's Claude change or remove any mod. **Additive** means nobody can touch a mod they did not make, so you answer an attack by building a counter-mod. Every world is saved: host it again from the menu later, or rewind it to an earlier point in the last hour.
 
 ## Let friends in
 
-The main menu shows the invite link. Friends only need a browser. To play over the internet without opening ports, tick **Share over the internet**: your game connects out to a free public relay and the menu shows a public invite link that stays the same every time. Run your own relay with `bun relay/relay.ts` behind HTTPS and point `SANDBOX_RELAY` at it. The menu's player list has each friend's personal link to get back in as themselves. It also lets you remove players, make a new invite link, and rewind the world to any minute of the last hour.
+Friends only need a browser to play. The menu shows the invite link, and ticking **Share over the internet** gives you a public link through a free relay, with no port forwarding; it stays the same every time you host.
+
+![The hosting tab with Share over the internet on, the public invite link and the player list](docs/readme/menu-invite.png)
+
+Run your own relay with `bun relay/relay.ts` behind HTTPS and point `SANDBOX_RELAY` at it.
 
 ## Connect your Claude
 
-Press Tab in the game and paste the command into a terminal. It holds your personal key, connects Claude Code to the world and leaves it listening to the in-game chat. Go back to the game and ask for things right there: "add coins that respawn and a scoreboard", "make gravity flip every 30 seconds", "give me a grappling hook". Your Claude answers in the chat when it's live, and new mods arrive with an on-screen banner it names and colours.
+Building needs your own Claude Code. Press Tab in the game and paste the command into a terminal: it starts Claude Code with this world's tools (a small command it installs, or an MCP server if you pick that tab), signed with your personal key, and a prompt that keeps it listening to the in-game chat until you close it.
 
-Each Claude edits the same shared file tree on the server, and nothing goes live until it calls `reload`. A reload only swaps in if the mod passes three checks: it typechecks, it builds, and 20 test ticks run clean against a copy of the live world. Mods that crash, stall, or freeze the server after going live are reverted automatically, and the whole world sees it in the feed.
+![The in-game menu's Connect your Claude card with the command line to paste](docs/readme/connect.png)
 
-Mods can do anything: add entities, rewrite physics and rendering, keep secrets from some players, call web APIs, import npm packages and 3D models, or `wrap` another player's mod to intercept, bend, or reverse what it does. Claudes see what their player sees through a screenshot tool and read the in-game chat. `engine/GUIDE.md` is what every Claude reads first.
+Then ask for things in the chat. Your Claude builds, reloads, and answers in the same chat when it is live.
+
+![The player asks for double coins in the chat, the Claude reloads coins v2, a DOUBLE COINS banner appears with a vote bar, and the Claude replies that it is done](docs/readme/chat.jpg)
+
+The Builders tab shows what every Claude is working on right now, as each one reports its task and how far along it is.
+
+![The Builders tab listing theo's Claude, its current task and a progress bar](docs/readme/builders.png)
+
+## Every reload is checked before it goes live
+
+Nothing changes until a Claude calls `reload`. The server typechecks the mod, builds it, and runs 20 trial ticks against a copy of the live world with every other mod loaded. Only then is it hot-swapped in for every player, mid-game. In the sixty-mod world above the last two reloads took 530 ms and 535 ms from call to live, 400 ms of it the trial run; a brand-new mod's first build takes a second or two longer.
+
+```
+$ friday-night reload mod=coins
+coins v2 is live for everyone (463 ms).
+
+$ friday-night reload mod=lava
+Test run against a copy of the live world failed, nothing changed:
+tick: TypeError: undefined is not an object (evaluating 'p.position.distanceTo')
+```
+
+For 30 seconds after a mod lands, players can love it or vote to undo it. More than half of those online voting undo reverts it.
+
+![The vote bar after a reload: DOUBLE COINS, 1 love it, 2 vote to undo](docs/readme/vote.png)
+
+## Broken mods revert themselves
+
+A server mod that throws ten times, spends over 50 ms on every tick for five seconds, or freezes the server is put back to its previous version automatically, and the whole world sees it in the feed. A client mod that keeps throwing is switched off in that player's game.
+
+![Feed lines: theo reloaded lava v2, then lava reverted to its previous version with the error](docs/readme/revert.png)
+
+Every accepted reload is committed, so any mod can be restored to any earlier version.
+
+## Hijack a friend's mod
+
+Mods run in `order`, and any mod can `wrap` another's hooks on the server or the client: call the original, skip it, or change what it gets.
+
+```ts
+export default {
+  order: 10,
+  wrap: {
+    basics: {
+      tick(next, world, dt) { next(dt * 0.5); },                                  // half-speed physics
+      message(next, world, player, msg) { next(player, { ...msg, x: -msg.x }); }, // mirrored steering
+    },
+  },
+} satisfies ServerMod;
+```
+
+In an Additive world this is the whole game: you cannot edit what someone else built, but you can wrap it, undo it after it runs, or build something that hides it from them. `see` hooks and `only` lists keep secrets from some players.
+
+![The Mods tab listing each mod with its author, version, description and vote buttons](docs/readme/mods.png)
+
+## Watch it get built
+
+The menu's Timelapse replays the last three hours through the same client code as live play, cut into chapters by who built what, where.
+
+![The timelapse chapter list: theo building, theo builds THE WATCHTOWER, the whole world, theo works on COINS, the world now](docs/readme/timelapse.png)
+
+## What a mod can do
+
+A mod is TypeScript: `server.ts` runs on the host in Bun, `client.ts` runs in every player's browser with Three.js and the DOM. It can add entities, rewrite physics and rendering, call web APIs, import npm packages and 3D models, keep a SQLite table per mod, and hand functions to other mods with `exports`. Claudes see what their player sees through a `screenshot` tool and read the chat. The world hands every connecting Claude `GUIDE.md` to read first; it is `engine/GUIDE.md` in this repo.
 
 ## Trust
 
 Mods run as real code on the host's machine. Only invite people you would give a shell to.
+
+## Desktop app
+
+Friends who would rather not play in a browser tab can use the [desktop app](desktop/README.md), installed with one command on a Mac or Linux, where right-click, mouse look and full screen work without browser interruptions.
