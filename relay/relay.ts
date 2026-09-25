@@ -68,6 +68,7 @@ Bun.serve<Data>({
     return res;
   },
   websocket: {
+    perMessageDeflate: true,
     open(ws) {
       const d = ws.data;
       if (d.kind === "host") {
@@ -99,7 +100,7 @@ Bun.serve<Data>({
       else if (msg.t === "end") {
         host.pending.get(msg.id)?.stream?.close();
         host.pending.delete(msg.id);
-      } else if (msg.t === "msg") host.players.get(msg.id)?.send(msg.data);
+      } else if (msg.t === "msg") host.players.get(msg.id)?.send(msg.data, true);
       else if (msg.t === "close") host.players.get(msg.id)?.close(msg.code >= 3000 || msg.code === 1000 ? msg.code : 1011, msg.reason);
       else if (msg.t === "ping") ws.send(JSON.stringify({ t: "pong" }));
     },

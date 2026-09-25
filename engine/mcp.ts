@@ -254,9 +254,9 @@ export function createMcp(ctx: McpContext) {
 
   function list(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {
-      if (name === ".git" || name === "node_modules") return [];
       const abs = join(dir, name);
-      return statSync(abs).isDirectory() ? list(abs) : [relative(ctx.root, abs)];
+      if (!statSync(abs).isDirectory()) return [relative(ctx.root, abs)];
+      return name.startsWith(".") || name === "node_modules" ? [] : list(abs);
     });
   }
 
