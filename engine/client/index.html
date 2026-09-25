@@ -127,6 +127,8 @@
     #replay-caption { top: 62px; padding: 10px 16px; }
     #replay-caption b { font-size: 16px; }
     #replay-feed { left: 16px; width: calc(100vw - 32px); top: 118px; bottom: auto; }
+    #replay-feed .line { animation: in .25s ease-out, out .6s 4s forwards; }
+    #replay-feed .line:nth-last-child(n+4) { display: none; }
   }
   .sheet.wide { width: min(640px, 100%); height: min(780px, calc(100vh - 32px)); display: flex; flex-direction: column; }
   #tabs { display: flex; gap: 28px; margin-top: 24px; border-bottom: 1px solid var(--line); overflow-x: auto; flex-shrink: 0; }
