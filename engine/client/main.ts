@@ -39,8 +39,8 @@ function offerApp(link: string) {
   $("app-install").textContent = `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash${link && ` -s --${arg}`}`;
   $("app-clone").textContent = `git clone https://github.com/theolundqvist/sandbox && cd sandbox && bun desktop${arg}`;
   $("app-offer").hidden = false;
-  $("app-get").onclick = () => ($("app-panel").hidden = !$("app-panel").hidden);
-  $("app-dismiss").onclick = () => {
+  $("app-get").onclick = () => ($("app-later").hidden = !($("app-panel").hidden = !$("app-panel").hidden));
+  $("app-later").onclick = $("app-dismiss").onclick = () => {
     $("app-offer").hidden = true;
     try {
       localStorage.setItem(dismissed, "1");

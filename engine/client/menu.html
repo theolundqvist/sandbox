@@ -64,8 +64,11 @@
   .actions { display: flex; gap: 8px; margin-top: 18px; }
   .actions .btn { flex: 1; padding: 16px; }
   #app-offer { margin-top: 28px; }
-  #app-offer code { white-space: normal; word-break: break-all; padding: 12px 0; }
-  #app-offer > button.quiet { padding-left: 0; }
+  #app-offer > p { margin: 0; }
+  .offer { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
+  #app-panel .row { padding: 10px 0; }
+  #app-panel code { white-space: normal; word-break: break-all; background: rgba(255,255,255,.05); padding: 10px 12px; }
+  #app-dismiss { margin-top: 12px; padding-left: 0; }
 </style>
 </head>
 <body>
@@ -78,15 +81,16 @@
   </header>
 
   <section id="app-offer" hidden>
-    <div class="row"><span class="meta grow">Play in the desktop app: real fullscreen, right-click and no browser shortcuts in the way.</span><button id="app-get" class="btn">Get the app</button></div>
+    <p class="meta">Plays better in the desktop app: real fullscreen and right-click.</p>
+    <div class="offer"><button id="app-get" class="btn">Get the app</button><button id="app-later" class="quiet">Not now</button></div>
     <div id="app-panel" hidden>
       <h2>Install and open this menu</h2>
       <div class="row"><code id="app-install" class="grow"></code><button class="quiet" data-copy="app-install">Copy</button></div>
       <h2>While the repo is private</h2>
       <div class="row"><code id="app-clone" class="grow"></code><button class="quiet" data-copy="app-clone">Copy</button></div>
       <p class="note">Mac and Linux. On Windows, run it in WSL.</p>
+      <button id="app-dismiss" class="quiet">Continue in browser</button>
     </div>
-    <button id="app-dismiss" class="quiet">Continue in browser</button>
   </section>
 
   <section id="guest" hidden>
@@ -359,8 +363,8 @@
     $("app-install").textContent = `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '${link}'`;
     $("app-clone").textContent = `git clone https://github.com/theolundqvist/sandbox && cd sandbox && bun desktop '${link}'`;
     $("app-offer").hidden = false;
-    $("app-get").onclick = () => ($("app-panel").hidden = !$("app-panel").hidden);
-    $("app-dismiss").onclick = () => {
+    $("app-get").onclick = () => ($("app-later").hidden = !($("app-panel").hidden = !$("app-panel").hidden));
+    $("app-later").onclick = $("app-dismiss").onclick = () => {
       $("app-offer").hidden = true;
       try {
         localStorage.setItem(dismissed, "1");

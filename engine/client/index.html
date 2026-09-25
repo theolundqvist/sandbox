@@ -179,9 +179,11 @@
   .actions button { flex: 1; padding: 16px; }
   .error { color: var(--err); min-height: 1.4em; margin-top: 10px; }
   #app-offer { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
-  .offer { display: flex; gap: 16px; align-items: center; }
-  .offer p { flex: 1; margin: 0; }
-  button.quiet { border-color: transparent; padding: 11px 0; margin-top: 8px; color: var(--dim); }
+  #app-offer > p { margin: 0; }
+  .offer { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
+  #app-panel code { background: rgba(255,255,255,.05); padding: 10px 12px; max-height: none; }
+  button.quiet { border-color: transparent; color: var(--dim); }
+  #app-dismiss { margin-top: 12px; padding-left: 0; }
   button.quiet:hover { background: none; color: var(--text); }
   code { display: block; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d9d6cf; word-break: break-all; }
   p code { display: inline; }
@@ -261,15 +263,16 @@
     <div id="join-error" class="error"></div>
     <div class="actions"><button class="primary" type="submit">Join</button></div>
     <div id="app-offer" hidden>
-      <div class="offer"><p>Play in the desktop app: real fullscreen, right-click and no browser shortcuts in the way.</p><button type="button" id="app-get">Get the app</button></div>
+      <p>Plays better in the desktop app: real fullscreen and right-click.</p>
+      <div class="offer"><button type="button" id="app-get">Get the app</button><button type="button" id="app-later" class="quiet">Not now</button></div>
       <div id="app-panel" hidden>
         <h2>Install and open this world</h2>
         <div class="copy"><code id="app-install"></code><button type="button" data-copy="app-install">Copy</button></div>
         <h2>While the repo is private</h2>
         <div class="copy"><code id="app-clone"></code><button type="button" data-copy="app-clone">Copy</button></div>
         <p>Mac and Linux. On Windows, run it in WSL.</p>
+        <button type="button" id="app-dismiss" class="quiet">Continue in browser</button>
       </div>
-      <button type="button" id="app-dismiss" class="quiet">Continue in browser</button>
     </div>
   </form>
 </div>
