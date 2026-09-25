@@ -1293,9 +1293,13 @@ const inputFree = () => !(replay || typing() || panel || !menu.hidden || !chat.h
 
 /** When a mod asks for mouse-look, clicking the game locks the mouse; the cursor is free again while chat, the menu, a panel or an overlay is open. */
 function capture() {
-  if (!replay && screen.lockPointer && !document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !panel && !document.pointerLockElement) renderer.domElement.requestPointerLock();
+  if (!replay && screen.lockPointer && !document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !panel && !document.pointerLockElement) renderer.domElement.requestPointerLock()?.catch(() => {});
 }
 renderer.domElement.addEventListener("click", capture);
+// Coming back to the window takes mouse-look straight back where the page may lock without a click (the desktop app); browsers refuse quietly.
+addEventListener("focus", capture);
+// Right-click belongs to the game, so no browser menu except over text fields.
+addEventListener("contextmenu", (e) => (e.target as Element).closest("input, textarea, [contenteditable]") || e.preventDefault());
 const ideas = ["add a scoreboard", "make it harder every round", "let us play in teams", "add sound effects", "add a timer and a winner", "give everyone a secret role", "surprise us with a twist"];
 function openChat() {
   chat.placeholder = `Chat, or ask your Claude: "${ideas[Math.floor(Math.random() * ideas.length)]}"`;
