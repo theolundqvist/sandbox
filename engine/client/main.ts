@@ -541,14 +541,22 @@ async function screenshot() {
   draw(0);
   const scene3d = new Image();
   scene3d.src = renderer.domElement.toDataURL("image/png");
+  // html-to-image waits on animation frames, which never come in a background tab.
   const [overlay] = await Promise.all([
-    toCanvas(document.body, { filter: (node) => node !== renderer.domElement && !(node as HTMLElement).hidden, skipFonts: true, pixelRatio: 1, style: { background: "transparent" } }),
+    document.hidden ? null : toCanvas(document.body, { filter: (node) => node !== renderer.domElement && !(node as HTMLElement).hidden, skipFonts: true, pixelRatio: 1, style: { background: "transparent" } }),
     scene3d.decode(),
   ]);
   const out = Object.assign(document.createElement("canvas"), { width: innerWidth, height: innerHeight });
   const g = out.getContext("2d")!;
   g.drawImage(scene3d, 0, 0, innerWidth, innerHeight);
-  g.drawImage(overlay, 0, 0, innerWidth, innerHeight);
+  if (overlay) g.drawImage(overlay, 0, 0, innerWidth, innerHeight);
+  else {
+    g.font = "bold 18px sans-serif";
+    g.fillStyle = "#000a";
+    g.fillRect(0, 0, innerWidth, 36);
+    g.fillStyle = "#fff";
+    g.fillText("The game tab is in the background: 3D view only, no HUD or menus.", 12, 24);
+  }
   return out.toDataURL("image/jpeg", 0.8).split(",")[1]!;
 }
 

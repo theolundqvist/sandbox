@@ -71,16 +71,28 @@ async function host(id: string) {
   const record = openRecord(join(WORLDS, id, "record.sqlite"));
   const proc = Bun.spawn([process.execPath, join(ENGINE, "server.ts")], {
     env: { ...process.env, SANDBOX_DATA: join(WORLDS, id), PORT: "0" },
-    stdout: "inherit",
-    stderr: "inherit",
+    stdout: "pipe",
+    stderr: "pipe",
     ipc: (msg) => reportPort(msg.port),
   });
-  proc.exited.then(() => {
+  const lastLines: string[] = [];
+  const forward = async (from: ReadableStream<Uint8Array>, to: NodeJS.WriteStream) => {
+    const decoder = new TextDecoder();
+    for await (const chunk of from) {
+      to.write(chunk);
+      lastLines.push(...decoder.decode(chunk, { stream: true }).split("\n").filter(Boolean));
+      lastLines.splice(0, lastLines.length - 40);
+    }
+  };
+  const output = [forward(proc.stdout, process.stdout), forward(proc.stderr, process.stderr)];
+  proc.exited.then(async () => {
     const stopped = running?.proc !== proc;
+    await Promise.allSettled(output);
     const how = proc.signalCode ?? `code ${proc.exitCode}`;
     console.log(`[launcher] world ${id} exited with ${how} after ${Math.round((Date.now() - started) / 1000)} s${stopped ? "" : " without being stopped"}`);
     sampleProxy(record);
-    record.add("exit", null, { code: proc.exitCode, signal: proc.signalCode, stopped, seconds: Math.round((Date.now() - started) / 1000) });
+    const lastSample = record.rows({ kind: "server", since: started, limit: 1 })[0];
+    record.add("exit", null, { code: proc.exitCode, signal: proc.signalCode, stopped, seconds: Math.round((Date.now() - started) / 1000), lastSample, lastLines });
     record.close();
   });
   const port = await new Promise<number>((resolve, reject) => {
@@ -267,6 +279,8 @@ Bun.serve<Pipe>({
     return res;
   },
   websocket: {
+    // Ticks are repetitive JSON: compressed they take about a third of the bandwidth.
+    perMessageDeflate: true,
     open(ws) {
       players.add(ws);
       const upstream = new WebSocket(ws.data.target);
@@ -275,7 +289,7 @@ Bun.serve<Pipe>({
         for (const msg of ws.data.queue) upstream.send(msg);
         ws.data.queue = [];
       };
-      upstream.onmessage = (e) => ws.send(e.data);
+      upstream.onmessage = (e) => ws.send(e.data, true);
       // Codes 1005/1006 describe a dropped connection and may not be sent, so they become 1011.
       upstream.onclose = (e) => ws.close(e.code === 1000 || e.code >= 3000 ? e.code : 1011, e.reason);
     },
