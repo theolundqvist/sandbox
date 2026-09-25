@@ -19,6 +19,7 @@
   button:hover { background: var(--text); color: #0b0b0c; border-color: var(--text); }
   button.primary { background: var(--text); color: #0b0b0c; border-color: var(--text); }
   button.primary:hover { background: var(--accent); border-color: var(--accent); }
+  button:disabled { opacity: .45; pointer-events: none; }
   .shadow { text-shadow: 0 1px 3px rgba(0,0,0,.8); }
 
   #top { position: fixed; top: 20px; left: 24px; right: 24px; display: flex; gap: 20px; align-items: center; pointer-events: none; }
@@ -78,6 +79,9 @@
   @media (max-width: 900px) { body:not(.touch) #hud-bottom { bottom: 72px; } }
   #interact { display: flex; align-items: center; gap: 12px; padding: 10px 18px 10px 10px; background: var(--veil); border-left: 3px solid var(--accent); cursor: pointer; }
   #interact kbd { margin: 0; }
+  #layers { position: fixed; inset: 0; isolation: isolate; pointer-events: none; }
+  #layers > * { position: absolute; inset: 0; pointer-events: auto; }
+  .mod-panel { position: fixed; left: 50%; top: 50%; translate: -50% -50%; z-index: 1000; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); overflow: auto; outline: none; }
   #react { display: flex; gap: 8px; align-items: center; padding: 8px 8px 8px 16px; background: var(--veil); border-left: 3px solid var(--c); animation: in .25s ease-out; }
   #react-mod { color: var(--c); margin-right: 8px; max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #react button { border-color: transparent; background: rgba(255,255,255,.06); }
@@ -85,6 +89,45 @@
   #react kbd { margin: 0 6px 0 0; }
   #replay { position: fixed; top: 20px; left: 50%; translate: -50% 0; padding: 10px 18px; background: var(--veil); border-bottom: 2px solid var(--accent); }
   #replay span { color: var(--accent); margin-left: 10px; }
+  #replay-caption { position: fixed; left: 50%; top: 66px; translate: -50% 0; display: flex; align-items: baseline; gap: 16px; max-width: calc(100vw - 32px); padding: 14px 24px; background: var(--veil); border-left: 3px solid var(--accent); pointer-events: none; animation: in .4s ease-out; }
+  #replay-caption span { color: var(--accent); }
+  #replay-caption b { font-size: 20px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #replay-caption b:empty { display: none; }
+  #replay-bar { position: fixed; left: 24px; right: 24px; bottom: 20px; display: flex; gap: 8px; align-items: center; padding: 8px; background: var(--veil); }
+  #replay-bar button { background: transparent; }
+  #replay-bar button:hover, #replay-bar button.on { background: var(--text); color: #0b0b0c; }
+  #replay-play { min-width: 112px; }
+  #replay-speed { min-width: 56px; }
+  #replay-track { position: relative; flex: 1; min-width: 0; height: 36px; cursor: pointer; touch-action: none; border-bottom: 1px solid var(--line); }
+  #replay-track canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #replay-marks i { position: absolute; top: 0; width: 2px; height: 10px; translate: -1px 0; background: var(--c, var(--accent)); pointer-events: none; }
+  #replay-head { position: absolute; top: -4px; bottom: -4px; width: 2px; translate: -1px 0; background: var(--text); pointer-events: none; }
+  #replay-tip { position: absolute; bottom: calc(100% + 14px); translate: -50% 0; padding: 7px 10px; background: var(--veil); border-bottom: 2px solid var(--accent); white-space: nowrap; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+  #replay-feed { position: fixed; left: 24px; bottom: 92px; width: min(380px, calc(50vw - 240px)); display: flex; flex-direction: column; gap: 3px; pointer-events: none; }
+  #replay-feed .line { animation: in .25s ease-out, out .8s 9s forwards; }
+  @keyframes out { to { opacity: 0; } }
+  #replay-chapters { position: fixed; right: 24px; top: 72px; bottom: 92px; width: min(340px, calc(100vw - 48px)); overflow-y: auto; padding: 18px 0; background: var(--veil); }
+  #replay-chapters p { margin: 0 20px 8px; color: var(--accent); }
+  #replay-chapters li { justify-content: flex-start; align-items: baseline; gap: 14px; padding: 10px 20px 10px 18px; border-left: 2px solid transparent; cursor: pointer; }
+  #replay-chapters li:hover { background: rgba(255,255,255,.05); }
+  #replay-chapters li.active { border-left-color: var(--accent); background: rgba(255,255,255,.07); }
+  #replay-chapters li span { color: var(--accent); flex-shrink: 0; }
+  #replay-chapters li b { font-weight: 600; }
+  body.replaying .hud-area > * { pointer-events: none; }
+  body.replaying #hud-bottom { bottom: 150px; }
+  body.replaying #hud-right { bottom: 92px; }
+  body.replaying #interact, body.replaying #react, body.replaying #feed, body.replaying #hint, body.replaying #builders, body.replaying #top, body.replaying #chat, body.replaying #stick, body.replaying #jump, body.replaying #empty { display: none !important; }
+  @media (max-width: 760px) {
+    #replay-bar { left: 16px; right: 16px; bottom: 16px; flex-wrap: wrap; }
+    #replay-track { order: -1; flex-basis: 100%; }
+    #replay-bar button { flex: 1; padding: 11px 8px; min-width: 0; }
+    #replay-caption { top: 62px; padding: 10px 16px; }
+    #replay-caption b { font-size: 16px; }
+    #replay-feed { left: 16px; width: calc(100vw - 32px); top: 118px; bottom: auto; }
+    #replay-chapters { right: 16px; left: 16px; width: auto; top: 64px; bottom: 128px; }
+    body.replaying #hud-right { bottom: 128px; }
+    body.replaying #hud-bottom { bottom: 186px; }
+  }
   .sheet.wide { width: min(640px, 100%); height: min(780px, calc(100vh - 32px)); display: flex; flex-direction: column; }
   #tabs { display: flex; gap: 28px; margin-top: 24px; border-bottom: 1px solid var(--line); overflow-x: auto; flex-shrink: 0; }
   #tabs button { flex-shrink: 0; }
@@ -150,9 +193,10 @@
   .keys dt { font-weight: 700; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; }
   .keys dt span { display: inline-block; min-width: 26px; text-align: center; border: 1px solid rgba(255,255,255,.35); padding: 4px 7px; margin-right: 4px; }
   .keys dd { margin: 0; color: var(--dim); }
+  .mod-keys:empty { display: none; }
   body.touch .desk, body:not(.touch) .touchonly { display: none; }
 
-  #top, #status, #chat, #hint, #toasts, #builders, #react, #replay, #stick, #jump, #announce { z-index: 1000; } .overlay { z-index: 1001; }
+  #top, #status, #chat, #hint, #builders, #react, #replay, #replay-caption, #replay-bar, #replay-feed, #replay-chapters, #stick, #jump, #announce { z-index: 1000; } .overlay { z-index: 1001; } #toasts { z-index: 1002; }
   body.touch canvas { touch-action: none; }
   body.touch #feed { top: 72px; bottom: auto; max-height: 24vh; width: calc(100vw - 130px); }
   body.touch #chat { top: 72px; bottom: auto; }
@@ -163,6 +207,7 @@
 </style>
 </head>
 <body>
+<div id="layers"></div>
 <div id="hud" hidden>
   <div id="top" class="shadow">
     <div id="world-name"></div>
@@ -178,6 +223,17 @@
   <div id="toasts"></div>
   <div id="builders" class="caps shadow"></div>
   <div id="replay" class="caps" hidden>Timelapse <span id="replay-time"></span></div>
+  <div id="replay-caption" hidden><span class="caps"></span><b></b></div>
+  <div id="replay-feed" hidden></div>
+  <div id="replay-chapters" hidden><p class="caps">Chapters</p><ul></ul></div>
+  <div id="replay-bar" hidden>
+    <button id="replay-play">Pause<kbd class="desk">Space</kbd></button>
+    <button id="replay-speed" title="Playback speed (up and down arrows)">1×</button>
+    <div id="replay-track"><canvas></canvas><div id="replay-marks"></div><i id="replay-head"></i><div id="replay-tip" class="caps" hidden></div></div>
+    <button id="replay-chapters-button">Chapters<kbd class="desk">C</kbd></button>
+    <button id="replay-free">Free camera<kbd class="desk">F</kbd></button>
+    <button id="replay-leave">Leave<kbd class="desk">Esc</kbd></button>
+  </div>
   <div id="hud-left" class="hud-area"></div>
   <div id="hud-right" class="hud-area"></div>
   <div id="hud-bottom" class="hud-area"><div id="interact" hidden><kbd class="desk">E</kbd><span></span></div>
@@ -185,7 +241,7 @@
   <div id="announce" hidden><div class="caps"></div><b></b><p></p></div>
   <div id="stick" hidden><div></div></div>
   <button id="jump" hidden>Jump</button>
-  <div id="empty" class="shadow" hidden><b>Nothing exists yet</b>Press Tab, connect your Claude, and ask it for ground to stand on.</div>
+  <div id="empty" class="shadow" hidden><b>Nothing exists yet</b>Press Tab, connect your Claude, and ask it for the game you want to play.</div>
 </div>
 
 <div id="join" class="overlay" hidden>
@@ -206,21 +262,16 @@
     <h1 id="howto-world"></h1>
     <p>Nothing here is fixed. Every player's Claude changes this world while you play: new rules, weapons, whole games. Ask yours for anything in the chat, then watch it go live for everyone.</p>
     <dl class="keys desk">
-      <dt><span>W</span><span>A</span><span>S</span><span>D</span></dt><dd>Move</dd>
-      <dt>Mouse</dt><dd>Look around</dd>
-      <dt><span>Space</span></dt><dd>Jump</dd>
       <dt><span>Enter</span></dt><dd>Chat with everyone and your Claude, typed or spoken</dd>
       <dt><span>T</span></dt><dd>Hold to talk</dd>
       <dt><span>⌘</span><span>K</span></dt><dd>Search every menu and setting</dd>
       <dt><span>Tab</span></dt><dd>Menu: connect your Claude, invite friends, see what everyone builds</dd>
     </dl>
     <dl class="keys touchonly">
-      <dt>Left stick</dt><dd>Move</dd>
-      <dt>Drag</dt><dd>Look around</dd>
-      <dt>Jump</dt><dd>Jump</dd>
       <dt>Chat</dt><dd>Chat with everyone and your Claude</dd>
       <dt>Menu</dt><dd>Connect your Claude, invite friends</dd>
     </dl>
+    <dl class="keys desk mod-keys"></dl>
     <div class="actions"><button id="howto-play" class="primary">Play</button></div>
   </div>
 </div>

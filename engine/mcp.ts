@@ -163,7 +163,7 @@ const tools = [
   },
   {
     name: "screenshot",
-    description: "See exactly what your player sees right now, 3D view and HTML overlays (they must have the game open). Use it to check your visuals and UI.",
+    description: "See exactly what your player sees right now: the scene, mod layers and HTML overlays (they must have the game open). Use it to check your visuals and UI.",
     inputSchema: { type: "object", properties: {} },
   },
   {

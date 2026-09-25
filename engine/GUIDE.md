@@ -1,6 +1,6 @@
 # Building this world
 
-You are one of several Claudes building a live multiplayer 3D game while your players are inside it. Everything in the game is a mod, including movement, gravity and the ground. There is no fixed genre, goal, style or rulebook: this world becomes whatever its players and their Claudes make it. Learn what it already is from `status`, the mods and the chat before your first build, and don't impose a genre or look nobody asked for.
+You are one of several Claudes building a live multiplayer game while your players are inside it. Everything in the game is a mod, including movement, gravity and the ground. There is no fixed genre, goal, style or rulebook: this world becomes whatever its players and their Claudes make it. Learn what it already is from `status`, the mods and the chat before your first build, and don't impose a genre or look nobody asked for.
 
 ## How a change goes live
 
@@ -68,6 +68,15 @@ The engine offers collision to games that want it. An entity with `pos` and `sol
 
 For anything richer, such as models, particles, shaders, sound, UI or post-processing, write it in `client.ts` with full access to Three.js (`ctx.THREE`, `ctx.scene`, `ctx.camera`, `ctx.renderer`, `import ... from "three/addons/..."`) and the DOM.
 
+The scene is one way to draw, not a requirement. `ctx.screen({...})` sets how the game is shown and controlled, and each setting comes from the highest-`order` mod that gives one:
+- `camera`: draw the scene through any `THREE.Camera`, such as an `OrthographicCamera` for a flat, side-on, top-down or isometric view. Perspective and orthographic cameras are fitted to the window.
+- `lockPointer: true`: clicking the game locks the mouse for looking around. Without it the cursor stays free to point, click, drag and select.
+- `resolution` (scene pixels per screen pixel, e.g. `0.25`) and `pixelated: true`: a low internal resolution scaled up with hard edges.
+- `scene: false`: stop drawing the scene, for games made entirely of your own canvas or HTML.
+- `stick: true`: on phones, a move stick and a jump button that press `KeyW`/`KeyA`/`KeyS`/`KeyD` and `Space`.
+
+`ctx.layer()` gives you a full-screen element above the scene and below the engine's menu, chat and HUD. Fill it with a 2D `<canvas>` or HTML; `screenshot` captures it along with the scene. Several games can share one world: each mod changes the screen and shows its layer only while its player is in it.
+
 ## Server hooks (`server.ts`)
 
 ```ts
@@ -105,13 +114,18 @@ The engine glides every drawn object toward its entity's `pos` and `rot`. Set `o
 
 `event(ctx, name, data, from)` receives one-off happenings that a server mod sent with `world.emit(name, data)` (to everyone) or `world.emit(name, data, ["theo"])` (to some players): an explosion at one spot, a sound, a screen shake. Events are not saved and late joiners never see them; anything that must persist belongs in an entity.
 
+The menu's Timelapse replays the last three hours through the same client code as live play: `ctx.entities` holds the world as it was, so your `frame`, `object`, `render`, layer and HUD code draws the past, `ctx.playerId` is the player the current shot is about, `ctx.keys` stays empty, `ctx.inputFree()` is false, your `ctx.key` bindings don't fire and `ctx.send` is dropped. Keep what you draw derived from `ctx.entities` (not from state collected once in `init` or from events) and it replays correctly. A director cuts between shots of where things were built, who built them and who was playing. By default the engine's camera orbits the place of each shot; a game that shows itself through its own `ctx.screen` camera or in `ctx.layer` keeps that view, following `ctx.playerId`. To frame shots your way (a 2D camera, a board, the panel the shot is about), add `replay(ctx, shot, dt)`: it runs every frame, `shot` gives `kind`, `target` and `radius` (when the changed things have a `pos`), the changed entity `ids`, `mod`, `player`, `caption` and `elapsed` seconds, and returning true tells the engine you framed it. If you draw only what is around the player (the realm or room they are in, nearby chunks), pick what to show from `shot.target` there and return nothing to keep the engine's camera.
+
 Models, textures and sounds: the `add_asset` tool stores a file from a url or base64 in `mods/<mod>/assets/`, live immediately. Load it with `ctx.asset("dragon.glb")` (this mod) or `ctx.asset("other-mod/dragon.glb")`, e.g. with `GLTFLoader` from `three/addons/loaders/GLTFLoader.js`.
 
-`ctx.entities` is the live replicated world (only what this player may see), `ctx.playerId` is this player, `ctx.keys` holds pressed key codes; on phones the on-screen stick presses `KeyW`/`KeyA`/`KeyS`/`KeyD` and the jump button `Space`, so read those and phone players can play too. While a desktop player is playing, the engine locks the mouse to the game: read look input from `pointermove`'s `movementX`/`movementY` when `document.pointerLockElement` is set, and the cursor comes back whenever chat, the menu or an overlay is open. The game menu opens only on Tab, so Esc and every other key are yours: a mod that shows its own window frees the cursor with `document.exitPointerLock()`, closes on Esc, and recaptures with `ctx.renderer.domElement.requestPointerLock()` when done. Players find every menu tab, button and setting with Cmd+K, so give controls clear labels. Share the screen and keyboard instead of claiming them:
+`ctx.entities` is the live replicated world (only what this player may see), `ctx.playerId` is this player, `ctx.keys` holds pressed key codes, including the phone stick's when a mod shows it. When a mod asks for `lockPointer`, read look input from `pointermove`'s `movementX`/`movementY` while `document.pointerLockElement` is set; the cursor comes back whenever chat, the menu or a panel is open. Players find every menu tab, button, setting and declared key with Cmd+K, so give controls clear labels. Share the screen, keyboard, sound and camera instead of claiming them:
+- `ctx.key("KeyM", "Map", run)` declares a key instead of a raw `keydown` listener: the engine skips it while the player types or has a window open, lists it in Cmd+K, Help and `status`, and warns both mods when two declare the same key. `{ hold: true }` or `{ down, up }` gets releases too.
+- `ctx.panel(el)` shows your window instead of hand-rolled pointer lock: it frees the cursor, pauses other mods' keys, closes on Esc and recaptures the mouse. `ctx.inputFree()` tells listeners you keep yourself whether the player is in control.
+- `ctx.audio` is the one shared `AudioContext` with a master `output` and a `listener` on the camera; don't create your own. `ctx.shake(strength, seconds)` shakes the camera, adding up with other mods' shakes, instead of moving `camera.position` yourself.
 - `ctx.menuTab("Scores")` returns your block in the game menu tab with that title. The same title joins an existing tab, so add settings to the engine's "Game", "Builders", "Mods" or "Help" tab or to another mod's tab instead of making a new one. Put leaderboards, shops and settings there, not in a new overlay.
 - `ctx.hud("left" | "right" | "bottom")` returns your element in a shared screen area where every mod's elements stack instead of covering each other. Use it for meters, counters and hints rather than positioning your own fixed DOM. The engine keeps the top 70 px, the top centre banner, the top-right notifications and the bottom-left chat.
 - E belongs to the engine: `ctx.interact({ label, distance, run })` offers an action (open a chest, board a boat, talk). The engine shows one prompt for the nearest action of any mod, and E or tapping it runs only that one, so two mods never fire on the same press.
-- Tab (menu), Enter (chat), T (push to talk), and 1 and 2 (votes, for 30 seconds after a reload) are the engine's too. Before picking any other key, read `controls` in `status`: it lists which mods use each key and menu tab. A reload whose client code reads a key another mod or the engine already uses succeeds but lists the overlap in its report; fix it by choosing a free key or by using that mod's exports.
+- Tab (menu), Enter (chat), T (push to talk), and 1 and 2 (votes, for 30 seconds after a reload) are the engine's too. Before picking any other key, read `controls` in `status`: it lists which mods declare or read each key and fill each menu tab. A reload whose client declares or reads a key another mod or the engine already uses succeeds but lists the overlap in its report; fix it by choosing a free key or by using that mod's exports.
 
 ## Power over other mods
 
