@@ -354,12 +354,14 @@ Bun.serve<Pipe>({
   },
 });
 
-for (const signal of ["SIGINT", "SIGTERM"] as const)
-  process.on(signal, async () => {
-    tunnel?.ws.close();
-    await stop();
-    process.exit(0);
-  });
+async function shutdown() {
+  tunnel?.ws.close();
+  await stop();
+  process.exit(0);
+}
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutdown);
+// The desktop app hosts through this launcher; if the app dies without stopping it, its end of stdin closes.
+if (process.env.SANDBOX_EXIT_WITH_STDIN) void Bun.stdin.stream().pipeTo(new WritableStream()).then(shutdown);
 
 if (state.hosting && existsSync(join(WORLDS, state.hosting))) await host(state.hosting).catch((e) => console.error(e.message));
 if (state.sharing)

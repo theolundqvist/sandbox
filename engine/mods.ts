@@ -22,14 +22,15 @@ const MENU_TAB = /menuTab\(\s*["'`]([^"'`]+)["'`]/g;
 export const ENGINE_KEYS: Record<string, string> = { Tab: "the game menu", Enter: "chat", KeyT: "push to talk", KeyE: "interact prompts from ctx.interact", Digit1: "love votes after a reload", Digit2: "undo votes after a reload" };
 /** Keys many mods read on purpose (moving, steering, closing their own window), so sharing them is not an overlap. */
 const SHARED_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Shift", "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "Escape"]);
-const TSC = join(import.meta.dir, "../node_modules/.bin/tsc");
+// Run by bun itself: its script asks for node, which players may not have.
+const TSC = join(import.meta.dir, "../node_modules/typescript/bin/tsc");
 
 /** Checks only these mods' files and what they import, which reports the same errors in them as checking the whole tree. */
 async function tsc(root: string, mods: string[]) {
   const dir = mkdtempSync(join(tmpdir(), "sandbox-tsconfig-"));
   try {
     writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ extends: join(root, "tsconfig.json"), include: mods.map((mod) => join(root, "mods", mod, "**/*.ts")) }));
-    const proc = Bun.spawn([TSC, "-p", join(dir, "tsconfig.json"), "--pretty", "false"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawn([process.execPath, TSC, "-p", join(dir, "tsconfig.json"), "--pretty", "false"], { cwd: root, stdout: "pipe", stderr: "pipe" });
     const lines = (await new Response(proc.stdout).text()).split("\n");
     await proc.exited;
     return lines;

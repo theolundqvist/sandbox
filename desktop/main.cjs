@@ -1,12 +1,13 @@
 // A thin shell around the web client: one window, a trusted launch screen and title bar, and the game in a view with no extra powers.
 const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, session } = require("electron");
-const { readdirSync, readFileSync, writeFileSync } = require("node:fs");
+const { spawn } = require("node:child_process");
+const { existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } = require("node:fs");
+const { createServer } = require("node:net");
 const { join, normalize } = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 const mac = process.platform === "darwin";
 const BAR = 36;
-const LOCAL = "http://localhost:7777";
 const RELAY = process.env.SANDBOX_RELAY ?? "https://sandbox-relay.lundqvistliss.com";
 const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"]);
 
@@ -30,7 +31,7 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
 const STATE = join(app.getPath("userData"), "state.json");
-/** @type {{ fullscreen?: boolean, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[] }} Joined games by shareable address; main menus opened, by host key. */
+/** @type {{ fullscreen?: boolean, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], port?: number }} Joined games by shareable address; main menus opened, by host key; the port this app hosts on. */
 const state = { recents: [], hosts: {}, mic: [] };
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
@@ -115,9 +116,11 @@ function play(raw) {
     if (status >= 400) return fail(`HTTP ${status}`);
     const u = new URL(to);
     const key = new URLSearchParams(u.hash.slice(1)).get("key");
+    // The relay's own pages, like its join page, are not a game.
+    const relayPage = u.origin === new URL(RELAY).origin && !u.pathname.startsWith("/r/");
     if (u.pathname.endsWith("/menu")) {
       if (key) hostSeen(key, worldBase(u));
-    } else void remember(worldBase(u));
+    } else if (!relayPage) void remember(worldBase(u));
   });
   wc.on("did-fail-load", (_, code, description, _url, mainFrame) => {
     if (mainFrame && code !== -3) fail(description);
@@ -130,6 +133,111 @@ function play(raw) {
   return null;
 }
 
+/** The engine this app hosts games with: its launcher, run by the bun shipped inside the app, with its games in the app's data folder. */
+const ENGINE = app.isPackaged ? join(process.resourcesPath, "engine") : join(__dirname, "..");
+const BUN = app.isPackaged ? join(ENGINE, "bun") : "bun";
+const DATA = join(app.getPath("userData"), "data");
+/** @type {{ proc: import("node:child_process").ChildProcess, base: string, key: string } | null} */ let server = null;
+/** @type {Promise<{ base: string, key: string }> | null} */ let starting = null;
+
+const portFree = (port) =>
+  new Promise((resolve) => {
+    const probe = createServer().once("error", () => resolve(0));
+    probe.listen(port, () => {
+      const got = probe.address().port;
+      probe.close(() => resolve(got));
+    });
+  });
+
+/** Starts this app's game server the first time it's needed, on the port it used before when that is still free. */
+function startServer() {
+  if (server) return Promise.resolve(server);
+  starting ??= (async () => {
+    const port = (state.port && (await portFree(state.port))) || (await portFree(0));
+    state.port = port;
+    save();
+    mkdirSync(DATA, { recursive: true });
+    const log = openSync(join(app.getPath("userData"), "server.log"), "a");
+    const proc = spawn(BUN, [join(ENGINE, "engine/launcher.ts")], {
+      env: { ...process.env, PORT: String(port), SANDBOX_DATA: DATA, SANDBOX_NO_OPEN: "1", SANDBOX_EXIT_WITH_STDIN: "1", SANDBOX_RELAY: RELAY },
+      stdio: ["pipe", log, log],
+    });
+    const exited = new Promise((resolve) => proc.once("exit", resolve));
+    let failed = null;
+    proc.once("error", (e) => (failed = e));
+    const base = `http://localhost:${port}`;
+    for (const until = Date.now() + 20000; Date.now() < until; await new Promise((r) => setTimeout(r, 200))) {
+      if (failed || proc.exitCode !== null || proc.signalCode) break;
+      const local = await ask(`${base}/api/local-key`, null, 500).then((r) => (r.ok ? r.json() : null), () => null);
+      if (!local) continue;
+      server = { proc, base, key: local.key };
+      void exited.then(() => {
+        console.log(`The game server stopped (${proc.signalCode ?? `code ${proc.exitCode}`}).`);
+        if (server?.proc === proc) server = null;
+      });
+      return server;
+    }
+    proc.kill();
+    throw new Error(failed ? `Couldn't start the game server: ${failed.message}` : `The game server didn't start. ${join(app.getPath("userData"), "server.log")} says why.`);
+  })().finally(() => (starting = null));
+  return starting;
+}
+
+/** Hosts a game of this computer's: shares it through the relay, which gives it a join code, and opens its screen in the main menu. */
+async function hostGame(target) {
+  const { base, key } = await startServer();
+  const menu = (action, body) => fetch(`${base}/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) }).then((r) => r.json());
+  let s = await menu("state");
+  if (!s.tunnel) s = await menu("share", { on: true });
+  // Offline, the relay never answers; the game still opens here, without a public link.
+  for (const until = Date.now() + 8000; !s.tunnel?.code && Date.now() < until; await new Promise((r) => setTimeout(r, 250))) s = await menu("state");
+  const share = s.tunnel?.url ?? base;
+  return play(`${share}/menu#key=${key}&${target === "new" ? "screen=create" : `world=${target}`}`);
+}
+
+async function stopServer() {
+  const current = server;
+  if (!current) return;
+  server = null;
+  const exited = new Promise((resolve) => current.proc.once("exit", resolve));
+  current.proc.kill("SIGTERM");
+  await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
+  if (current.proc.exitCode === null && !current.proc.signalCode) current.proc.kill("SIGKILL");
+}
+
+/** Players in the game this app hosts, besides the host playing it here. */
+async function guests() {
+  if (!server) return null;
+  const s = await ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null);
+  if (!s?.running) return null;
+  const online = s.running.players.filter((p) => p.online).length;
+  const here = game && [server.base, s.tunnel?.url].includes(worldBase(new URL(game.view.webContents.getURL() || "about:blank")));
+  return { name: s.running.name, count: online - (here ? 1 : 0) };
+}
+
+/** The games this app hosts, read from its data folder so they show without starting the server. */
+function ownGames(live) {
+  const dir = join(DATA, "worlds");
+  const ids = existsSync(dir) ? readdirSync(dir) : [];
+  return ids.flatMap((id) => {
+    try {
+      const { name } = JSON.parse(readFileSync(join(dir, id, "config.json"), "utf8"));
+      const saved = [join(dir, id, "world.sqlite"), join(dir, id, "config.json")].find(existsSync);
+      return [{ name, at: statSync(saved).mtimeMs, live: live === id, url: `local:${id}` }];
+    } catch {
+      return [];
+    }
+  });
+}
+
+const ownKey = () => {
+  try {
+    return JSON.parse(readFileSync(join(DATA, "launcher.json"), "utf8")).hostKey;
+  } catch {
+    return null;
+  }
+};
+
 /** A main menu this app opened; a launcher keeps one host key, so its local and relay addresses count once. */
 function hostSeen(key, base) {
   if (state.hosts[key] === base) return;
@@ -139,12 +247,13 @@ function hostSeen(key, base) {
 
 const ask = (url, key, ms = 1500) => fetch(url, { headers: key ? { authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(ms) });
 
-/** The start screen's games: each known launcher's saved games, opened through its relay address when it shares, and the games joined. */
+/** The start screen's games: this app's own, each other launcher's whose main menu was opened here, through its relay address when it shares, and the games joined. */
 async function games() {
-  const local = await ask(`${LOCAL}/api/local-key`, null, 800).then((r) => (r.ok ? r.json() : null), () => null);
-  if (local) hostSeen(local.key, LOCAL);
+  const own = ownKey();
+  const ownState = server && (await ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null));
   const menus = await Promise.all(
     Object.entries(state.hosts).map(async ([key, base]) => {
+      if (key === own) return { key, base, s: null };
       const res = await ask(`${base}/api/menu/state`, key).catch(() => null);
       if (res?.status === 401) {
         delete state.hosts[key];
@@ -153,21 +262,20 @@ async function games() {
       return res?.ok ? { key, base, s: await res.json() } : null;
     }),
   );
-  const hosted = [];
+  const hosted = ownGames(ownState?.running?.id);
   const mine = new Set();
-  let newGame = null;
   for (const m of menus) {
     if (!m) continue;
+    mine.add(m.base);
+    if (!m.s) continue;
     const share = m.s.tunnel?.url ?? m.base;
-    mine.add(m.base).add(share);
-    if (m.base === LOCAL) newGame = `${share}/menu#key=${m.key}&screen=create`;
+    mine.add(share);
     for (const w of m.s.worlds) hosted.push({ name: w.name, at: w.played, live: m.s.running?.id === w.id, url: `${share}/menu#key=${m.key}&world=${w.id}` });
   }
   const copied = (await clipboard.readText()).trim().slice(0, 2000);
   return {
     hosted,
-    joined: state.recents.filter((r) => !mine.has(r.url)),
-    newGame,
+    joined: state.recents.filter((r) => !mine.has(r.url) && !(server && r.url === server.base)),
     copied,
   };
 }
@@ -223,13 +331,9 @@ function createWindow() {
     });
   win.on("focus", () => (game ? game.view : shell).webContents.focus());
   win.on("close", (event) => {
-    if (!game || quitting) return;
+    if (quitting) return;
     event.preventDefault();
-    const answer = dialog.showMessageBoxSync(win, { type: "question", buttons: ["Quit", "Keep playing"], defaultId: 1, cancelId: 1, message: "Quit Sandbox?", detail: `You're in ${game.name}.` });
-    if (answer === 0) {
-      quitting = true;
-      win.close();
-    }
+    void quit();
   });
 }
 
@@ -252,7 +356,11 @@ app.whenReady().then(() => {
 
   const fromShell = (event) => event.sender === shell.webContents;
   ipcMain.handle("state", (event) => (fromShell(event) ? games() : null));
-  ipcMain.handle("open", (event, url) => (fromShell(event) ? play(String(url)) : null));
+  ipcMain.handle("open", (event, url) => {
+    if (!fromShell(event)) return null;
+    const own = String(url).match(/^local:(.+)$/)?.[1];
+    return own ? hostGame(own).catch((e) => e.message) : play(String(url));
+  });
   ipcMain.handle("forget", (event, url) => {
     if (!fromShell(event)) return;
     state.recents = state.recents.filter((r) => r.url !== url);
@@ -272,7 +380,26 @@ app.whenReady().then(() => {
   createWindow();
 });
 
-app.on("before-quit", () => {
-  if (mac) quitting = true;
+/** Asks first when that leaves a game: the host's own, or friends still in the game this app hosts. Then stops the server. */
+let confirming = null;
+function quit() {
+  confirming ??= (async () => {
+    const hosting = await guests();
+    if (game || hosting?.count) {
+      const detail = hosting?.count ? `${hosting.count === 1 ? "1 player is" : `${hosting.count} players are`} in ${hosting.name}. Quitting ends the game for them.` : `You're in ${game.name}.`;
+      const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Quit", hosting?.count ? "Keep hosting" : "Keep playing"], defaultId: 1, cancelId: 1, message: "Quit Sandbox?", detail });
+      if (response !== 0) return;
+    }
+    quitting = true;
+    await stopServer();
+    app.quit();
+  })().finally(() => (confirming = null));
+  return confirming;
+}
+
+app.on("before-quit", (event) => {
+  if (quitting) return;
+  event.preventDefault();
+  void quit();
 });
 app.on("window-all-closed", () => app.quit());
