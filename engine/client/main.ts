@@ -66,8 +66,7 @@ async function start() {
       key = null;
     }
   }
-  const front = await import(["/front.js"][0]!);
-  front.backdrop($("join-backdrop"));
+  await import(["/front.js"][0]!);
   $("join-world").textContent = info.name;
   $("join-online").textContent = info.online ? `${info.online} playing` : "";
   $("join").hidden = false;
