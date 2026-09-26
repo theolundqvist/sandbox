@@ -2064,48 +2064,13 @@ $("volume-exact").onchange = () => setVolume(Number($<HTMLInputElement>("volume-
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "sandbox";
 
-/** Single-quotes a shell argument, so prompts may contain apostrophes and world names anything. */
 const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
-const KEEP_LISTENING = "Keep listening: call wait_for_chat and keep building for the whole session. Never end the turn.";
-/** Codex and Claude Code read a Stop hook that answers with this; OMP's session_stop hook returns it as extra context. */
-const STOP_HOOK = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: `echo ${shellQuote(JSON.stringify({ decision: "block", reason: KEEP_LISTENING }))}` }] }] } });
-const OMP_HOOK = `export default (pi) => { pi.on("session_stop", () => ({ continue: true, additionalContext: ${JSON.stringify(KEEP_LISTENING)} })); };`;
-/** Permissions off everywhere, and a hook in each harness that refuses to end the turn, so the agent keeps listening even when the model tries to stop. */
-const HARNESSES = {
-  claude: { launch: (prompt: string, dir: string) => `claude ${prompt} --dangerously-skip-permissions --settings ${shellQuote(STOP_HOOK)}`, install: "curl -fsSL https://claude.ai/install.sh | bash" },
-  codex: {
-    launch: (prompt: string, dir: string) =>
-      `mkdir -p ${dir}/.codex && printf %s ${shellQuote(STOP_HOOK)} > ${dir}/.codex/hooks.json && codex -C ${dir} --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${prompt}`,
-    install: "npm i -g @openai/codex",
-  },
-  omp: {
-    launch: (prompt: string, dir: string) => `mkdir -p ${dir} && printf %s ${shellQuote(OMP_HOOK)} > ${dir}/hook.js && omp --approval-mode=yolo --hook ${dir}/hook.js ${prompt}`,
-    install: "curl -fsSL https://omp.sh/install | sh",
-  },
-};
-type Harness = keyof typeof HARNESSES;
-let harness: Harness = "claude";
-try {
-  const saved = localStorage.getItem("sandbox-harness");
-  if (saved && saved in HARNESSES) harness = saved as Harness;
-} catch {}
-/** Starts the chosen agent connected to this world through a shell command it installs first (fewer tokens than MCP tool schemas). */
-const connectCommand = (prompt: (tools: string) => string) => {
+/** One prompt for any coding agent with a shell: it installs this world's command, signed with this player's key, then plays. */
+function connectPrompt() {
   const base = publicUrl ?? origin;
   const bin = `~/.local/bin/${slug(world)}`;
-  const tools = `the ${bin} command: run it alone to list its tools, call one as ${bin} <tool> name=value, and give wait_for_chat calls a shell timeout of at least 300 seconds`;
-  return `mkdir -p ~/.local/bin && curl -fsS -H ${shellQuote(`Authorization: Bearer ${key}`)} ${shellQuote(`${base}/cli?name=${slug(world)}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin} && ${HARNESSES[harness].launch(shellQuote(prompt(tools)), `~/.local/share/sandbox/${slug(world)}`)}`;
-};
-for (const button of uiRoot.querySelectorAll<HTMLButtonElement>("[data-harness]")) {
-  button.classList.toggle("active", button.dataset.harness === harness);
-  button.onclick = () => {
-    harness = button.dataset.harness as Harness;
-    try {
-      localStorage.setItem("sandbox-harness", harness);
-    } catch {}
-    for (const b of uiRoot.querySelectorAll("[data-harness]")) b.classList.toggle("active", b === button);
-    openMenu();
-  };
+  const install = `mkdir -p ~/.local/bin && curl -fsS -H ${shellQuote(`Authorization: Bearer ${key}`)} ${shellQuote(`${base}/cli?name=${slug(world)}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin}`;
+  return `First install the command for our game by running \`${install}\`. Then run \`${bin}\` alone to list its tools, call one as \`${bin} <tool> name=value\`, and give wait_for_chat calls a shell timeout of at least 300 seconds. We are playing ${world} together right now: a live multiplayer game my friends and I build while we play it, each with our own coding agent. I am ${me} in the game. Anything you reload goes live for every player at once, so make it one coherent game: extend what the others built instead of building it again, and see a thing work before you tell me it does. Start with status and read GUIDE.md, then say in a line or two what the world has and one thing you could build. From then on I talk to you only through the in-game chat, where my voice is transcribed too when I hold T: act when I ask for something or clearly want a change, not on every word. Then loop forever: wait_for_chat seconds=240, build what I (${me}) ask for, say what you did in a line, and wait_for_chat again. Nothing ever arrives in this terminal, so never end your turn.`;
 }
 
 let menuOpenedAt = 0;
@@ -2129,10 +2094,7 @@ async function openMenu() {
   $("invite-link").textContent = `${nearby || publicUrl || origin}/#invite=${invite}`;
   $("invite-code-row").hidden = !joinCode;
   $("invite-code").textContent = joinCode ? `${joinCode.slice(0, 3)}-${joinCode.slice(3)}` : "";
-  $("claude-install").textContent = HARNESSES[harness].install;
-  $("claude-command").textContent = connectCommand(
-    (tools) => `We are playing ${world} together right now: a live multiplayer game that my friends and I build while we play it, each with our own coding agent. I am ${me} in the game. You are connected to the game server through ${tools}, and anything you reload goes live for every player at once, so make it one coherent game that is fun for everyone: extend what the others built instead of building it again, and check that a thing works before you tell me it does. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. From then on I talk to you only through the in-game chat, and when I hold T or have the chat open my voice is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. Call wait_for_chat with seconds 240, build what I (${me}) ask for there, say what you did in a line, and call wait_for_chat again. Keep that up for the whole session: nothing ever arrives in this terminal, so never end your turn to wait for me.`,
-  );
+  $("claude-prompt").textContent = connectPrompt();
   showBuilders();
   await refreshMenu();
 }

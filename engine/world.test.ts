@@ -36,6 +36,8 @@ async function tool(name: string, args: Record<string, unknown> = {}) {
   return { status: res.status, text: await res.text() };
 }
 
+/** A JSON answer is the first block; chat and the wait_for_chat reminder follow it. */
+const json = async (name: string, args: Record<string, unknown> = {}) => JSON.parse((await tool(name, args)).text.split("\n\n")[0]!);
 const write = (path: string, content: string) => tool("write_file", { path, content });
 const serverMod = (hooks: string) => `import type { ServerMod } from "../../api";\nexport default ${hooks} satisfies ServerMod;`;
 
@@ -87,6 +89,13 @@ test("Claudes' messages to each other arrive whole, and a chat line too long for
   expect(banner.text).toStartWith("announce.text is 161 characters");
 });
 
+test("every result, answered or refused, sends the agent back to wait_for_chat, so any harness keeps listening", async () => {
+  const answered = await tool("status");
+  const refused = await tool("read_file", { path: "missing.ts" });
+  expect(refused.status).toBe(422);
+  for (const { text } of [answered, refused]) expect(text.trimEnd()).toEndWith("call wait_for_chat again. Never end your turn.");
+});
+
 test("a meshless wall or a mod's terrain that stops a walk is named with the mod that made it", async () => {
   await write(
     "mods/fence/server.ts",
@@ -98,7 +107,7 @@ test("a meshless wall or a mod's terrain that stops a walk is named with the mod
 }`),
   );
   expect((await tool("reload", { mod: "fence" })).text).toStartWith("fence v1 is live");
-  const walk = async (from: number[], to: number[]) => JSON.parse((await tool("walk_test", { from, to })).text);
+  const walk = async (from: number[], to: number[]) => json("walk_test", { from, to });
 
   const wall = await walk([10, 0, 0], [30, 0, 0]);
   expect(wall.outcome).toBe("stopped");
@@ -168,7 +177,7 @@ test("perf names the mod behind a slow tick, not just its average", async () => 
   await write("mods/spiky/server.ts", serverMod(`{ tick() { if (Date.now() % 500 < 60) { const until = performance.now() + 30; while (performance.now() < until); } } }`));
   expect((await tool("reload", { mod: "spiky" })).text).toStartWith("spiky v1 is live");
   await Bun.sleep(4500);
-  const { server } = JSON.parse((await tool("perf")).text);
+  const { server } = await json("perf");
   expect(server.modTicks.spiky.max).toBeGreaterThanOrEqual(29);
   expect(server.mods.spiky).toBeLessThan(15);
 }, 30_000);
@@ -187,5 +196,5 @@ test("query_world with wait answers when what it asked about changes, not before
 test("perf shows how long a player waited to join and which mods held them up", async () => {
   player.send(JSON.stringify({ t: "loaded", firstFrameMs: 27470, modsMs: 27124, slowestMods: { factory: 9206 }, screen: "1280x720" }));
   await Bun.sleep(100);
-  expect(JSON.parse((await tool("perf")).text).joins.builder).toEqual({ firstFrameMs: 27470, slowestMods: { factory: 9206 } });
+  expect((await json("perf")).joins.builder).toEqual({ firstFrameMs: 27470, slowestMods: { factory: 9206 } });
 });

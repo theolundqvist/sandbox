@@ -1,6 +1,6 @@
 # Sandbox
 
-**An empty multiplayer world that you and your friends turn into a game while you play it.** Every player brings their own Claude Code. It writes mods into the running world over MCP: rules, weapons, whole games. Each reload goes live in about half a second with no restart: nobody is kicked, nothing reloads in the browser, and the world keeps running with everyone's progress intact.
+**An empty multiplayer world that you and your friends turn into a game while you play it.** Every player brings their own coding agent. It writes mods into the running world through a small command it installs: rules, weapons, whole games. Each reload goes live in about half a second with no restart: nobody is kicked, nothing reloads in the browser, and the world keeps running with everyone's progress intact.
 
 Nothing about it is 3D by nature. A world starts as a blank screen or a bare field, and a mod can draw the whole game itself: 2D, pixel art, cards, text, or a 3D scene.
 
@@ -60,9 +60,9 @@ Run your own relay with `bun relay/relay.ts` behind HTTPS and point `SANDBOX_REL
 
 ## Connect your Claude
 
-Building needs your own Claude Code. Press Tab in the game and paste the command into a terminal: it starts Claude Code with this world's tools (a small command it installs, or an MCP server if you pick that tab), signed with your personal key, and a prompt that keeps it listening to the in-game chat until you close it.
+Building needs your own coding agent: Claude Code, Codex, OMP or anything with a shell. Press Tab in the game, copy the prompt from the Claude page and paste it into the agent, started with permissions off. The agent installs this world's command, signed with your personal key, and keeps listening to the in-game chat until you close it.
 
-![The in-game menu's Connect your Claude card with the command line to paste](docs/readme/connect.png)
+![The in-game menu's Claude page with the prompt to paste](docs/readme/connect.png)
 
 Then ask for things in the chat. Your Claude builds, reloads, and answers in the same chat when it is live.
 

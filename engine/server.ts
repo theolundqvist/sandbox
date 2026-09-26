@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { basename, join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { frontFile } from "./front";
-import { createMcp, type Task } from "./mcp";
+import { createCli, type Task } from "./cli";
 import { ENGINE_KEYS, hasGit, Mods } from "./mods";
 import { latencies, openRecord, route } from "./record";
 import { SimHost } from "./simhost";
@@ -351,7 +351,7 @@ let joinCode: string | null = null;
 /** The host's Wi-Fi address, where friends nearby join when the relay can't be reached. */
 let lanUrl: string | null = null;
 const shots = new Map<string, (data: string) => void>();
-const mcp = createMcp({
+const cli = createCli({
   root: ROOT,
   dbDir: DB,
   rules: () => config.rules,
@@ -542,8 +542,7 @@ const server = Bun.serve<Conn>({
       return Response.json({ key, name, invite: config.invite });
     }
 
-    if (path === "/mcp") return mcp.http(req, nameByKey(bearer(req)) ?? null);
-    if (path === "/cli" || path.startsWith("/cli/")) return mcp.cli(req, nameByKey(bearer(req)) ?? null, path.slice(5) || "script", url.searchParams.get("url"), url.searchParams.get("name"));
+    if (path === "/cli" || path.startsWith("/cli/")) return cli(req, nameByKey(bearer(req)) ?? null, path.slice(5) || "script", url.searchParams.get("url"), url.searchParams.get("name"));
 
     if (path === "/ws") {
       const invite = url.searchParams.get("invite");

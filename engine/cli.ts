@@ -8,7 +8,7 @@ import type { SimHost } from "./simhost";
 export type Task = { title: string; status: string; percent?: number; state: "working" | "done" | "blocked"; at: number };
 const speaker = (who: string) => `${who}'s Claude`;
 
-export type McpContext = {
+export type CliContext = {
   root: string;
   dbDir: string;
   rules: () => "open" | "additive";
@@ -239,15 +239,15 @@ const tools = [
   },
 ];
 
-export const instructions = `This is a live multiplayer game that the players build together while playing. Every player's Claude edits the same shared file tree on the game server, and anything you reload goes live for everyone at once.
+const instructions = `This is a live multiplayer game that the players build together while playing. Every player's Claude edits the same shared file tree on the game server, and anything you reload goes live for everyone at once.
 Workflow: call status, read GUIDE.md and the mods that touch what you are about to build, then write or edit files under mods/<your-mod>/ and call reload. Nothing is live until reload succeeds, and each mod goes live at most once every 20 s, so batch your edits.
 One game, not a pile of mods: every shared system (movement, ground and sky, lighting, economy, shop, inventory, progression, map, HUD, each key) has one owner mod. Extend it through its exports or wrap, or ask its owner with say to "claudes"; never build a second one. Hook new things into what players already earn, press and see.
 Before you tell anyone something works, see it work: logs for your player stay clean, screenshot shows it, the input reaches the server (query_world, with wait when you expect state to change; never poll it in a loop). Then one line of say. announce only a new thing to play, once it works.
-Other Claudes edit at the same time: re-read a file right before changing it. Between builds call wait_for_chat; players ask for things in the in-game chat, which is also appended to every tool result.`;
+Other Claudes edit at the same time: re-read a file right before changing it. Between builds call wait_for_chat, for the whole session: players ask for things in the in-game chat, which is also appended to every tool result.`;
 
 class ToolError extends Error {}
 
-export function createMcp(ctx: McpContext) {
+export function createCli(ctx: CliContext) {
   function resolvePath(path: string) {
     const abs = resolve(ctx.root, path);
     const rel = relative(ctx.root, abs);
@@ -304,7 +304,7 @@ export function createMcp(ctx: McpContext) {
   }
 
   /** Runs a tool and records who called it, how long it took, how much it returned and any error. */
-  async function call(name: string, args: any, who: string, via: "mcp" | "cli") {
+  async function call(name: string, args: any, who: string) {
     const started = performance.now();
     let result: string | { image: string } | undefined;
     let error: string | undefined;
@@ -314,7 +314,7 @@ export function createMcp(ctx: McpContext) {
       error = String(e.message).slice(0, 300);
       throw e;
     } finally {
-      ctx.record.add("tool", who, { tool: name, via, args: brief(args), ms: Math.round(performance.now() - started), bytes: typeof result === "string" ? result.length : result?.image.length, error });
+      ctx.record.add("tool", who, { tool: name, args: brief(args), ms: Math.round(performance.now() - started), bytes: typeof result === "string" ? result.length : result?.image.length, error });
     }
   }
 
@@ -509,8 +509,9 @@ export function createMcp(ctx: McpContext) {
     throw new ToolError(`Unknown tool ${name}`);
   }
 
-  // An unknown key still completes the handshake: a 401 reads as "log in" to MCP clients and hides this message.
-  const STALE = "This connection's key isn't valid for the world running now: the host switched worlds or removed this player. Ask your player to open the game, join, copy the new connect command from the game menu, and restart Claude Code with it.";
+  const STALE = "This command's key isn't valid for the world running now: the host switched worlds or removed this player. Ask your player to open the game, join, and paste you the new prompt from the Claude page of the game menu.";
+  /** Ends every result, so any agent keeps listening without a harness hook to stop it ending its turn. */
+  const KEEP_LISTENING = "When you are done with this, call wait_for_chat again. Never end your turn.";
   const chatSeen = new Map<string, number>();
   const unseenChat = (who: string) => ctx.chatLog.filter((c) => c.seq > (chatSeen.get(who) ?? 0) && c.from !== speaker(who));
   /** Everything said since this Claude last looked, however long it was busy; a Claude new to the world gets the recent conversation. */
@@ -523,35 +524,7 @@ export function createMcp(ctx: McpContext) {
     const lines = unseen.map((c) => `${c.claudes ? "[claudes] " : ""}${c.from}${c.spoken ? " (said aloud)" : ""}: ${c.text}`);
     chatSeen.set(who, ctx.chatLog.at(-1)?.seq ?? 0);
     const spoken = unseen.some((c) => c.spoken) ? "\n(said aloud) lines are what a player said into their microphone (hold T or open chat): often talk between players, not orders. See GUIDE.md, Listening to players." : "";
-    return lines.length ? [{ type: "text", text: `In-game chat since your last look, oldest first:\n${lost}${lines.join("\n")}${spoken}` }] : [];
-  }
-
-  async function handle(msg: any, who: string | null) {
-    const reply = (result: object) => ({ jsonrpc: "2.0", id: msg.id, result });
-    switch (msg.method) {
-      case "initialize":
-        return reply({
-          protocolVersion: msg.params?.protocolVersion ?? "2025-06-18",
-          capabilities: { tools: {} },
-          serverInfo: { name: "sandbox", version: "1.0.0" },
-          instructions,
-        });
-      case "ping":
-        return reply({});
-      case "tools/list":
-        return reply({ tools });
-      case "tools/call":
-        if (!who) return reply({ content: [{ type: "text", text: STALE }], isError: true });
-        try {
-          const result = await call(msg.params.name, msg.params.arguments ?? {}, who, "mcp");
-          return reply({ content: [typeof result === "string" ? { type: "text", text: result } : { type: "image", data: result.image, mimeType: "image/jpeg" }, ...takeChat(who)] });
-        } catch (e: any) {
-          if (!(e instanceof ToolError)) console.error(e);
-          return reply({ content: [{ type: "text", text: e.message }, ...takeChat(who)], isError: true });
-        }
-    }
-    if (msg.id === undefined) return null;
-    return { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `Unknown method ${msg.method}` } };
+    return lines.length ? [`In-game chat since your last look, oldest first:\n${lost}${lines.join("\n")}${spoken}`] : [];
   }
 
   const usage = (tool: (typeof tools)[number]) => {
@@ -560,7 +533,7 @@ export function createMcp(ctx: McpContext) {
     return [tool.name, ...Object.entries(props).map(([k, v]) => (required.includes(k) ? `${k}=<${v.type}>` : `[${k}=<${v.type}>]`))].join(" ");
   };
 
-  /** The command line: the same tools as plain HTTP, for agents that would rather run a shell command than hold MCP tool schemas. */
+  /** The command line every agent reaches the world through: a shell script it installs, calling the tools over plain HTTP. */
   async function cli(req: Request, who: string | null, command: string, url: string | null, name: string | null) {
     if (!who) return new Response(`${STALE}
 `, { status: 401 });
@@ -590,12 +563,12 @@ export function createMcp(ctx: McpContext) {
     if (listening) req.signal.addEventListener("abort", () => ctx.presence(who, "offline"));
     const answer = async (): Promise<{ status: number; body: string | Blob; image?: boolean }> => {
       try {
-        const result = await call(command, args, who, "cli");
+        const result = await call(command, args, who);
         if (typeof result !== "string") return { status: 200, body: new Blob([Buffer.from(result.image, "base64")]), image: true };
-        return { status: 200, body: [result, ...takeChat(who).map((c) => c.text)].join("\n\n") + "\n" };
+        return { status: 200, body: [result, ...takeChat(who), KEEP_LISTENING].join("\n\n") + "\n" };
       } catch (e: any) {
         if (!(e instanceof ToolError)) console.error(e);
-        return { status: 422, body: [e.message, ...takeChat(who).map((c) => c.text)].join("\n\n") + "\n" };
+        return { status: 422, body: [e.message, ...takeChat(who), KEEP_LISTENING].join("\n\n") + "\n" };
       } finally {
         if (listening && !req.signal.aborted) ctx.presence(who, "working");
       }
@@ -625,49 +598,7 @@ export function createMcp(ctx: McpContext) {
     );
   }
 
-  const http = async (req: Request, who: string | null) => {
-    if (req.method !== "POST") return new Response(null, { status: 405 });
-    const body = await req.json();
-    const messages: any[] = Array.isArray(body) ? body : [body];
-    const listening = messages.some((m) => m.params?.name === "wait_for_chat");
-    if (who) {
-      ctx.presence(who, listening ? "listening" : "working");
-      // A Claude that quits mid-wait drops the request; one that finishes waiting goes on to work on what it heard.
-      if (listening) req.signal.addEventListener("abort", () => ctx.presence(who, "offline"));
-    }
-    const answer = async () => {
-      const replies = (await Promise.all(messages.map((m) => handle(m, who)))).filter(Boolean);
-      if (who && listening && !req.signal.aborted) ctx.presence(who, "working");
-      return Array.isArray(body) ? replies : replies[0];
-    };
-    if (messages.every((m) => m.id === undefined)) {
-      await answer();
-      return new Response(null, { status: 202 });
-    }
-    if (!req.headers.get("accept")?.includes("text/event-stream")) return Response.json(await answer());
-    // Tunnels drop responses that stay silent for about 100 s, so slow calls like wait_for_chat stream keepalives until done.
-    const encoder = new TextEncoder();
-    let keepalive: Timer | undefined;
-    return new Response(
-      new ReadableStream({
-        async start(stream) {
-          keepalive = setInterval(() => stream.enqueue(encoder.encode(": keepalive\n\n")), 15_000);
-          const reply = await answer();
-          if (!keepalive) return;
-          clearInterval(keepalive);
-          stream.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify(reply)}\n\n`));
-          stream.close();
-        },
-        cancel() {
-          clearInterval(keepalive);
-          keepalive = undefined;
-        },
-      }),
-      { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } },
-    );
-  };
-
-  return { http, cli };
+  return cli;
 }
 
 const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;

@@ -250,24 +250,18 @@ describe("hosting and joining", () => {
     await game.keyboard.press("Escape");
   });
 
-  test("connecting an agent: the pick is remembered, and Copy copies each step in place", async () => {
+  test("connecting an agent: Copy copies the one prompt in place, and it installs this world's command first", async () => {
     const game = await gamePage(app);
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#rail [data-tab=claude]");
-    await game.click("[data-harness=codex]");
-    const install = game.locator("[data-copy=claude-install]");
-    const box = await install.boundingBox();
-    await install.click();
-    await until("Copied", async () => (await install.textContent()) === "Copied");
-    assert.deepEqual(await install.boundingBox(), box);
-    assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), await game.textContent("#claude-install"));
-    await game.locator("[data-copy=claude-command]").click();
-    await until("the command copied", async () => /codex -C /.test(await app.evaluate(({ clipboard }) => clipboard.readText())));
-    await game.reload();
-    await game.locator("#join").waitFor({ state: "hidden" });
-    await game.locator("#menu-button").dispatchEvent("click");
-    await game.click("#rail [data-tab=claude]");
-    assert.equal(await game.getAttribute("[data-harness=codex]", "class"), "active");
+    const copy = game.locator("[data-copy=claude-prompt]");
+    const box = await copy.boundingBox();
+    await copy.click();
+    await until("Copied", async () => (await copy.textContent()) === "Copied");
+    assert.deepEqual(await copy.boundingBox(), box);
+    const prompt = await app.evaluate(({ clipboard }) => clipboard.readText());
+    assert.equal(prompt, await game.textContent("#claude-prompt"));
+    assert.match(prompt, /^First install the command for our game by running `mkdir -p ~\/\.local\/bin && curl .*\/cli\?name=/);
     await game.keyboard.press("Escape");
     await game.keyboard.press("Escape");
   });
