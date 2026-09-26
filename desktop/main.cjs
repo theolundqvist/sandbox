@@ -333,7 +333,7 @@ function createWindow() {
     backgroundColor: "#0b0b0c",
     titleBarStyle: "hidden",
     trafficLightPosition: { x: 14, y: 11 },
-    titleBarOverlay: mac ? undefined : { color: "#0b0b0c", symbolColor: "#e9e4d8", height: BAR },
+    titleBarOverlay: mac ? undefined : { color: "#00000000", symbolColor: "#e9e4d8", height: BAR },
     fullscreen: !!state.fullscreen,
   });
   shell = new WebContentsView({ webPreferences: { preload: join(__dirname, "preload.cjs"), sandbox: true, contextIsolation: true } });

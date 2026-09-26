@@ -15,9 +15,19 @@ handoff() {
   while kill -0 "$SANDBOX_APP_PID" 2>/dev/null; do sleep 0.5; done
 }
 
+# A failed download leaves the installed app as it was; one that quit for this update (0.2.0 quit without waiting) opens again.
 fetch() {
   echo "Downloading $1"
-  curl -fL --progress-bar -o "$tmp/$1" "$release/$1"
+  curl -fL --progress-bar -o "$tmp/$1" "$release/$1" && return
+  echo "The download failed. Check your connection, then update again." >&2
+  if [ "$(uname -s)" = Darwin ]; then
+    for apps in /Applications "$HOME/Applications"; do
+      [ -d "$apps/Sandbox.app" ] && ! pgrep -x Sandbox >/dev/null && open -a "$apps/Sandbox.app" && break
+    done
+  elif [ -x "$HOME/.local/share/sandbox/sandbox" ] && ! pgrep -f "$HOME/.local/share/sandbox/sandbox" >/dev/null; then
+    nohup "$HOME/.local/share/sandbox/sandbox" >>"$HOME/.local/share/sandbox/app.log" 2>&1 &
+  fi
+  exit 1
 }
 
 case "$(uname -s)" in

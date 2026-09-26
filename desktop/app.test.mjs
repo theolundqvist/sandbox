@@ -1,6 +1,6 @@
 // The real Electron app on a throwaway relay and launcher and a stand-in GitHub; run with `xvfb-run -a node --test desktop/app.test.mjs`.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -558,5 +558,20 @@ describe("the host closes the game", () => {
     game = await gamePage(app);
     await until("Snow Race", async () => (await game.textContent("#world-name")) === "Snow Race");
     assert.equal(game.url().startsWith(other.url), true);
+  });
+});
+
+describe("the installer", () => {
+  test("a failed download opens the installed app again, since an old app quit before it finished", async () => {
+    const home = join(dir, "installer-home");
+    const app = join(home, ".local/share/sandbox");
+    mkdirSync(app, { recursive: true });
+    writeFileSync(join(app, "sandbox"), `#!/bin/sh\ntouch '${join(home, "opened")}'\n`, { mode: 0o755 });
+    const run = spawn("bash", [join(DESKTOP, "install")], { env: { ...ownEnv, HOME: home, SANDBOX_RELEASE: `http://127.0.0.1:${RELEASES}/missing` }, stdio: ["ignore", "ignore", "pipe"] });
+    let said = "";
+    run.stderr.on("data", (d) => (said += d));
+    assert.equal(await new Promise((r) => run.once("exit", r)), 1);
+    assert.match(said, /The download failed\. Check your connection, then update again\./);
+    await until("the app opened", async () => existsSync(join(home, "opened")), 5000);
   });
 });
