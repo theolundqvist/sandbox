@@ -7,11 +7,13 @@
   "main": "main.cjs",
   "desktopName": "sandbox.desktop",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "test": "xvfb-run -a node --test app.test.mjs"
   },
   "devDependencies": {
     "electron": "^44.4.5",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "playwright-core": "^1.63.0"
   },
   "build": {
     "appId": "com.theolundqvist.sandbox",
