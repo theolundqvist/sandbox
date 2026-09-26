@@ -35,6 +35,7 @@
   #mic[data-state=on] { color: var(--err); }
   #mic[data-state=on]::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--err); margin-right: 8px; vertical-align: 1px; }
   #mic[data-state=none] { opacity: .45; pointer-events: none; }
+  #mic[data-state=setup] { color: var(--accent); }
   .line.spoken { font-style: italic; }
   #menu-button { background: var(--glass); border-color: transparent; }
   #menu-button:hover { background: var(--text); }
@@ -170,6 +171,9 @@
   .field input[type=number] { width: 64px; background: none; border: 0; border-bottom: 1px solid rgba(255,255,255,.28); color: var(--text); font: 700 18px/1.2 var(--display); text-align: right; padding: 6px 0; outline: none; -moz-appearance: textfield; }
   .field input[type=number]::-webkit-inner-spin-button { display: none; }
   .field input[type=number]:focus { border-color: var(--accent); }
+  .field input[type=password] { width: 220px; background: none; border: 0; border-bottom: 1px solid rgba(255,255,255,.28); color: var(--text); font: 15px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 6px 0; outline: none; }
+  .field input[type=password]:focus { border-color: var(--accent); }
+  .field a.quiet { text-decoration: none; }
   .field em { font-style: normal; color: var(--dim); font-weight: 700; }
   @media (max-width: 760px) {
     #rail { width: 100%; padding: 40px 16px 24px; }
@@ -371,6 +375,7 @@
     </section>
     <section data-tab="mods" hidden><ul id="menu-mods"></ul></section>
     <section data-tab="settings" hidden>
+      <label class="field" id="voice-field" hidden><span>Voice key</span><input type="password" id="voice-key" autocomplete="off" spellcheck="false"><a class="quiet" href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noreferrer">Get a key</a></label>
       <label class="field"><span>Volume</span><span class="range"><input type="range" id="volume" min="0" max="100" step="5"><input type="number" id="volume-exact" min="0" max="100"><em>%</em></span></label>
       <div class="copy-row" id="app-row" hidden><span>Desktop app</span><code id="app-command"></code><button data-copy="app-command">Copy</button></div>
       <div id="help-keys"></div>

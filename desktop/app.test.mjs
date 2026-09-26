@@ -27,17 +27,25 @@ async function until(what, check, ms = 20000) {
 }
 
 function bun(script, env) {
-  const proc = spawn("bun", [join(ROOT, script)], { env: { ...process.env, ...env }, stdio: "ignore" });
+  const proc = spawn("bun", [join(ROOT, script)], { env: { ...ownEnv, ...env }, stdio: "ignore" });
   children.push(proc);
   return proc;
 }
 
-/** GitHub as the app sees it: the latest release, and the installer script the app runs to update. */
+/** This machine's own service keys never reach the app under test. */
+const ownEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY")));
+const VOICE_KEY = "sk_test_voice_key";
+
+/** GitHub as the app sees it: the latest release, and the installer script the app runs to update; and ElevenLabs, which knows one key. */
 const releases = { latest: VERSION, installer: null };
 const RELEASES = port();
 const github = createServer((req, res) => {
   if (req.url === "/latest") return res.end(JSON.stringify({ tag_name: `v${releases.latest}` }));
   if (req.url === "/install" && releases.installer) return res.end(releases.installer);
+  if (req.url === "/v1/speech-to-text") {
+    res.statusCode = req.headers["xi-api-key"] === VOICE_KEY ? 400 : 401;
+    return res.end("{}");
+  }
   res.statusCode = 404;
   res.end("Not Found");
 }).listen(RELEASES);
@@ -78,7 +86,7 @@ async function launch(name, env = {}) {
   const app = await _electron.launch({
     executablePath: ELECTRON,
     args: [DESKTOP, "--no-sandbox", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
-    env: { ...process.env, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, ...env },
+    env: { ...ownEnv, SANDBOX_ELEVENLABS: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, ...env },
   });
   const shell = await until("the start screen", async () => app.windows().find((w) => w.url().startsWith("sandbox://app/shell.html")));
   await shell.locator("#title").waitFor();
@@ -207,6 +215,25 @@ describe("hosting and joining", () => {
     friend.close();
   });
 
+  test("the host turns voice on from the mic, with a key checked and then shown masked", async () => {
+    const game = await gamePage(app);
+    assert.equal(await game.textContent("#mic"), "Turn on voice");
+    await game.locator("#mic").dispatchEvent("click");
+    await game.locator("#voice-key").waitFor();
+    assert.equal(await game.evaluate(() => document.activeElement.id), "voice-key");
+    await game.fill("#voice-key", "sk_wrong");
+    await game.press("#voice-key", "Enter");
+    await until("the refusal", async () => (await game.textContent("#toasts")).includes("That key didn't work. Copy it again from elevenlabs.io."));
+    await game.fill("#voice-key", VOICE_KEY);
+    await game.press("#voice-key", "Enter");
+    await until("voice on", async () => (await game.textContent("#mic")) === "Hold T to talk");
+    assert.equal(await game.getAttribute("#voice-key", "placeholder"), "••••_key");
+    assert.equal(await game.inputValue("#voice-key"), "");
+    assert.equal(readFileSync(join(dir, "host", "Sandbox", "data", "secrets.json"), "utf8").includes(VOICE_KEY), true);
+    await game.keyboard.press("Escape");
+    await game.keyboard.press("Escape");
+  });
+
   test("leaving shows the hosted world, live, marked Hosted", async () => {
     await shell.click("#leave");
     await shell.click("text=Worlds");
@@ -225,6 +252,7 @@ describe("hosting and joining", () => {
     game.on("request", (r) => r.url().includes("/clips/") && clips.push(r.url()));
     assert.equal(game.url(), `${other.url}/#invite=${other.invite}`);
     await joinAs(game, "visitor");
+    assert.equal(await game.textContent("#mic"), "Voice off");
     await game.reload();
     await game.locator("#join").waitFor({ state: "hidden" });
     assert.equal(await game.evaluate(() => document.getElementById("join").hidden), true);

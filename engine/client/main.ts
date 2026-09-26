@@ -15,6 +15,10 @@ const keyName = `sandbox-key:${info.id}`;
 const watching = hashParams.get("watch");
 if (watching) history.replaceState(null, "", location.pathname);
 let key = watching ?? hashParams.get("key") ?? localStorage.getItem(keyName);
+/** The host playing a world of theirs can reach its main menu; everyone shares the relay's address, so holding a key isn't enough. */
+const hostKey = localStorage.getItem("sandbox-menu") ?? (await fetch("/api/local-key").then((r) => (r.ok ? r.json() : null)).then((r: { key: string } | null) => r?.key ?? null, () => null));
+const hostMenu = (action: string, body?: object) => fetch(`/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${hostKey}` }, body: body && JSON.stringify(body) });
+const hosting = hostKey ? await hostMenu("state").then((r) => (r.ok ? r.json() : null), () => null) : null;
 let me = "";
 let world = "";
 let invite = "";
@@ -725,6 +729,11 @@ function connect() {
         claudes.set(msg.name, { state: msg.state, task: msg.task });
         return showBuilders();
       case "tick":
+      case "voice":
+        voiceAvailable = msg.on;
+        return showMic();
+      case "voice-failed":
+        return toast(hosting ? (msg.refused ? "ElevenLabs refused the voice key. Add it again in Settings." : "Voice didn't go through. Try again.") : "Voice didn't go through. Try again.", "error");
         if (!replay) applyTick(msg);
         return;
       case "mod":
@@ -1552,9 +1561,15 @@ function stopTalking(keep: boolean) {
   }, () => {});
 }
 function showMic() {
-  $("mic").textContent = !voiceAvailable ? "Voice needs the host's ElevenLabs key" : talking ? "Talking" : matchMedia("(pointer: coarse)").matches ? "Hold to talk" : "Hold T to talk";
-  $("mic").dataset.state = !voiceAvailable ? "none" : talking ? "on" : "off";
+  $("mic").textContent = !voiceAvailable ? (hosting ? "Turn on voice" : "Voice off") : talking ? "Talking" : matchMedia("(pointer: coarse)").matches ? "Hold to talk" : "Hold T to talk";
+  $("mic").dataset.state = !voiceAvailable ? (hosting ? "setup" : "none") : talking ? "on" : "off";
 }
+$("mic").onclick = () => {
+  if (voiceAvailable || !hosting) return;
+  openMenu();
+  showTab("settings");
+  $("voice-key").focus();
+};
 $("mic").onpointerdown = startTalking;
 $("mic").onpointerup = $("mic").onpointerleave = () => stopTalking(true);
 showMic();
@@ -1871,7 +1886,7 @@ $("menu-update").onclick = async () => {
 $("leave").onclick = () => {
   leaving = true;
   socket?.close();
-  if (localStorage.getItem("sandbox-menu")) return location.assign("menu");
+  if (hosting) return location.assign("menu");
   history.replaceState(null, "", `${origin}/#left`);
   location.reload();
 };
@@ -1886,6 +1901,19 @@ function setVolume(percent: number) {
   } catch {}
 }
 let savedVolume = 100;
+/** The host's ElevenLabs key, kept by their launcher and shown only by its last characters. */
+$("voice-field").hidden = !hosting;
+$<HTMLInputElement>("voice-key").placeholder = hosting?.voiceKey ?? "Paste your ElevenLabs key";
+$("voice-key").onchange = async () => {
+  const field = $<HTMLInputElement>("voice-key");
+  const res = await hostMenu("voice", { key: field.value });
+  const data = await res.json().catch(() => ({ error: "The voice key wasn't saved. Try again." }));
+  if (!res.ok) return toast(data.error, "error");
+  field.value = "";
+  field.placeholder = data.voiceKey ?? "Paste your ElevenLabs key";
+  toast(data.voiceKey ? "Voice is on" : "Voice is off");
+};
+
 try {
   savedVolume = Number(localStorage.getItem("sandbox-volume") ?? 100);
 } catch {}

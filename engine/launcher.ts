@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { Server, ServerWebSocket, Subprocess } from "bun";
@@ -11,6 +11,8 @@ const DATA = process.env.SANDBOX_DATA ?? join(ENGINE, "../data");
 const WORLDS = join(DATA, "worlds");
 const PORT = Number(process.env.PORT ?? 7777);
 const STATE = join(DATA, "launcher.json");
+/** Keys for paid services the host adds in the game, outside every world's folder and readable only by this user. */
+const SECRETS = join(DATA, "secrets.json");
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 mkdirSync(WORLDS, { recursive: true });
@@ -75,7 +77,7 @@ async function host(id: string) {
   const started = Date.now();
   const record = openRecord(join(WORLDS, id, "record.sqlite"));
   const proc = Bun.spawn([process.execPath, join(ENGINE, "server.ts")], {
-    env: { ...process.env, SANDBOX_DATA: join(WORLDS, id), PORT: "0" },
+    env: { ...process.env, SANDBOX_DATA: join(WORLDS, id), SANDBOX_SECRETS: SECRETS, PORT: "0" },
     stdout: "pipe",
     stderr: "pipe",
     ipc: (msg) => reportPort(msg.port),
@@ -255,6 +257,37 @@ async function publish() {
   if (running) await world("public", { url: tunnel?.url ?? null, code });
 }
 
+type Secrets = { elevenlabs?: { key: string; host: string } };
+const secrets = (): Secrets => readJson(SECRETS);
+/** ElevenLabs serves each key from one region; the world transcribes through whichever accepted it. */
+const ELEVENLABS = process.env.SANDBOX_ELEVENLABS ? [process.env.SANDBOX_ELEVENLABS] : ["https://api.elevenlabs.io", "https://api.eu.residency.elevenlabs.io"];
+
+/** Checks a voice key with an empty clip, which ElevenLabs rejects as audio only after accepting the key. */
+async function setVoiceKey(raw: unknown) {
+  const key = String(raw ?? "").trim();
+  const next = secrets();
+  if (!key) delete next.elevenlabs;
+  else {
+    let reached = false;
+    for (const host of ELEVENLABS) {
+      const form = new FormData();
+      form.append("file", new Blob([new Uint8Array(0)], { type: "audio/webm" }), "check.webm");
+      form.append("model_id", "scribe_v2");
+      const res = await fetch(`${host}/v1/speech-to-text`, { method: "POST", headers: { "xi-api-key": key }, body: form, signal: AbortSignal.timeout(10_000) }).catch(() => null);
+      if (!res) continue;
+      reached = true;
+      if (res.status !== 401 && res.status !== 403) {
+        next.elevenlabs = { key, host };
+        break;
+      }
+    }
+    if (!next.elevenlabs) throw new Error(reached ? "That key didn't work. Copy it again from elevenlabs.io." : "Can't reach ElevenLabs. Check your connection.");
+  }
+  writeFileSync(SECRETS, JSON.stringify(next, null, 2), { mode: 0o600 });
+  chmodSync(SECRETS, 0o600);
+  if (running) await world("voice", {});
+}
+
 async function menuState() {
   const live = running && config(running.id);
   return {
@@ -267,6 +300,7 @@ async function menuState() {
     tunnel: tunnel ? { url: tunnel.url, code: tunnel.url ? state.code : null } : null,
     relay: RELAY,
     tunnelError,
+    voiceKey: secrets().elevenlabs ? `••••${secrets().elevenlabs!.key.slice(-4)}` : null,
   };
 }
 
@@ -305,6 +339,7 @@ async function menuApi(req: Request, action: string) {
       await world(action, body);
       await publish();
     } else if (["remove", "rewind"].includes(action)) await world(action, body);
+    else if (action === "voice") await setVoiceKey(body.key);
     else if (action !== "state") return Response.json({ error: "Unknown action" }, { status: 404 });
     return Response.json(await menuState());
   } catch (e: any) {

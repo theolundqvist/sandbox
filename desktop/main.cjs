@@ -1,5 +1,5 @@
 // A thin shell around the web client: one window, a trusted launch screen and title bar, and the game in a view with no extra powers.
-const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, session } = require("electron");
+const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, session, shell: desktop } = require("electron");
 const { spawn } = require("node:child_process");
 const { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } = require("node:fs");
 const { createServer } = require("node:net");
@@ -12,6 +12,8 @@ const RELAY = process.env.SANDBOX_RELAY ?? "https://sandbox-relay.lundqvistliss.
 const RELEASES = process.env.SANDBOX_UPDATES ?? "https://api.github.com/repos/theolundqvist/sandbox/releases/latest";
 const INSTALLER = process.env.SANDBOX_INSTALLER ?? "https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install";
 const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"]);
+/** Pages a game may open in the browser: where the host gets a voice key. */
+const OUTSIDE = /^https:\/\/elevenlabs\.io\//;
 
 /** An invite or personal link passed on the command line, e.g. `sandbox http://host:7777/#invite=…`. */
 const linkIn = (argv) => argv.slice(1).find((a) => /^https?:\/\//.test(a));
@@ -117,7 +119,10 @@ function play(raw) {
   };
   wc.on("will-navigate", stayHome);
   wc.on("will-redirect", stayHome);
-  wc.setWindowOpenHandler(() => ({ action: "deny" }));
+  wc.setWindowOpenHandler(({ url }) => {
+    if (OUTSIDE.test(url)) void desktop.openExternal(url);
+    return { action: "deny" };
+  });
   wc.on("before-input-event", keys);
   wc.on("did-navigate", (_, to, status) => {
     clearTimeout(timer);

@@ -383,6 +383,13 @@ const mcp = createMcp({
     }),
 });
 
+/** The key the host added in the game, else one from the environment, which belongs to ElevenLabs' EU data-residency stack. */
+function voiceKey(): { key: string; host: string } | null {
+  const added = process.env.SANDBOX_SECRETS && existsSync(process.env.SANDBOX_SECRETS) ? JSON.parse(readFileSync(process.env.SANDBOX_SECRETS, "utf8")).elevenlabs : null;
+  if (added) return added;
+  return process.env.ELEVENLABS_API_KEY ? { key: process.env.ELEVENLABS_API_KEY, host: "https://api.eu.residency.elevenlabs.io" } : null;
+}
+
 /** ElevenLabs Scribe in English; it tags sounds like [laughter], and a phrase with nothing but tags was only noise. */
 async function transcribe(audio: Blob) {
   const form = new FormData();
@@ -390,9 +397,10 @@ async function transcribe(audio: Blob) {
   form.append("model_id", "scribe_v2");
   form.append("language_code", "eng");
   form.append("tag_audio_events", "true");
-  // This key belongs to ElevenLabs' EU data-residency stack, which rejects the global API host.
-  const res = await fetch("https://api.eu.residency.elevenlabs.io/v1/speech-to-text", { method: "POST", headers: { "xi-api-key": process.env.ELEVENLABS_API_KEY! }, body: form });
-  if (!res.ok) throw new Error(`transcription failed: ${res.status} ${await res.text()}`);
+  const voice = voiceKey();
+  if (!voice) throw new Error("no voice key");
+  const res = await fetch(`${voice.host}/v1/speech-to-text`, { method: "POST", headers: { "xi-api-key": voice.key }, body: form });
+  if (!res.ok) throw Object.assign(new Error(`transcription failed: ${res.status} ${await res.text()}`), { refused: res.status === 401 || res.status === 403 });
   const { text } = (await res.json()) as { text: string };
   return /\p{L}/u.test(text.replace(/\[[^\]]*\]|\([^)]*\)/g, "")) ? text.trim() : "";
 }
@@ -452,6 +460,9 @@ const server = Bun.serve<Conn>({
           return Response.json({ invite: config.invite });
         case "snapshots":
           return Response.json(store.snapshots());
+        case "voice":
+          broadcast({ t: "voice", on: !!voiceKey() });
+          return Response.json({});
         case "activity":
           return Response.json(
             record.activity({
@@ -501,6 +512,7 @@ const server = Bun.serve<Conn>({
         },
         (error) => {
           console.log(`[voice] ${who}: ${error.message}`);
+          sockets.get(who)?.send(JSON.stringify({ t: "voice-failed", refused: !!error.refused }));
           record.add("error", who, { mod: "voice", level: "error", text: String(error.message).slice(0, 500) });
         },
       );
@@ -559,7 +571,7 @@ const server = Bun.serve<Conn>({
           invite: config.invite,
           publicUrl,
           joinCode,
-          voice: !!process.env.ELEVENLABS_API_KEY,
+          voice: !!voiceKey(),
           mods: clientMods(),
           feed: feedLog.slice(-8),
           claudes: Object.fromEntries([...claudes.keys()].map((name) => [name, builder(name)])),
