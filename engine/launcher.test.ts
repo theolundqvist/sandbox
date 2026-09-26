@@ -336,6 +336,8 @@ export default {
   expect(count(join(worldDir(id), "record.sqlite"), `select count(*) n from events where data like '%${hostKey}%'`)).toBeGreaterThan(0);
   await menu("host", { id });
 
+  const cover = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+  writeFileSync(join(worldDir(id), "cover.jpg"), cover);
   const res = (await menu("export", { id })) as Response;
   expect(res.headers.get("content-type")).toBe("application/zip");
   expect(res.headers.get("content-disposition")).toBe('attachment; filename="export-test.zip"');
@@ -345,6 +347,7 @@ export default {
   expect(names).toContain("world/.git/HEAD");
   expect(names).toContain("world/mods/note/server.ts");
   expect(names).toContain("db/note.sqlite");
+  expect(files["cover.jpg"]).toEqual(cover);
   expect(names.filter((n) => /^(keys\.json|launcher\.json)$|node_modules|\.sqlite-(wal|shm)$/.test(n))).toEqual([]);
   expect(JSON.parse(new TextDecoder().decode(files["config.json"]))).toEqual({ name: "Export Test", rules: "additive", start: "basics" });
   expect(JSON.parse(new TextDecoder().decode(files["mods.json"])).note.build.server).toMatch(/^note\/[a-z0-9]+\/server\/server\.js$/);
@@ -355,6 +358,7 @@ export default {
   const imported = await menu("import", zip);
   const copy = imported.worlds.find((w: any) => w.name === "Export Test" && w.id !== id);
   expect(copy).toBeTruthy();
+  expect(readFileSync(join(worldDir(copy.id), "cover.jpg"))).toEqual(Buffer.from(cover));
   const hosted = await menu("host", { id: copy.id });
   expect(hosted.running.hostKey).not.toBe(hostKey);
   expect(hosted.running.invite).not.toBe(invite);

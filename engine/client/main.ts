@@ -978,6 +978,29 @@ async function screenshot() {
   });
 }
 
+/** The host's own view of their world, without the HUD or name tags, is its picture in Worlds and Browse: sent every few minutes and as they leave. Name tags, the engine's and mods', are sprites drawn from a canvas. */
+const hostsThisWorld = hosting?.running?.id === info.id;
+function sendCover(keepalive: boolean) {
+  if (!hostsThisWorld || !me || replay || screen.scene === false) return;
+  const tags: THREE.Object3D[] = [];
+  scene.traverseVisible((o) => void ((o as THREE.Sprite).isSprite && ((o as THREE.Sprite).material.map as THREE.CanvasTexture | null)?.isCanvasTexture && tags.push(o)));
+  for (const tag of tags) tag.visible = false;
+  draw(0);
+  const from = renderer.domElement;
+  const h = Math.min(from.height, (from.width * 9) / 16);
+  const w = (h * 16) / 9;
+  const out = Object.assign(document.createElement("canvas"), { width: 960, height: 540 });
+  out.getContext("2d")!.drawImage(from, (from.width - w) / 2, (from.height - h) / 2, w, h, 0, 0, 960, 540);
+  for (const tag of tags) tag.visible = true;
+  // Encoded synchronously, since the page may be going away, and small enough for a keepalive request (64 KB).
+  let jpeg = "";
+  for (const quality of [0.8, 0.6, 0.4]) if ((jpeg = out.toDataURL("image/jpeg", quality)).length < 80_000) break;
+  const body = Uint8Array.from(atob(jpeg.split(",")[1]!), (c) => c.charCodeAt(0));
+  fetch(`/api/menu/cover?id=${info.id}`, { method: "POST", keepalive, headers: { authorization: `Bearer ${hostKey}` }, body }).catch(() => {});
+}
+setInterval(() => document.hidden || sendCover(false), 3 * 60_000);
+addEventListener("pagehide", () => sendCover(true));
+
 // ---------- HUD ----------
 function addLine(text: string, kind = "info", feed = $("feed")) {
   const line = document.createElement("div");

@@ -88,6 +88,7 @@ export function exportWorld(world: { data: string; entities: Iterable<[number, E
   const about = readJson(join(data, "about.json"));
   files["state/about.json"] = JSON.stringify(Object.fromEntries(Object.entries(about).filter(([mod, a]) => mods.includes(mod) && !mentions(a))), null, 2) + "\n";
   for (const mod of mods) if (existsSync(join(data, "db", `${mod}.sqlite`))) files[`state/db/${mod}.sql`] = dumpDb(join(data, "db", `${mod}.sqlite`), mentions);
+  if (existsSync(join(data, "cover.jpg"))) files["cover.jpg"] = readFileSync(join(data, "cover.jpg"));
 
   const secrets = [config.hostKey, config.invite, ...Object.keys(keys), ...Object.entries(process.env).flatMap(([k, v]) => (v && v.length >= 8 && /KEY|TOKEN|SECRET|PASS|AUTH|CREDENTIAL/i.test(k) ? [v] : []))];
   const extra = process.env.SANDBOX_SECRETS && readJson(process.env.SANDBOX_SECRETS);
@@ -100,7 +101,7 @@ export function exportWorld(world: { data: string; entities: Iterable<[number, E
   return files;
 }
 
-const SAFE_PATH = /^(mods\/[a-z][a-z0-9-]{0,31}\/([\w.@ -]+\/)*[\w.@ -]+|state\/(entities|about)\.json|state\/db\/[a-z][a-z0-9-]{0,31}\.sql|world\.json|package\.json|bun\.lock)$/;
+const SAFE_PATH = /^(mods\/[a-z][a-z0-9-]{0,31}\/([\w.@ -]+\/)*[\w.@ -]+|state\/(entities|about)\.json|state\/db\/[a-z][a-z0-9-]{0,31}\.sql|world\.json|cover\.jpg|package\.json|bun\.lock)$/;
 const MAX_BYTES = 200 << 20;
 
 /** A world's files from a GitHub tarball, without the folder GitHub wraps them in. */
@@ -148,6 +149,8 @@ export async function importWorld(files: Map<string, Blob>, dir: string, fresh: 
   }
   const state = await files.get("state/entities.json")?.json();
   if (state) seedStore(join(dir, "world.sqlite"), Number(state.nextId) || 1, state.entities ?? {});
+  const cover = files.get("cover.jpg");
+  if (cover) writeFileSync(join(dir, "cover.jpg"), await cover.bytes());
   writeFileSync(join(dir, "about.json"), (await files.get("state/about.json")?.text()) ?? "{}");
   writeFileSync(join(dir, "owners.json"), JSON.stringify(owners, null, 2));
   writeFileSync(join(dir, "config.json"), JSON.stringify(config, null, 2));

@@ -56,6 +56,7 @@ function worlds() {
         mods: Object.keys(readJson(join(dir, "mods.json"))).length,
         players: Object.keys(readJson(join(dir, "keys.json"))).length,
         played: statSync(saved).mtimeMs,
+        cover: existsSync(join(dir, "cover.jpg")) ? statSync(join(dir, "cover.jpg")).mtimeMs : null,
       };
     })
     .sort((a, b) => b.played - a.played);
@@ -349,8 +350,21 @@ async function menuState() {
   };
 }
 
+/** A world's picture: its host's game sends a frame of their own view, and Worlds shows it. */
+async function cover(req: Request, id: string) {
+  const path = join(WORLDS, id, "cover.jpg");
+  if (!/^[a-z0-9-]+$/.test(id) || !existsSync(join(WORLDS, id, "config.json"))) return Response.json({ error: "That game doesn't exist." }, { status: 404 });
+  if (req.method !== "POST") return existsSync(path) ? new Response(Bun.file(path), { headers: { "content-type": "image/jpeg", "cache-control": "no-cache" } }) : new Response(null, { status: 404 });
+  const jpeg = new Uint8Array(await req.arrayBuffer());
+  if (jpeg.length > 2 << 20 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return Response.json({ error: "A cover is a JPEG under 2 MB." }, { status: 400 });
+  writeFileSync(`${path}.tmp`, jpeg);
+  renameSync(`${path}.tmp`, path);
+  return new Response(null, { status: 204 });
+}
+
 async function menuApi(req: Request, action: string) {
   if (req.headers.get("authorization") !== `Bearer ${state.hostKey}`) return Response.json({ error: "Only the host can open this menu, on their own computer." }, { status: 401 });
+  if (action === "cover") return cover(req, new URL(req.url).searchParams.get("id") ?? "");
   const body = req.method === "POST" && action !== "import" ? await req.json() : {};
   try {
     if (action === "browse") return Response.json(await market());

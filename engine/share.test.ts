@@ -12,6 +12,7 @@ const procs: Subprocess[] = [];
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY")));
 const HOST_TOKEN = "hosttoken-4f9a8b7c6d5e";
 const VOICE_KEY = "sk_voice_0123456789abcdefghij";
+const COVER = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
 
 /** GitHub as the launcher sees it: the marketplace list, and each repo's tarball wrapped in the folder GitHub adds. */
 const repos = new Map<string, Blob>();
@@ -78,13 +79,15 @@ test("a published world holds only what a new host needs, never a key, a recordi
   expect((await tool(ana, "write_file", { path: "mods/stash/server.ts", content: STASH })).status).toBe(200);
   expect((await tool(ana, "reload", { mod: "stash" })).status).toBe(200);
   expect((await tool(ana, "say", { text: "my secret chat line" })).status).toBe(200);
+  writeFileSync(join(worldDir, "cover.jpg"), COVER);
 
   const res = await tool(ana, "publish", { handle: "maker", description: "A well and a chest." });
   expect(res.status).toBe(200);
   const files = await new Bun.Archive(await res.bytes()).files();
   const paths = [...files.keys()].sort();
-  expect(paths.every((p) => /^(world\.json|README\.md|mods\/(basics|stash)\/.+|state\/(entities|about)\.json|state\/db\/stash\.sql)$/.test(p))).toBe(true);
+  expect(paths.every((p) => /^(world\.json|README\.md|cover\.jpg|mods\/(basics|stash)\/.+|state\/(entities|about)\.json|state\/db\/stash\.sql)$/.test(p))).toBe(true);
   expect(paths).toContain("mods/stash/server.ts");
+  expect(await files.get("cover.jpg")!.bytes()).toEqual(COVER);
 
   const config = JSON.parse(readFileSync(join(worldDir, "config.json"), "utf8"));
   const playerKeys = Object.keys(JSON.parse(readFileSync(join(worldDir, "keys.json"), "utf8")));
@@ -115,6 +118,7 @@ test("Browse lists the marketplace, and a listed world plays after one download,
 
   const s = await menu("install", { repo: "maker/listed-world" });
   expect(s.running.name).toBe("Secret Keep");
+  expect(readFileSync(join(dir, "data/worlds", s.running.id, "cover.jpg"))).toEqual(Buffer.from(COVER));
   const cy = await join_(s.running.invite, "cy");
   const status = JSON.parse((await (await tool(cy, "status")).text()).split("\n\n")[0]!);
   expect(status.rules).toStartWith("additive");

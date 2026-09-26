@@ -250,7 +250,8 @@ function ownGames(live) {
     try {
       const { name } = JSON.parse(readFileSync(join(dir, id, "config.json"), "utf8"));
       const saved = [join(dir, id, "world.sqlite"), join(dir, id, "config.json")].find(existsSync);
-      return [{ name, at: statSync(saved).mtimeMs, live: live === id, url: `local:${id}` }];
+      const cover = join(dir, id, "cover.jpg");
+      return [{ name, at: statSync(saved).mtimeMs, live: live === id, url: `local:${id}`, cover: existsSync(cover) ? `sandbox://app/cover/${id}?v=${statSync(cover).mtimeMs}` : null }];
     } catch {
       return [];
     }
@@ -310,7 +311,8 @@ async function games() {
 function leave() {
   if (!game) return;
   win.contentView.removeChildView(game.view);
-  game.view.webContents.close();
+  // Closing as a browser tab would lets the page finish: the host's game sends its world's picture as it goes.
+  game.view.webContents.close({ waitForBeforeUnload: true });
   game = null;
   layout();
   showMode();
@@ -406,6 +408,7 @@ app.whenReady().then(() => {
     const path = decodeURIComponent(new URL(req.url).pathname);
     if (path.startsWith("/relay/join/")) return net.fetch(`${RELAY}/join/${encodeURIComponent(path.slice(12))}`);
     if (path === "/shell.html") return net.fetch(pathToFileURL(join(__dirname, "shell.html")).href);
+    if (/^\/cover\/[a-z0-9-]+$/.test(path)) return net.fetch(pathToFileURL(join(DATA, "worlds", path.slice(7), "cover.jpg")).href);
     if (path === "/clips/") return Response.json(readdirSync(join(FRONT, "clips")).filter((f) => f.endsWith(".mp4")));
     const file = normalize(join(FRONT, path));
     return file.startsWith(FRONT) ? net.fetch(pathToFileURL(file).href) : new Response("not found", { status: 404 });

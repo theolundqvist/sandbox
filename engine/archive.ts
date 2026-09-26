@@ -8,7 +8,7 @@ import { unzipSync, zipSync, type Zippable } from "fflate";
 declare var self: Worker;
 
 /** Everything that defines a game. keys.json, the players' signing keys, never leaves, and config.json leaves without its invite and host key. */
-const FILES = new Set(["config.json", "owners.json", "seeded.json", "about.json", "mods.json", "world.sqlite", "record.sqlite"]);
+const FILES = new Set(["config.json", "owners.json", "seeded.json", "about.json", "mods.json", "world.sqlite", "record.sqlite", "cover.jpg"]);
 const DIRS = new Set(["world", "db", "build"]);
 /** Packages come back with bun install, SQLite's side files are folded into each database's copy, and a lock in .git is a commit caught halfway. */
 const SKIP = /(^|\/)node_modules(\/|$)|\.sqlite-(wal|shm|journal)$|\/\.git\/.*\.lock$/;

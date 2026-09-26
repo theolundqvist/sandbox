@@ -19,11 +19,6 @@
   .copy-row b { flex: 1; min-width: 0; font: 700 18px/1.2 var(--display); overflow: hidden; text-overflow: ellipsis; }
   .dot { width: 8px; height: 8px; background: #55524c; flex: none; } .dot.on { background: var(--ok); }
   #app .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
-  .item.market { align-items: center; white-space: normal; }
-  .market img { width: 160px; aspect-ratio: 16 / 9; object-fit: cover; flex: none; background: #1b1c1f; }
-  .market .what { flex: 1; min-width: 0; }
-  .market small { display: block; margin-top: 6px; color: var(--dim); font: 600 15px/1.3 system-ui, sans-serif; letter-spacing: normal; text-transform: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  @media (max-width: 760px) { .market img { width: 96px; } }
 </style>
 </head>
 <body>
@@ -224,6 +219,21 @@
     node.append(...children);
     return node;
   };
+  /** A world's picture, or a plain dark tile while it has none or its image doesn't load. */
+  const coverTile = (src) => {
+    const tile = el("span", { className: "cover" });
+    Promise.resolve(src).then((url) => url && tile.append(el("img", { src: url, alt: "", onerror: (e) => e.target.remove() })));
+    return tile;
+  };
+  /** This computer's worlds' pictures, fetched once per version since the menu's key can't ride on an image link. */
+  const covers = new Map();
+  const localCover = (w) => {
+    if (!w.cover) return null;
+    const version = `${w.id}@${w.cover}`;
+    if (!covers.has(version))
+      covers.set(version, fetch(`/api/menu/cover?id=${encodeURIComponent(w.id)}`, { headers: { authorization: `Bearer ${key}` } }).then((r) => (r.ok ? r.blob() : null)).then((b) => b && URL.createObjectURL(b), () => null));
+    return covers.get(version);
+  };
   /** Rebuilds a list without losing the control the player is on. */
   function rebuild(list, children) {
     const focused = list.contains(document.activeElement) ? document.activeElement.dataset.key : null;
@@ -236,7 +246,7 @@
     offerApp(`${s.tunnel?.url ?? location.origin}/menu#key=${key}`);
     $("no-worlds").hidden = !!s.worlds.length;
     rebuild($("world-list"), s.worlds.map((w) => {
-      const b = el("button", { className: "item", textContent: w.name }, el("span", { className: r?.id === w.id ? "value live" : "value", textContent: r?.id === w.id ? "Live" : ago(w.played) }));
+      const b = el("button", { className: "item pictured" }, coverTile(localCover(w)), el("span", { className: "what", textContent: w.name }), el("span", { className: r?.id === w.id ? "value live" : "value", textContent: r?.id === w.id ? "Live" : ago(w.played) }));
       b.dataset.key = w.id;
       b.onclick = () => {
         selected = w.id;
@@ -338,7 +348,7 @@
       const listed = await lookup("browse");
       marketStatus("");
       rebuild($("market"), listed.map((w) => {
-        const b = el("button", { className: "item market" }, el("img", { src: w.cover, alt: "" }), el("span", { className: "what", textContent: w.name }, el("small", { textContent: w.description })), el("span", { className: "value", textContent: "Play" }));
+        const b = el("button", { className: "item pictured" }, coverTile(w.cover), el("span", { className: "what", textContent: w.name }, el("small", { textContent: w.description })), el("span", { className: "value", textContent: "Play" }));
         b.dataset.key = w.repo;
         b.onclick = () => install(w.repo);
         return b;

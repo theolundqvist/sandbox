@@ -20,6 +20,7 @@ A shared world is a GitHub repository. The host's agent builds it with the CLI's
 | `world.sqlite` entities | `state/entities.json`, without entities that name a player | The world as it stands. Inventories, quests, private views and other per-player records stay home. |
 | `world.sqlite` snapshots and timelapse | nothing | Old states for Rewind and replays, with the players' chat in them. |
 | `db/<live mod>.sqlite` | `state/db/<mod>.sql`, without rows that name a player | What mods keep outside entities, as reviewable SQL. |
+| `cover.jpg` | `cover.jpg` | The host's own view of the world, saved by their game without the HUD or players' names. Worlds and Browse show it. |
 | `about.json` | `state/about.json`, live mods only, without banners that name a player | What each mod is. |
 | `record.sqlite` | nothing | The replay recording: tool calls, chat, sessions. |
 | `world.log`, `seeded.json`, `build/` | nothing | Logs, and files the engine rebuilds. |

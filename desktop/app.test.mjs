@@ -1,6 +1,6 @@
 // The real Electron app on a throwaway relay and launcher and a stand-in GitHub; run with `xvfb-run -a node --test desktop/app.test.mjs`.
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -36,6 +36,9 @@ function bun(script, env) {
 const ownEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY")));
 const VOICE_KEY = "sk_test_voice_key";
 
+/** A small real JPEG, standing in for a world's picture. */
+const COVER = Buffer.from("/9j/4AAQSkZJRgABAgAAAQABAAD//gARTGF2YzU4LjEzNC4xMDAA/9sAQwAIFBQXFBcbGxsbGxsgHiAhISEgICAgISEhJCQkKioqJCQkISEkJCgoKiouLy4rKyorLy8yMjI8PDk5RkZIVlZn/8QASwABAQAAAAAAAAAAAAAAAAAAAAUBAQAAAAAAAAAAAAAAAAAAAAUQAQAAAAAAAAAAAAAAAAAAAAARAQAAAAAAAAAAAAAAAAAAAAD/wAARCAAIABADASIAAhEAAxEA/9oADAMBAAIRAxEAPwCGAIGP/9k=", "base64");
+
 /** A world published to GitHub, as the tarball GitHub serves: its files inside one folder named after the repo. */
 function publishedWorld() {
   const root = join(dir, "published", "maker-tiny-isle-abc1234");
@@ -43,6 +46,7 @@ function publishedWorld() {
   mkdirSync(join(root, "state"));
   writeFileSync(join(root, "world.json"), JSON.stringify({ name: "Tiny Isle", description: "One small island.", author: "maker", engine: "test", start: "blank", rules: "open" }));
   writeFileSync(join(root, "mods/isle/server.ts"), `export default { load() {} };`);
+  writeFileSync(join(root, "cover.jpg"), COVER);
   writeFileSync(join(root, "state/entities.json"), JSON.stringify({ nextId: 2, entities: { 1: { pos: [0, 0, 0], mesh: { shape: "box", size: [4, 1, 4], color: "#c9b27c" } } } }));
   execFileSync("tar", ["czf", join(dir, "published", "tiny-isle.tgz"), "-C", join(dir, "published"), "maker-tiny-isle-abc1234"]);
   return readFileSync(join(dir, "published", "tiny-isle.tgz"));
@@ -53,7 +57,8 @@ const tinyIsle = publishedWorld();
 const releases = { latest: VERSION, installer: null };
 const RELEASES = port();
 const github = createServer((req, res) => {
-  if (req.url === "/worlds.json") return res.end(JSON.stringify([{ repo: "maker/tiny-isle", name: "Tiny Isle", description: "One small island." }]));
+  if (req.url === "/worlds.json") return res.end(JSON.stringify([{ repo: "maker/tiny-isle", name: "Tiny Isle", description: "One small island." }, { repo: "maker/bare-rock", name: "Bare Rock", description: "No picture yet." }]));
+  if (req.url === "/raw/maker/tiny-isle/HEAD/cover.jpg") return res.end(COVER);
   if (/^\/codeload\/(maker|stranger)\/tiny-isle\/tar\.gz\/HEAD$/.test(req.url)) return res.end(tinyIsle);
   if (req.url === "/latest") return res.end(JSON.stringify({ tag_name: `v${releases.latest}` }));
   if (req.url === "/hang") return;
@@ -124,7 +129,9 @@ async function launch(name, env = {}) {
 const gamePage = (app) => until("the game view", async () => app.windows().find((w) => /^https?:/.test(w.url())));
 const menuShown = (shell) => shell.locator("#title .items").isVisible();
 const shown = (page, sel) => page.locator(sel).isVisible();
-const rows = (shell) => shell.locator("#games .item").evaluateAll((items) => items.map((b) => [...b.childNodes].map((n) => n.textContent).join(" | ")));
+const rows = (shell) => shell.locator("#games .item").evaluateAll((items) => items.map((b) => [...b.childNodes].filter((n) => !n.classList.contains("cover")).map((n) => n.textContent).join(" | ")));
+/** The width each row's picture loaded at, or null for a plain tile; a broken image would be 0. */
+const pictures = (list) => list.locator(".item .cover").evaluateAll((tiles) => tiles.map((t) => t.querySelector("img")?.naturalWidth ?? null));
 /** Answers the app's next question dialogs with this button, and keeps what they asked. */
 const answer = (app, response) =>
   app.evaluate(({ dialog }, response) => {
@@ -285,12 +292,14 @@ describe("hosting and joining", () => {
     await game.keyboard.press("Escape");
   });
 
-  test("leaving shows the hosted world, live, marked Hosted", async () => {
+  test("leaving shows the hosted world, live, marked Hosted, with the host's view as its picture", async () => {
     await shell.click("#leave");
     await shell.click("text=Worlds");
     const [row] = await until("the hosted world", async () => (await rows(shell)).length && rows(shell));
     assert.match(row, /^.+ \| Live \| Hosted$/);
     assert.equal((await rows(shell)).length, 1);
+    const shot = async () => (await shell.evaluate(() => dispatchEvent(new Event("focus"))), (await pictures(shell.locator("#games")))[0]);
+    assert.equal(await until("the picture", shot), 960);
     await shell.keyboard.press("Escape");
   });
 
@@ -353,19 +362,24 @@ describe("hosting and joining", () => {
     await shell.click("#go-browse");
     const game = await gamePage(app);
     const listed = game.locator("#market .item");
-    await until("the listed world", async () => (await listed.count()) === 1);
-    assert.equal(await listed.textContent(), "Tiny IsleOne small island.Play");
-    assert.equal(await listed.locator("img").getAttribute("src"), `http://127.0.0.1:${RELEASES}/raw/maker/tiny-isle/HEAD/cover.jpg`);
+    await until("the listed worlds", async () => (await listed.count()) === 2);
+    assert.equal(await listed.first().textContent(), "Tiny IsleOne small island.Play");
+    assert.equal(await listed.first().locator("img").getAttribute("src"), `http://127.0.0.1:${RELEASES}/raw/maker/tiny-isle/HEAD/cover.jpg`);
+    assert.deepEqual(await until("the pictures", async () => (await pictures(game.locator("#market")))[0] && pictures(game.locator("#market"))), [16, null]);
     await game.fill("#repo-link", "https://github.com/stranger/tiny-isle");
     await game.press("#repo-link", "Enter");
     await until("the trust question", async () => (await game.textContent("#ask-note")) === "This world runs code from stranger. Only play worlds from people you trust.");
     await game.click("#ask-no");
-    await listed.click();
+    await listed.first().click();
     await until("Stop the hosted world?", async () => /^Stop .+\?$/.test(await game.textContent("#ask-title")));
     await game.click("#ask-yes");
     await until("Tiny Isle's join screen", async () => (await game.textContent("#join-world")) === "Tiny Isle");
+    const worlds = join(dir, "host", "Sandbox", "data", "worlds");
+    const isle = readdirSync(worlds).find((id) => id.startsWith("tiny-isle-"));
+    assert.deepEqual(readFileSync(join(worlds, isle, "cover.jpg")), COVER);
     await joinAs(game, "islander");
     await shell.click("#leave");
+    await until("the host's view of Tiny Isle", async () => readFileSync(join(worlds, isle, "cover.jpg")).length > COVER.length);
   });
 
   test("quitting stops the game server", async () => {

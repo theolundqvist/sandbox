@@ -177,7 +177,9 @@
     const focused = $("games").contains(document.activeElement) ? document.activeElement.dataset.key : null;
     $("games").replaceChildren(
       ...games.map((g) => {
-        const b = el("button", { className: "item", textContent: g.name, onclick: g.go }, el("span", { className: g.live ? "value live" : "value", textContent: g.value }), el("span", { className: "value", textContent: g.kind }));
+        const cover = el("span", { className: "cover" });
+        if (g.cover) cover.append(el("img", { src: g.cover, alt: "", onerror: (e) => e.target.remove() }));
+        const b = el("button", { className: "item pictured", onclick: g.go }, cover, el("span", { className: "what", textContent: g.name }), el("span", { className: g.live ? "value live" : "value", textContent: g.value }), el("span", { className: "value", textContent: g.kind }));
         b.dataset.key = g.url;
         return b;
       }),
