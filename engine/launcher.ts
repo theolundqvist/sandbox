@@ -77,7 +77,16 @@ const crashes = new Map<string, number[]>();
 const CRASH_LIMIT = 3;
 const CRASH_WINDOW_MS = 10 * 60_000;
 
-async function host(id: string, notice?: string) {
+/** The mod whose reload went live within a minute before the world crashed, which the restart leaves out. */
+function crashedAfterReload(id: string) {
+  const path = join(WORLDS, id, "mods.json");
+  if (!existsSync(path)) return;
+  const mods: Record<string, { at?: number }> = JSON.parse(readFileSync(path, "utf8"));
+  const [name, last] = Object.entries(mods).sort(([, a], [, b]) => (b.at ?? 0) - (a.at ?? 0))[0] ?? [];
+  return last?.at && Date.now() - last.at < 60_000 ? name : undefined;
+}
+
+async function host(id: string, notice?: string, revert?: string) {
   if (running?.id === id) return;
   if (!existsSync(join(WORLDS, id, "config.json"))) throw new Error("That game doesn't exist.");
   await stop();
@@ -89,7 +98,7 @@ async function host(id: string, notice?: string) {
   if (existsSync(logPath) && statSync(logPath).size > 5 << 20) renameSync(logPath, `${logPath}.1`);
   const log = createWriteStream(logPath, { flags: "a" });
   const proc = Bun.spawn([process.execPath, join(ENGINE, "server.ts")], {
-    env: { ...process.env, SANDBOX_DATA: join(WORLDS, id), SANDBOX_SECRETS: SECRETS, PORT: "0", ...(notice && { SANDBOX_NOTICE: notice }) },
+    env: { ...process.env, SANDBOX_DATA: join(WORLDS, id), SANDBOX_SECRETS: SECRETS, PORT: "0", ...(notice && { SANDBOX_NOTICE: notice }), ...(revert && { SANDBOX_REVERT: revert }) },
     stdout: "pipe",
     stderr: "pipe",
     ipc: (msg) => reportPort(msg.port),
@@ -141,9 +150,11 @@ async function host(id: string, notice?: string) {
     const recent = [...(crashes.get(id) ?? []).filter((at) => Date.now() - at < CRASH_WINDOW_MS), Date.now()];
     crashes.set(id, recent);
     if (recent.length <= CRASH_LIMIT) {
+      const revert = crashedAfterReload(id);
       await recorded;
       // Players' games keep reconnecting and land in the restarted world.
-      const restarted = await host(id, "The game crashed and restarted by itself. Anything from the last few seconds before the crash may be gone.").then(() => true, (e) => (console.error(e.message), false));
+      const notice = `The game crashed and restarted by itself${revert ? ` without the last change to ${revert}` : ""}. Anything from the last few seconds before the crash may be gone.`;
+      const restarted = await host(id, notice, revert).then(() => true, (e) => (console.error(e.message), false));
       if (restarted) return;
     }
     for (const ws of players) ws.close(4001, "The world stopped");
@@ -545,5 +556,6 @@ if (state.sharing)
     console.error(e.message);
   }
 const menuLink = `http://localhost:${PORT}/menu#key=${state.hostKey}`;
-console.log(`\n  Main menu (keep private): ${menuLink}\n`);
+// The link carries the host key, so it goes only to a terminal, never into a log file; on this computer the menu finds the key by itself.
+console.log(process.stdout.isTTY ? `\n  Main menu (keep private): ${menuLink}\n` : `Main menu: http://localhost:${PORT}/menu`);
 if (process.platform === "darwin" && !process.env.SANDBOX_NO_OPEN) Bun.spawn(["open", menuLink]);

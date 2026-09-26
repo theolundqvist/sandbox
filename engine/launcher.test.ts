@@ -292,12 +292,53 @@ test("a world that crashes is hosted again by itself, a Claude waiting on it is 
     });
   }
   expect(welcome?.t).toBe("welcome");
-  expect(welcome.feed.map((f: { text: string }) => f.text)).toContain("The game crashed and restarted by itself. Anything from the last few seconds before the crash may be gone.");
+  expect(welcome.feed.map((f: { text: string }) => f.text)).toContain("The game crashed and restarted by itself without the last change to basics. Anything from the last few seconds before the crash may be gone.");
   expect(world()).not.toBe(first);
   const log = readFileSync(join(data, "worlds", s.running.id, "world.log"), "utf8");
   expect(log.match(/Crashy is running/g)).toHaveLength(2);
   expect(log).toMatch(/\[launcher\] exited with SIGABRT after \d+ s\. Last sample \d+ s ago: \d+ MB RSS, \d+ MB heap\. Last reload \d+ s ago: basics by stayer, v\d+\.\n/);
   launcher.kill();
+}, 60_000);
+test("a world that crashes within a minute of a reload comes back without that reload, tells its Claude why, and no log holds the host key", async () => {
+  const port = LAUNCHER + 750;
+  const data = join(dir, "reverty");
+  const launcher = Bun.spawn(["bun", join(import.meta.dir, "launcher.ts")], { env: { ...env, PORT: String(port), SANDBOX_DATA: data, SANDBOX_NO_OPEN: "1" }, stdout: "pipe", stderr: "pipe" });
+  procs.push(launcher);
+  const output = Promise.all([new Response(launcher.stdout).text(), new Response(launcher.stderr).text()]);
+  const base = `http://127.0.0.1:${port}`;
+  await up(`${base}/menu`);
+  const { key } = await (await localKey(base)).json();
+  const s = await (await fetch(`${base}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ name: "Reverty", start: "blank" }) })).json();
+  const player = await (await fetch(`${base}/api/join`, { method: "POST", body: JSON.stringify({ invite: s.running.invite, name: "builder" }) })).json();
+  const call = async (name: string, args: Record<string, string>) => {
+    const form = new FormData();
+    for (const [k, v] of Object.entries(args)) form.append(k, v);
+    return (await fetch(`${base}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: form })).text();
+  };
+  const serverTs = join(data, "worlds", s.running.id, "world/mods/wobbly/server.ts");
+  mkdirSync(join(serverTs, ".."), { recursive: true });
+  writeFileSync(serverTs, `export default { tick() {} };`);
+  expect(await call("reload", { mod: "wobbly" })).toStartWith("wobbly v1 is live");
+  // A test run lasts 20 ticks, so only the live world is still running when this goes off.
+  writeFileSync(serverTs, `export default { load() { setTimeout(() => process.kill(process.pid, "SIGKILL"), 2500); } };`);
+  expect(await call("reload", { mod: "wobbly" })).toStartWith("wobbly v2 is live");
+
+  let status: any;
+  for (let i = 0; i < 100 && status?.mods?.[0]?.version !== 3; i++) {
+    await Bun.sleep(200);
+    status = await fetch(`${base}/api/status`, { headers: { authorization: `Bearer ${player.key}` } }).then((r) => r.json(), () => null);
+  }
+  expect(status.mods).toMatchObject([{ name: "wobbly", version: 3 }]);
+  expect(status.recent).toContain("The game crashed and restarted by itself without the last change to wobbly. Anything from the last few seconds before the crash may be gone.");
+  expect(await call("logs", { mod: "wobbly" })).toContain("the world crashed within a minute of this reload, so it was undone.");
+  await Bun.sleep(3000);
+  expect((await fetch(`${base}/api/status`, { headers: { authorization: `Bearer ${player.key}` } })).ok).toBe(true);
+
+  launcher.kill();
+  const [stdout, stderr] = await output;
+  const worldLog = readFileSync(join(data, "worlds", s.running.id, "world.log"), "utf8");
+  for (const secret of [key, s.running.hostKey]) for (const text of [stdout, stderr, worldLog]) expect(text).not.toContain(secret);
+  expect(stdout).toContain(`Main menu: http://localhost:${port}/menu`);
 }, 60_000);
 const hostMenu = async () => {
   const { key } = await (await localKey(`http://127.0.0.1:${LAUNCHER}`)).json();
@@ -343,10 +384,12 @@ export default {
 `;
   await tool(alice, "write_file", { path: "mods/note/server.ts", content: note });
   await tool(alice, "reload", { mod: "note" });
-  // The world saves every 5 s. Stopping it writes its host link into the record, which the export must scrub.
+  // A Claude that passes the invite to a tool puts it in the record, which the export must scrub.
+  await tool(alice, "logs", { mod: invite });
+  // The world saves every 5 s.
   for (let i = 0; i < 100 && !count(join(worldDir(id), "world.sqlite"), `select count(*) n from entity where data like '%"note"%'`); i++) await Bun.sleep(100);
   await menu("stop", {});
-  expect(count(join(worldDir(id), "record.sqlite"), `select count(*) n from events where data like '%${hostKey}%'`)).toBeGreaterThan(0);
+  expect(count(join(worldDir(id), "record.sqlite"), `select count(*) n from events where data like '%${invite}%'`)).toBeGreaterThan(0);
   await menu("host", { id });
 
   const cover = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);

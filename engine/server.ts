@@ -40,7 +40,8 @@ if (!existsSync(ROOT)) {
   }
   writeJson("owners.json", owners);
 }
-if (hasGit && !existsSync(join(ROOT, ".git"))) {
+const newHistory = hasGit && !existsSync(join(ROOT, ".git"));
+if (newHistory) {
   Bun.spawnSync(["git", "init", "-q"], { cwd: ROOT });
   Bun.spawnSync(["git", "config", "user.name", "sandbox"], { cwd: ROOT });
   Bun.spawnSync(["git", "config", "user.email", "sandbox@sandbox"], { cwd: ROOT });
@@ -94,9 +95,11 @@ writeFileSync(
     2,
   ),
 );
+// Mods are committed when they go live, so the history keeps each as it was last accepted; a start commits only the files the engine writes, and only when they changed.
 if (hasGit) {
-  Bun.spawnSync(["git", "add", "-A"], { cwd: ROOT });
-  Bun.spawnSync(["git", "commit", "-qm", "server start"], { cwd: ROOT });
+  const engineFiles = newHistory ? ["."] : ["api.ts", "GUIDE.md", "tsconfig.json", ".gitignore", "package.json"];
+  Bun.spawnSync(["git", "add", "--", ...engineFiles], { cwd: ROOT });
+  Bun.spawnSync(["git", "commit", "-qm", newHistory ? "new world" : "engine update", "--", ...engineFiles], { cwd: ROOT, stdout: "ignore" });
 }
 
 const record = openRecord(join(DATA, "record.sqlite"));
@@ -244,6 +247,13 @@ mods.sim = sim;
 const store = openStore(join(DATA, "world.sqlite"));
 store.load(sim);
 await mods.loadAll(owners);
+// The launcher restarts a world that crashed right after a reload without that reload.
+const crashed = process.env.SANDBOX_REVERT;
+if (crashed) {
+  const why = "the world crashed within a minute of this reload, so it was undone. Its files still have the change: find what crashed the server before reloading it again.";
+  log(crashed, "error", why);
+  mods.rollBack(crashed, why);
+}
 sim.start();
 if (process.env.SANDBOX_NOTICE) feed(process.env.SANDBOX_NOTICE, "error");
 for (const mod of refreshed) await mods.reload(mod, "world", owners[mod] ?? "world");
@@ -305,7 +315,7 @@ const status = () => ({
   online: [...sockets.keys()],
   mods: [...mods.running].map(([name, m]) => {
     const v = votes.get(name)?.version === m.version ? votes.get(name) : undefined;
-    return { name, author: m.author, version: m.version, server: !!m.build.server, client: !!m.build.client, about: about[name], usedBy: mods.users(name), love: v?.love.size ?? 0, undo: v?.undo.size ?? 0 };
+    return { name, author: m.author, version: m.version, server: !!m.build.server, client: !!m.build.client, about: about[name], usedBy: mods.users(name), owns: m.source?.owns.length ? m.source.owns : undefined, love: v?.love.size ?? 0, undo: v?.undo.size ?? 0 };
   }),
   undoNeeded: Math.floor(sockets.size / 2) + 1,
   controls: { engineKeys: ENGINE_KEYS, ...mods.controls() },
@@ -714,5 +724,6 @@ function samplePlayer(name: string, report: any) {
 }
 
 const base = `http://localhost:${server.port}`;
-console.log(`\n  ${config.name} is running.\n  Host link (keep private): ${base}/#invite=${config.hostKey}\n`);
+// The host link carries the host key, so it goes only to a terminal, never into a log file.
+console.log(process.stdout.isTTY ? `\n  ${config.name} is running.\n  Host link (keep private): ${base}/#invite=${config.hostKey}\n` : `${config.name} is running on ${base}`);
 process.send?.({ port: server.port });

@@ -39,35 +39,56 @@ async function tool(name: string, args: Record<string, unknown> = {}) {
 /** A JSON answer is the first block; chat and the wait_for_chat reminder follow it. */
 const json = async (name: string, args: Record<string, unknown> = {}) => JSON.parse((await tool(name, args)).text.split("\n\n")[0]!);
 const write = (path: string, content: string) => tool("write_file", { path, content });
+/** Changes a file the way a Claude's own editor would, without the write tool's base hash. */
+const edit = (path: string, content: string) => writeFileSync(join(dir, "world", path), content);
 const serverMod = (hooks: string) => `import type { ServerMod } from "../../api";\nexport default ${hooks} satisfies ServerMod;`;
 
-test("a mod goes live at most once every 20 s, says when it may again, and a reload that leaves its client unchanged doesn't swap it in players' games", async () => {
+test("a mod reloads again at once, and a reload that leaves its client or its server byte for byte the same leaves players' games or the simulation alone", async () => {
   expect((await tool("reload", { mod: "basics" })).status).toBe(200);
-  const refused = await tool("reload", { mod: "basics" });
-  expect(refused.status).toBe(422);
-  const wait = Number(refused.text.match(/Reload again in (\d+) s/)?.[1]);
-  expect(wait).toBeGreaterThan(15);
-  expect(wait).toBeLessThanOrEqual(20);
-  await Bun.sleep(wait * 1000);
-  expect((await tool("reload", { mod: "basics" })).status).toBe(200);
+  expect((await tool("reload", { mod: "basics" })).text).toStartWith("basics v3 is live");
   expect(received.filter((m) => m.t === "mod" && m.name === "basics")).toEqual([]);
 
+  const counting = (n: number) => serverMod(`{ load(world) { world.db.run("create table if not exists loads (n)"); world.db.run("insert into loads values (${n})"); } }`);
   await write("mods/painted/client.ts", `export default { init() {} };`);
+  await write("mods/painted/server.ts", counting(1));
   expect((await tool("reload", { mod: "painted" })).status).toBe(200);
   expect(received.filter((m) => m.t === "mod" && m.name === "painted")).toHaveLength(1);
+  const loads = async () => (await tool("query_db", { mod: "painted", sql: "select count(*) as n from loads" })).text.match(/"n":\s*(\d+)/)?.[1];
+  expect(await loads()).toBe("1");
+  edit("mods/painted/client.ts", `export default { init() { console.log("repainted"); } };`);
+  expect((await tool("reload", { mod: "painted" })).text).toStartWith("painted v2 is live");
+  expect(received.filter((m) => m.t === "mod" && m.name === "painted")).toHaveLength(2);
+  expect(await loads()).toBe("1");
+  edit("mods/painted/server.ts", counting(2));
+  expect((await tool("reload", { mod: "painted" })).text).toStartWith("painted v3 is live");
+  expect(await loads()).toBe("2");
 }, 60_000);
 
-test("reloads of a mod that pile up behind another reload go live once, and every caller hears the result", async () => {
-  await write("mods/slow/server.ts", `export default { tick() {} };`);
-  await write("mods/twin/server.ts", `export default { tick() {} };`);
-  const slow = tool("reload", { mod: "slow" });
-  const twins = await Promise.all([tool("reload", { mod: "twin" }), tool("reload", { mod: "twin" })]);
-  expect((await slow).status).toBe(200);
-  for (const twin of twins) {
-    expect(twin.status).toBe(200);
-    expect(twin.text).toStartWith("twin v1 is live");
-  }
+test("reloads asked for while one of the same mod runs become one follow-up of the latest files, and another mod reloads alongside", async () => {
+  const holding = (id: string) => serverMod(`{ load(world) { Bun.sleepSync(600); world.spawn({ pos: [0, 0, 0], twin: "${id}" }); } }`);
+  await write("mods/twin/server.ts", holding("first"));
+  await write("mods/quick/server.ts", serverMod(`{ tick() {} }`));
+  const first = tool("reload", { mod: "twin" });
+  const firstDone = first.then(() => performance.now());
+  await Bun.sleep(100);
+  edit("mods/twin/server.ts", holding("latest"));
+  const later = [tool("reload", { mod: "twin" }), tool("reload", { mod: "twin" })];
+  const quick = await tool("reload", { mod: "quick" });
+  expect(quick.text).toStartWith("quick v1 is live");
+  expect(performance.now()).toBeLessThan(await firstDone);
+  expect((await first).text).toStartWith("twin v1 is live");
+  for (const twin of await Promise.all(later)) expect(twin.text).toStartWith("twin v2 is live");
+  expect((await tool("query_world", { components: ["twin"] })).text).toContain('"latest"');
 }, 30_000);
+
+test("a mod that claims a system another live mod owns is told whose it is, and status lists what each mod owns", async () => {
+  await write("mods/stomach/server.ts", `export const owns = ["hunger"];\n${serverMod(`{ tick() {} }`)}`);
+  expect((await tool("reload", { mod: "stomach" })).text).not.toContain("hunger:");
+  await write("mods/snacks/server.ts", `export const owns = ["hunger", "inventory"];\n${serverMod(`{ tick() {} }`)}`);
+  expect((await tool("reload", { mod: "snacks" })).text).toContain("- hunger: stomach by builder already owns it.");
+  const { mods } = await json("status");
+  expect(mods.find((m: { name: string }) => m.name === "snacks").owns).toEqual(["hunger", "inventory"]);
+});
 
 test("Claudes' messages to each other arrive whole, and a chat line too long for players is refused instead of cut", async () => {
   const { key: other } = await (await fetch(`${BASE}/api/join`, { method: "POST", body: JSON.stringify({ invite: "test-invite", name: "other" }) })).json();

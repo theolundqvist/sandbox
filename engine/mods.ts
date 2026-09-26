@@ -5,8 +5,11 @@ import type { RunningMod, SimHost } from "./simhost";
 
 type Build = { server: string | null; client: string | null };
 type Key = { code: string; label: string };
-/** `keys` are what its client declared with ctx.key, as players' games last reported them. */
-type Mod = { id: number; author: string; version: number; build: Build; previous: Build[]; keys?: Key[] };
+/** Found in the mod's files when it went live: keys its client reads, menu tabs it fills, mods it uses, and systems its server claims with `export const owns`. */
+type Source = { keys: string[]; menus: string[]; uses: string[]; owns: string[] };
+/** `keys` are what its client declared with ctx.key, as players' games last reported them; `at` is when this version went live, which the launcher reads to undo a reload the world crashed right after. */
+type Mod = { id: number; author: string; version: number; build: Build; previous: Build[]; keys?: Key[]; source?: Source; at?: number };
+type Result = { ok: boolean; report: string };
 
 export type ModEvents = {
   /** Returns whether any player has the game open to load it. */
@@ -16,10 +19,12 @@ export type ModEvents = {
 };
 
 const MOD_NAME = /^[a-z][a-z0-9-]{0,31}$/;
-/** Every accepted reload swaps the mod in every player's game, so one mod goes live at most once per this many ms. */
-export const RELOAD_GAP_MS = 20_000;
+/** Reloads of different mods that run at once; each test run loads every server mod in its own process. */
+const PARALLEL_RELOADS = 2;
 const KEY_CODE = /(?:[=!]==?\s*|\.has\(\s*|case\s+)["'`](Key[A-Z]|Digit[0-9]|F[0-9]{1,2}|Arrow(?:Up|Down|Left|Right)|Tab|Enter|Escape|Backquote|Backspace|CapsLock|Minus|Equal|Bracket(?:Left|Right)|Semicolon|Quote|Comma|Period|Slash|Backslash|Numpad\w+|(?:Control|Alt|Meta)(?:Left|Right)|Space|Shift(?:Left|Right)?)["'`]/g;
 const MENU_TAB = /menuTab\(\s*["'`]([^"'`]+)["'`]/g;
+const USES = /\buse(?:<.*?>)?\(\s*["'`]([a-z][a-z0-9-]{0,31})["'`]|["'`]\.\.\/([a-z][a-z0-9-]{0,31})\//g;
+const OWNS = /export\s+const\s+owns\s*=\s*\[([^\]]*)\]/;
 /** Keys the engine itself handles. */
 export const ENGINE_KEYS: Record<string, string> = { Tab: "the game menu", Enter: "chat", KeyT: "push to talk", KeyE: "interact prompts from ctx.interact" };
 /** Keys many mods read on purpose (moving, steering, closing their own window), so sharing them is not an overlap. */
@@ -31,6 +36,19 @@ export const hasGit = (() => {
   return !!git;
 })();
 const sameFile = (a: string, b: string) => existsSync(a) && existsSync(b) && readFileSync(a).equals(readFileSync(b));
+const unique = (xs: Iterable<string>) => [...new Set(xs)];
+
+function scan(dir: string): Source {
+  const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".ts")) : [];
+  const text = Object.fromEntries(files.map((f) => [f, readFileSync(join(dir, f), "utf8")]));
+  const client = files.filter((f) => f !== "server.ts").map((f) => text[f]).join("\n");
+  return {
+    keys: unique([...client.matchAll(KEY_CODE)].map((m) => m[1]!)),
+    menus: unique([...client.matchAll(MENU_TAB)].map((m) => m[1]!)),
+    uses: unique(Object.values(text).flatMap((code) => [...code.matchAll(USES)].map((m) => (m[1] ?? m[2])!))),
+    owns: unique([...(text["server.ts"]?.match(OWNS)?.[1] ?? "").matchAll(/["'`]([^"'`]+)["'`]/g)].map((m) => m[1]!)),
+  };
+}
 // Run by bun itself: its script asks for node, which players may not have.
 const TSC = join(import.meta.dir, "../node_modules/typescript/bin/tsc");
 
@@ -51,9 +69,11 @@ async function tsc(root: string, mods: string[]) {
 export class Mods {
   running = new Map<string, Mod>();
   private nextId = 1;
-  private queue: Promise<unknown> = Promise.resolve();
-  private waiting = new Map<string, { who: string; author: string; force: boolean; run: Promise<{ ok: boolean; report: string }> }>();
-  private wentLive = new Map<string, number>();
+  private inFlight = new Map<string, Promise<Result>>();
+  private followUp = new Map<string, { who: string; author: string; force: boolean; run: Promise<Result> }>();
+  private slots = PARALLEL_RELOADS;
+  private waitingForSlot: (() => void)[] = [];
+  private commits: Promise<unknown> = Promise.resolve();
   sim!: SimHost;
   private awaitingKeys = new Map<string, () => void>();
 
@@ -79,14 +99,14 @@ export class Mods {
       // An imported world names its server builds relative to build/, wherever it was exported from.
       const here = (b: Build) => ({ ...b, server: b.server && resolve(this.buildDir, b.server) });
       const saved: Record<string, Mod> = JSON.parse(readFileSync(this.statePath, "utf8"));
-      this.running = new Map(Object.entries(saved).map(([name, m]) => [name, { ...m, build: here(m.build), previous: m.previous.map(here) }]));
+      this.running = new Map(Object.entries(saved).map(([name, m]) => [name, { ...m, build: here(m.build), previous: m.previous.map(here), source: m.source ?? scan(join(this.root, "mods", name)) }]));
       this.nextId = Math.max(0, ...[...this.running.values()].map((m) => m.id)) + 1;
       return;
     }
     for (const name of this.names()) {
       const result = await this.build(name);
       if (typeof result === "string") this.events.feed(`${name} failed to load: ${result}`, "error");
-      else this.running.set(name, { id: this.nextId++, author: owners[name] ?? "world", version: 1, build: result, previous: [] });
+      else this.running.set(name, { id: this.nextId++, author: owners[name] ?? "world", version: 1, build: result, previous: [], source: scan(join(this.root, "mods", name)) });
     }
     this.save();
   }
@@ -95,24 +115,43 @@ export class Mods {
     writeFileSync(this.statePath, JSON.stringify(Object.fromEntries(this.running), null, 2));
   }
 
-  /** A reload of a mod that is still waiting its turn replaces the waiting one, and both callers get its result. */
-  reload(name: string, who: string, author: string, force = false) {
-    const waiting = this.waiting.get(name);
-    if (waiting) {
-      Object.assign(waiting, { who, author, force });
-      return waiting.run;
+  /** One reload of a mod runs at a time; reloads asked for meanwhile become one follow-up of the latest files, and all their callers get its result. */
+  reload(name: string, who: string, author: string, force = false): Promise<Result> {
+    const next = this.followUp.get(name);
+    if (next) {
+      Object.assign(next, { who, author, force });
+      return next.run;
     }
-    const next = { who, author, force, run: null as unknown as Promise<{ ok: boolean; report: string }> };
-    next.run = this.queue.then(() => {
-      this.waiting.delete(name);
-      return this.doReload(name, next.who, next.author, next.force);
+    const current = this.inFlight.get(name);
+    if (!current) return this.start(name, who, author, force);
+    const followUp = { who, author, force, run: null as unknown as Promise<Result> };
+    followUp.run = current.catch(() => {}).then(() => {
+      this.followUp.delete(name);
+      return this.start(name, followUp.who, followUp.author, followUp.force);
     });
-    this.waiting.set(name, next);
-    this.queue = next.run.catch(() => {});
-    return next.run;
+    this.followUp.set(name, followUp);
+    return followUp.run;
   }
 
-  private async doReload(name: string, who: string, author: string, force: boolean): Promise<{ ok: boolean; report: string }> {
+  private start(name: string, who: string, author: string, force: boolean) {
+    const run = this.inSlot(() => this.doReload(name, who, author, force)).finally(() => this.inFlight.delete(name));
+    this.inFlight.set(name, run);
+    return run;
+  }
+
+  private async inSlot<T>(work: () => Promise<T>) {
+    if (!this.slots) await new Promise<void>((r) => this.waitingForSlot.push(r));
+    else this.slots--;
+    try {
+      return await work();
+    } finally {
+      const next = this.waitingForSlot.shift();
+      if (next) next();
+      else this.slots++;
+    }
+  }
+
+  private async doReload(name: string, who: string, author: string, force: boolean): Promise<Result> {
     if (!MOD_NAME.test(name)) return { ok: false, report: `Mod names are lowercase letters, digits and dashes: ${MOD_NAME}` };
     const dir = join(this.root, "mods", name);
     const current = this.running.get(name);
@@ -135,15 +174,6 @@ export class Mods {
       return { ok: true, report: `Unloaded ${name} for everyone.` };
     }
 
-    const wait = Math.ceil(((this.wentLive.get(name) ?? -Infinity) + RELOAD_GAP_MS - Date.now()) / 1000);
-    if (wait > 0) {
-      this.events.record("reload", who, { mod: name, ok: false, stage: "rate", wait });
-      return {
-        ok: false,
-        report: `Nothing changed: ${name} went live ${RELOAD_GAP_MS / 1000 - wait} s ago, and each mod goes live at most once every ${RELOAD_GAP_MS / 1000} s because every reload swaps it in every player's game. Reload again in ${wait} s, with any further edits batched into that one reload.`,
-      };
-    }
-
     const started = performance.now();
     const ms: Record<string, number> = {};
     let mark = started;
@@ -153,36 +183,42 @@ export class Mods {
       mark = now;
     };
     const reject = (stage: string, report: string) => {
-      lap(stage);
+      if (ms[stage] === undefined) lap(stage);
       this.events.record("reload", who, { mod: name, ok: false, stage, ms: { ...ms, total: Math.round(performance.now() - started) }, report: report.slice(0, 500) });
       return this.fail(name, who, report);
     };
-    const { own, dependents } = await this.typecheck(name);
-    if (own) return reject("typecheck", `Type errors, nothing changed:\n${own}`);
-    if (dependents)
-      return reject(
-        "typecheck",
-        `This change breaks live mods that use ${name}, nothing changed. Keep ${name}'s exports compatible, or fix those mods in the same change and reload them after this one:\n${dependents}`,
-      );
-    lap("typecheck");
+    // The typecheck runs alongside the build and the test run, and gates going live all the same.
+    const typecheck = this.typecheck(name).then((result) => ((ms.typecheck = Math.round(performance.now() - started)), result));
+    const typeErrors = async () => {
+      const { own, dependents } = await typecheck;
+      if (own) return reject("typecheck", `Type errors, nothing changed:\n${own}`);
+      if (dependents)
+        return reject(
+          "typecheck",
+          `This change breaks live mods that use ${name}, nothing changed. Keep ${name}'s exports compatible, or fix those mods in the same change and reload them after this one:\n${dependents}`,
+        );
+    };
+    const source = scan(dir);
     const build = await this.build(name);
-    if (typeof build === "string") return reject("build", `Build failed, nothing changed:\n${build}`);
-    // Players' games keep the client they have when this change leaves it byte for byte the same.
+    if (typeof build === "string") return (await typeErrors()) ?? reject("build", `Build failed, nothing changed:\n${build}`);
+    // Players' games keep the client they have, and the simulation the server it runs, when this change leaves it byte for byte the same.
     if (build.client && current?.build.client && sameFile(join(this.buildDir, build.client.slice("/build/".length)), join(this.buildDir, current.build.client.slice("/build/".length)))) build.client = current.build.client;
+    if (build.server && current?.build.server && sameFile(build.server, current.build.server)) build.server = current.build.server;
     lap("build");
 
     const id = current?.id ?? this.nextId++;
-    if (build.server) {
-      const error = await this.sim.trial({ name, id, server: build.server });
-      if (error) return reject("trial", `Test run against a copy of the live world failed, nothing changed:\n${error}`);
-      lap("trial");
-    }
+    const serverChanged = build.server !== current?.build.server;
+    const trial = build.server && serverChanged ? this.sim.trial({ name, id, server: build.server }) : null;
+    const typeError = await typeErrors();
+    if (typeError) return typeError;
+    const error = await trial;
+    if (error) return reject("trial", `Test run against a copy of the live world failed, nothing changed:\n${error}`);
+    lap("trial");
 
     const version = (current?.version ?? 0) + 1;
-    this.running.set(name, { id, author: current?.author ?? author, version, build, previous: current ? [...current.previous, current.build].slice(-5) : [], keys: current?.keys });
+    this.running.set(name, { id, author: current?.author ?? author, version, build, previous: current ? [...current.previous, current.build].slice(-5) : [], keys: current?.keys, source, at: Date.now() });
     this.save();
-    this.wentLive.set(name, Date.now());
-    const loadError = await this.sim.apply({ name, id, server: build.server });
+    const loadError = serverChanged ? await this.sim.apply({ name, id, server: build.server }) : null;
     lap("apply");
     if (build.client !== current?.build.client && this.events.client(name, build.client) && build.client) await Promise.race([new Promise<void>((r) => this.awaitingKeys.set(name, r)), Bun.sleep(3000)]);
     this.awaitingKeys.delete(name);
@@ -213,13 +249,17 @@ export class Mods {
     const declared: Record<string, { mod: string; label: string }[]> = {};
     for (const [name, mod] of this.running) {
       for (const k of mod.keys ?? []) (declared[k.code] ??= []).push({ mod: name, label: k.label });
-      const dir = join(this.root, "mods", name);
-      if (!existsSync(dir)) continue;
-      const code = readdirSync(dir).filter((f) => f.endsWith(".ts") && f !== "server.ts").map((f) => readFileSync(join(dir, f), "utf8")).join("\n");
-      for (const key of new Set([...code.matchAll(KEY_CODE)].map((m) => m[1]!))) (keys[key] ??= []).push(name);
-      for (const title of new Set([...code.matchAll(MENU_TAB)].map((m) => m[1]!))) (menus[title] ??= []).push(name);
+      for (const key of mod.source?.keys ?? []) (keys[key] ??= []).push(name);
+      for (const title of mod.source?.menus ?? []) (menus[title] ??= []).push(name);
     }
     return { keys, menus, declared };
+  }
+
+  /** Which live mods claim which systems, like hunger or inventory. */
+  systems() {
+    const owners: Record<string, string[]> = {};
+    for (const [name, mod] of this.running) for (const system of mod.source?.owns ?? []) (owners[system] ??= []).push(name);
+    return owners;
   }
 
   /** Keys this mod reads or declares that the engine or another mod already uses, as advice for whoever just reloaded it. */
@@ -234,7 +274,12 @@ export class Mods {
       else if (ENGINE_KEYS[key]) lines.push(`- ${key}: the engine uses it for ${ENGINE_KEYS[key]}. Pick another key.`);
       else if (others.length) lines.push(`- ${key}: also used by ${others.join(", ")}. Pick a free key (status lists every key in use), or share the feature through that mod's exports.`);
     }
-    return lines.length ? `\nControls that overlap, fix these:\n${lines.join("\n")}` : "";
+    for (const [system, owners] of Object.entries(this.systems())) {
+      const others = owners.filter((o) => o !== name);
+      if (owners.includes(name) && others.length)
+        lines.push(`- ${system}: ${others.map((o) => `${o} by ${this.running.get(o)!.author}`).join(", ")} already owns it. Agree with its author which mod keeps ${system}, and build on that mod's exports, so players never get two.`);
+    }
+    return lines.length ? `\nControls and systems that overlap, fix these:\n${lines.join("\n")}` : "";
   }
 
   private fail(name: string, who: string, report: string) {
@@ -244,23 +289,30 @@ export class Mods {
 
   /** Called when a live mod misbehaves: fall back to its previous build, or unload it. */
   revert(name: string, error: string) {
+    const mod = this.rollBack(name, error);
+    if (!mod) return;
+    const build = this.running.get(name)?.build;
+    this.sim.send({ t: "mod", name, id: mod.id, server: build?.server ?? null });
+    this.events.client(name, build?.client ?? null);
+  }
+
+  /** Reverts a mod in the saved state only, as at startup before the simulation loads any mod. */
+  rollBack(name: string, error: string) {
     const mod = this.running.get(name);
     if (!mod) return;
     this.events.record("error", null, { mod: name, revert: true, text: error.slice(0, 500) });
     const previous = mod.previous.pop();
+    delete mod.at;
     if (previous) {
       mod.build = previous;
       mod.version++;
-      this.sim.send({ t: "mod", name, id: mod.id, server: previous.server });
-      this.events.client(name, previous.client);
       this.events.feed(`${name} reverted to its previous version: ${error.split("\n")[0]}`, "error");
     } else {
       this.running.delete(name);
-      this.sim.send({ t: "mod", name, id: mod.id, server: null });
-      this.events.client(name, null);
       this.events.feed(`${name} was unloaded: ${error.split("\n")[0]}`, "error");
     }
     this.save();
+    return mod;
   }
 
   /** Type errors in the mod itself, and new ones its change causes in live mods that use it (a type import of its files or a use("<name>") call). */
@@ -296,11 +348,7 @@ export class Mods {
   }
 
   users(name: string) {
-    const uses = new RegExp(`\\buse(?:<.*?>)?\\(\\s*["'\`]${name}["'\`]|["'\`]\\.\\./${name}/`);
-    return [...this.running.keys()].filter((other) => {
-      const dir = join(this.root, "mods", other);
-      return other !== name && existsSync(dir) && readdirSync(dir).some((f) => f.endsWith(".ts") && uses.test(readFileSync(join(dir, f), "utf8")));
-    });
+    return [...this.running].filter(([other, m]) => other !== name && m.source?.uses.includes(name)).map(([other]) => other);
   }
 
   private async build(name: string): Promise<Build | string> {
@@ -326,10 +374,15 @@ export class Mods {
     return result;
   }
 
-  private async commit(name: string, message: string, who: string) {
+  /** One at a time: git holds one lock on the index. */
+  private commit(name: string, message: string, who: string) {
     if (!hasGit) return;
     const git = (...args: string[]) => Bun.spawn(["git", ...args], { cwd: this.root, stdout: "ignore", stderr: "ignore" }).exited;
-    await git("add", "-A", `mods/${name}`);
-    await git("commit", "-q", "-m", message, `--author=${who} <${who}@sandbox>`, "--", `mods/${name}`);
+    const done = this.commits.then(async () => {
+      await git("add", "-A", `mods/${name}`);
+      await git("commit", "-q", "-m", message, `--author=${who} <${who}@sandbox>`, "--", `mods/${name}`);
+    });
+    this.commits = done;
+    return done;
   }
 }
