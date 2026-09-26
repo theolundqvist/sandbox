@@ -22,6 +22,12 @@ const MENU_TAB = /menuTab\(\s*["'`]([^"'`]+)["'`]/g;
 export const ENGINE_KEYS: Record<string, string> = { Tab: "the game menu", Enter: "chat", KeyT: "push to talk", KeyE: "interact prompts from ctx.interact", Digit1: "love votes after a reload", Digit2: "undo votes after a reload" };
 /** Keys many mods read on purpose (moving, steering, closing their own window), so sharing them is not an overlap. */
 const SHARED_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Shift", "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "Escape"]);
+/** Whether this machine has a real git. A Mac without the developer tools has only a stub at /usr/bin/git, which opens an install dialog every time it runs. */
+export const hasGit = (() => {
+  const git = Bun.which("git");
+  if (process.platform === "darwin" && git === "/usr/bin/git") return Bun.spawnSync(["xcode-select", "-p"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+  return !!git;
+})();
 // Run by bun itself: its script asks for node, which players may not have.
 const TSC = join(import.meta.dir, "../node_modules/typescript/bin/tsc");
 
@@ -251,8 +257,10 @@ export class Mods {
     for (const file of ["api.ts", "tsconfig.json", "package.json"]) if (existsSync(join(this.root, file))) cpSync(join(this.root, file), join(dir, file));
     if (existsSync(join(this.root, "node_modules"))) symlinkSync(join(this.root, "node_modules"), join(dir, "node_modules"));
     for (const file of new Bun.Glob("mods/**/*.ts").scanSync(this.root)) if (!file.startsWith(`mods/${name}/`)) cpSync(join(this.root, file), join(dir, file));
-    const archive = Bun.spawn(["git", "archive", "HEAD", "--", `mods/${name}`], { cwd: this.root, stdout: "pipe", stderr: "ignore" });
-    await Bun.spawn(["tar", "-x", "-C", dir, "--wildcards", "*.ts"], { stdin: archive.stdout, stderr: "ignore" }).exited;
+    if (hasGit) {
+      const archive = Bun.spawn(["git", "archive", "HEAD", "--", `mods/${name}`], { cwd: this.root, stdout: "pipe", stderr: "ignore" });
+      await Bun.spawn(["tar", "-x", "-C", dir, "--wildcards", "*.ts"], { stdin: archive.stdout, stderr: "ignore" }).exited;
+    }
     return dir;
   }
 
@@ -288,6 +296,7 @@ export class Mods {
   }
 
   private async commit(name: string, message: string, who: string) {
+    if (!hasGit) return;
     const git = (...args: string[]) => Bun.spawn(["git", ...args], { cwd: this.root, stdout: "ignore", stderr: "ignore" }).exited;
     await git("add", "-A", `mods/${name}`);
     await git("commit", "-q", "-m", message, `--author=${who} <${who}@sandbox>`, "--", `mods/${name}`);

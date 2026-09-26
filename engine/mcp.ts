@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import type { Mods } from "./mods";
+import { hasGit, type Mods } from "./mods";
 import { brief, type Recorder } from "./record";
 import type { SimHost } from "./simhost";
 
@@ -261,6 +261,7 @@ export function createMcp(ctx: McpContext) {
   }
 
   async function git(...args: string[]) {
+    if (!hasGit) throw new ToolError("Needs Git, which this computer doesn't have. On a Mac, xcode-select --install adds it; then restart the world.");
     const proc = Bun.spawn(["git", ...args], { cwd: ctx.root, stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
     if (code) throw new ToolError(err.trim());
@@ -416,8 +417,10 @@ export function createMcp(ctx: McpContext) {
         const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
         clearTimeout(timer);
         if (code) throw new ToolError(`bun add ${spec} failed:\n${(err || out).trim().slice(-2000)}`);
-        await git("add", "package.json", "bun.lock");
-        await git("commit", "-qm", `add package ${spec}`, `--author=${who} <${who}@sandbox>`).catch(() => {});
+        if (hasGit) {
+          await git("add", "package.json", "bun.lock");
+          await git("commit", "-qm", `add package ${spec}`, `--author=${who} <${who}@sandbox>`).catch(() => {});
+        }
         ctx.feed(`${speaker(who)} added the ${spec} package`, "info");
         return `${out.trim().split("\n").slice(-3).join("\n")}\nImport it from any mod, then reload that mod.`;
       }

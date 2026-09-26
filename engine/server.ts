@@ -3,7 +3,7 @@ import { basename, join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { frontFile } from "./front";
 import { createMcp, GAME_MASTER, type Task } from "./mcp";
-import { ENGINE_KEYS, Mods } from "./mods";
+import { ENGINE_KEYS, hasGit, Mods } from "./mods";
 import { latencies, openRecord, route } from "./record";
 import { SimHost } from "./simhost";
 import { openStore, type Activity, type Tick } from "./world";
@@ -38,6 +38,8 @@ if (!existsSync(ROOT)) {
     owners[mod] = "world";
   }
   writeJson("owners.json", owners);
+}
+if (hasGit && !existsSync(join(ROOT, ".git"))) {
   Bun.spawnSync(["git", "init", "-q"], { cwd: ROOT });
   Bun.spawnSync(["git", "config", "user.name", "sandbox"], { cwd: ROOT });
   Bun.spawnSync(["git", "config", "user.email", "sandbox@sandbox"], { cwd: ROOT });
@@ -89,8 +91,10 @@ writeFileSync(
     2,
   ),
 );
-Bun.spawnSync(["git", "add", "-A"], { cwd: ROOT });
-Bun.spawnSync(["git", "commit", "-qm", "server start"], { cwd: ROOT });
+if (hasGit) {
+  Bun.spawnSync(["git", "add", "-A"], { cwd: ROOT });
+  Bun.spawnSync(["git", "commit", "-qm", "server start"], { cwd: ROOT });
+}
 
 const record = openRecord(join(DATA, "record.sqlite"));
 const logs: { at: number; mod: string; level: string; text: string; player?: string }[] = [];
@@ -240,6 +244,7 @@ setInterval(() => {
 }, 2000);
 /** Reloads from the world's git history, for timelapse moments recorded before activity was stored. */
 function olderReloads(): Activity[] {
+  if (!hasGit) return [];
   const log = Bun.spawnSync(["git", "log", "--since=3 hours ago", "--format=%at %an|%s"], { cwd: ROOT }).stdout.toString();
   return log.split("\n").flatMap((row) => {
     const [, at, who, subject] = row.match(/^(\d+) (.+?)\|(\S+ v\d+)$/) ?? [];

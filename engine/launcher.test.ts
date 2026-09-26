@@ -1,6 +1,6 @@
 // A throwaway launcher and relay over real HTTP: only someone at the launcher's own machine gets the host key.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -104,3 +104,38 @@ test("join code lookups are limited per address", async () => {
   expect(statuses).toEqual([...Array(10).fill(404), 429]);
   expect((await fetch(`http://127.0.0.1:${RELAY}/join/AAAAAA`, { headers: { "x-real-ip": "198.51.100.3" } })).status).toBe(404);
 });
+
+test("worlds made without a name each get their own", async () => {
+  const { key } = await (await localKey(`http://127.0.0.1:${LAUNCHER}`)).json();
+  const create = async () => (await fetch(`http://127.0.0.1:${LAUNCHER}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: "{}" })).json();
+  await create();
+  const { worlds } = await create();
+  const unnamed = worlds.filter((w: { name: string }) => w.name !== "Code Test").map((w: { name: string }) => w.name);
+  expect(unnamed).toHaveLength(2);
+  expect(new Set(unnamed).size).toBe(2);
+  expect(unnamed).not.toContain("Sandbox");
+});
+
+test("a computer without git hosts worlds, reloads mods, and says history needs Git", async () => {
+  // Only bun on the PATH: any git call would fail to spawn and stop the world.
+  const bin = join(dir, "nogit-bin");
+  mkdirSync(bin);
+  symlinkSync(Bun.which("bun")!, join(bin, "bun"));
+  const port = LAUNCHER + 500;
+  procs.push(Bun.spawn([join(bin, "bun"), join(import.meta.dir, "launcher.ts")], { env: { PATH: bin, HOME: dir, PORT: String(port), SANDBOX_DATA: join(dir, "nogit"), SANDBOX_NO_OPEN: "1" }, stdout: "ignore", stderr: "ignore" }));
+  await up(`http://127.0.0.1:${port}/menu`);
+  const { key } = await (await localKey(`http://127.0.0.1:${port}`)).json();
+  const s = await (await fetch(`http://127.0.0.1:${port}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ name: "No Git", start: "basics" }) })).json();
+  expect(s.running?.name).toBe("No Git");
+  const player = await (await fetch(`http://127.0.0.1:${port}/api/join`, { method: "POST", body: JSON.stringify({ invite: s.running.invite, name: "builder" }) })).json();
+  const tool = (name: string, args: Record<string, string>) => {
+    const form = new FormData();
+    for (const [k, v] of Object.entries(args)) form.append(k, v);
+    return fetch(`http://127.0.0.1:${port}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: form });
+  };
+  const reload = await tool("reload", { mod: "basics" });
+  expect(reload.status).toBe(200);
+  const history = await tool("history", { mod: "basics" });
+  expect(history.status).toBe(422);
+  expect(await history.text()).toStartWith("Needs Git");
+}, 60_000);
