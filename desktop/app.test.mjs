@@ -387,7 +387,7 @@ describe("the relay down", () => {
 });
 
 /** The real installer's handshake: download, say so, wait for the app to quit, then install; this one writes down the app it waited for. */
-const installer = (marker) => `echo "Downloading Sandbox"; sleep 1; echo "Quit Sandbox to continue."; while kill -0 "$SANDBOX_APP_PID" 2>/dev/null; do sleep 0.2; done; echo "$SANDBOX_APP_PID" > '${marker}'`;
+const installer = (marker) => `echo "Downloading Sandbox"; sleep 1; echo "Quit Sandbox to continue."; while kill -0 "$SANDBOX_APP_PID" 2>/dev/null; do sleep 0.2; done; echo "$SANDBOX_APP_PID" > '${marker}'; echo "$SANDBOX_RELEASE" > '${marker}.release'`;
 
 describe("starting up", () => {
   after(() => {
@@ -431,6 +431,7 @@ describe("starting up", () => {
     assert.equal(await menuShown(shell), false);
     await closed;
     await until("the installer", async () => existsSync(marker) && readFileSync(marker, "utf8").trim() === String(pid));
+    assert.equal(readFileSync(`${marker}.release`, "utf8").trim(), "https://github.com/theolundqvist/sandbox/releases/download/v9.9.9");
     assert.equal(state().updatedTo, "9.9.9");
   });
 

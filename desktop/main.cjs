@@ -10,7 +10,9 @@ const mac = process.platform === "darwin";
 const BAR = 36;
 const RELAY = process.env.SANDBOX_RELAY ?? "https://sandbox-relay.lundqvistliss.com";
 const RELEASES = process.env.SANDBOX_UPDATES ?? "https://api.github.com/repos/theolundqvist/sandbox/releases/latest";
-const INSTALLER = process.env.SANDBOX_INSTALLER ?? "https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install";
+/** The installer and the build from the release being installed, so a broken master never breaks an update. */
+const INSTALLER = (version) => process.env.SANDBOX_INSTALLER ?? `https://raw.githubusercontent.com/theolundqvist/sandbox/v${version}/desktop/install`;
+const DOWNLOADS = (version) => process.env.SANDBOX_RELEASE ?? `https://github.com/theolundqvist/sandbox/releases/download/v${version}`;
 const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"]);
 /** Pages a game may open in the browser: where the host gets a voice key. */
 const OUTSIDE = /^https:\/\/elevenlabs\.io\//;
@@ -452,7 +454,7 @@ async function checkUpdate() {
   const release = res?.ok ? await res.json().catch(() => null) : null;
   if (release?.tag_name) {
     const version = release.tag_name.replace(/^v/, "");
-    const next = newer(version, app.getVersion()) ? version : null;
+    const next = /^\d+\.\d+\.\d+$/.test(version) && newer(version, app.getVersion()) ? version : null;
     if (next !== update) {
       update = next;
       shell?.webContents.send("update", update);
@@ -478,7 +480,7 @@ async function install() {
   const path = join(app.getPath("userData"), "update.log");
   const log = openSync(path, "a");
   const from = statSync(path).size;
-  const child = spawn("bash", ["-c", `curl -fsSL '${INSTALLER}' | bash`], { detached: true, stdio: ["ignore", log, log], env: { ...process.env, SANDBOX_APP_PID: String(process.pid) } });
+  const child = spawn("bash", ["-c", `curl -fsSL '${INSTALLER(update)}' | bash`], { detached: true, stdio: ["ignore", log, log], env: { ...process.env, SANDBOX_APP_PID: String(process.pid), SANDBOX_RELEASE: DOWNLOADS(update) } });
   child.unref();
   closeSync(log);
   const exited = new Promise((resolve) => child.once("exit", () => resolve(false)));
