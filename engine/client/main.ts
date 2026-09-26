@@ -903,7 +903,8 @@ function connect() {
     $<HTMLButtonElement>("howto-play").disabled = true;
     if (leaving) return;
     if (e.code === 4000) {
-      $("status").textContent = "You opened the game in another tab.";
+      $("status").textContent = "You're playing in another tab. Come back to this one to play here.";
+      replaced = true;
       return;
     }
     if (e.code === 4001) return location.reload();
@@ -916,6 +917,17 @@ function connect() {
   };
 }
 
+/** The tab you came back to last is the one you play in, so it is also the one screenshots see. */
+let replaced = false;
+function takeOver() {
+  if (!replaced || document.hidden) return;
+  replaced = false;
+  $("status").textContent = "Reconnecting…";
+  void reconnect();
+}
+addEventListener("focus", takeOver);
+document.addEventListener("visibilitychange", takeOver);
+
 /** Back in once the world answers again; while the host has it closed, the game says so. */
 async function reconnect() {
   const res = await fetch("/api/info").catch(() => null);
@@ -925,32 +937,37 @@ async function reconnect() {
   connect();
 }
 
-/** The scene with every mod layer and HTML overlay (engine HUD and mod UI) drawn on top, as base64 JPEG. */
+/** The scene with every mod layer and HTML overlay (engine HUD and mod UI) drawn on top, as base64 JPEG at most 1280 px wide. */
 async function screenshot() {
-  const out = Object.assign(document.createElement("canvas"), { width: innerWidth, height: innerHeight });
+  const scale = Math.min(1, 1280 / innerWidth);
+  const [w, h] = [Math.round(innerWidth * scale), Math.round(innerHeight * scale)];
+  const out = Object.assign(document.createElement("canvas"), { width: w, height: h });
   const g = out.getContext("2d")!;
   g.imageSmoothingEnabled = !screen.pixelated;
   // Copied while the frame is still in the drawing buffer, instead of encoding it to PNG and decoding it again on the main thread.
   if (screen.scene !== false) {
     draw(0);
-    g.drawImage(renderer.domElement, 0, 0, innerWidth, innerHeight);
+    g.drawImage(renderer.domElement, 0, 0, w, h);
   }
-  // html-to-image waits on animation frames, which never come in a background tab.
+  // html-to-image waits on animation frames, which never come in a background tab and crawl in a covered or busy one.
   const overlay = document.hidden
-    ? null
-    : await toCanvas(document.body, {
-        filter: (node) => node !== renderer.domElement && !(node as HTMLElement).hidden && (!(node instanceof Element) || node.checkVisibility()),
-        skipFonts: true,
-        pixelRatio: 1,
-        style: { background: "transparent" },
-      });
-  if (overlay) g.drawImage(overlay, 0, 0, innerWidth, innerHeight);
+    ? "The game tab is in the background: 3D view only, no HUD or menus."
+    : await Promise.race([
+        toCanvas(document.body, {
+          filter: (node) => node !== renderer.domElement && !(node as HTMLElement).hidden && (!(node instanceof Element) || node.checkVisibility()),
+          skipFonts: true,
+          pixelRatio: scale,
+          style: { background: "transparent" },
+        }).catch(() => "The HUD and menus could not be drawn: 3D view only."),
+        new Promise<string>((resolve) => setTimeout(() => resolve("The HUD and menus took over 3 s to draw: 3D view only."), 3000)),
+      ]);
+  if (typeof overlay !== "string") g.drawImage(overlay, 0, 0, w, h);
   else {
     g.font = "bold 18px sans-serif";
     g.fillStyle = "#000a";
-    g.fillRect(0, 0, innerWidth, 36);
+    g.fillRect(0, 0, w, 36);
     g.fillStyle = "#fff";
-    g.fillText("The game tab is in the background: 3D view only, no HUD or menus.", 12, 24);
+    g.fillText(overlay, 12, 24);
   }
   // toBlob encodes off the main thread; toDataURL would block the game while it encodes.
   const jpeg = await new Promise<Blob>((resolve) => out.toBlob((b) => resolve(b!), "image/jpeg", 0.8));

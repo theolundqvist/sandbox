@@ -383,9 +383,14 @@ const cli = createCli({
   screenshot: (who) =>
     new Promise((resolve, reject) => {
       const ws = sockets.get(who);
-      if (!ws) return reject(new Error(`${who} doesn't have the game open, so there is nothing to see.`));
+      if (!ws) return reject(new Error(`${who} doesn't have the game open, so there is nothing to see. Check with query_world and logs instead, or say to ${who} that you need the game open to look.`));
       const id = crypto.randomUUID();
-      const timer = setTimeout(() => shots.delete(id) && reject(new Error("The game didn't answer within 5 s.")), 5000);
+      const timer = setTimeout(
+        () =>
+          shots.delete(id) &&
+          reject(new Error(`${who}'s game didn't send a picture within 10 s; its computer is busy or the tab is frozen. Check with query_world and logs instead, and try again later.`)),
+        10_000,
+      );
       shots.set(id, (data) => {
         clearTimeout(timer);
         shots.delete(id);

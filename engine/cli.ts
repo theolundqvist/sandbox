@@ -200,7 +200,7 @@ const tools = [
   },
   {
     name: "screenshot",
-    description: "See exactly what your player sees right now: the scene, mod layers and HTML overlays (they must have the game open). Look before you say something is there.",
+    description: "See exactly what your player sees right now, at most 1280 px wide: the scene, mod layers and HTML overlays (they must have the game open; a background tab shows only the scene). Look before you say something is there.",
     inputSchema: { type: "object", properties: {} },
   },
   {

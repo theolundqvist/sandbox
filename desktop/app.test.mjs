@@ -742,6 +742,52 @@ export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(() => bla
     await closed.close();
     witness.close();
   });
+
+  test("screenshot: the tab the player came back to last answers, a background or stalled tab still answers, and an offline player gets a plain next step", async () => {
+    const key = await join("shooter");
+    const context = await browser.newContext({ viewport: { width: 1600, height: 900 } });
+    await context.addInitScript(OPEN_UI);
+    const answered = [];
+    const open = async (tab) => {
+      const p = await context.newPage();
+      p.on("websocket", (ws) => ws.on("framesent", ({ payload }) => String(payload).startsWith('{"t":"shot"') && answered.push(tab)));
+      await p.goto(`${other.url}/#key=${key}`);
+      await p.locator("#howto-play:not([disabled])").waitFor();
+      return p;
+    };
+    const shot = async () => {
+      const before = answered.length;
+      const res = await fetch(`${other.url}/cli/screenshot`, { method: "POST", headers: { authorization: `Bearer ${key}` } });
+      const body = Buffer.from(await res.arrayBuffer());
+      // Playwright reports the tab's frame after the server has already answered.
+      if (res.ok) await until("the answering tab", async () => answered.length > before);
+      const sof = body.findIndex((b, i) => b === 0xff && (body[i + 1] === 0xc0 || body[i + 1] === 0xc2));
+      return { status: res.status, type: res.headers.get("content-type"), width: sof > 0 ? body.readUInt16BE(sof + 7) : 0, text: body.toString(), by: res.ok ? answered.at(-1) : null };
+    };
+    const first = await open("first");
+    let result = await shot();
+    assert.equal(result.type, "image/jpeg");
+    assert.deepEqual([result.width, result.by], [1280, "first"]);
+    const second = await open("second");
+    await until("the first tab to hand over", async () => (await first.textContent("#status")).includes("another tab"));
+    assert.equal((await shot()).by, "second");
+    await first.bringToFront();
+    await first.evaluate(() => dispatchEvent(new Event("focus")));
+    await until("the first tab to take over", async () => (await second.textContent("#status")).includes("another tab"));
+    await until("the first tab back in", () => first.locator("#status").isHidden());
+    assert.equal((await shot()).by, "first");
+
+    // A covered or busy tab gets no animation frames, so it answers inside the server's 10 s with the scene alone; a background one also reports itself hidden.
+    await first.evaluate(() => (window.requestAnimationFrame = () => 0));
+    result = await shot();
+    assert.deepEqual([result.status, result.by], [200, "first"]);
+    await first.evaluate(() => Object.defineProperty(document, "hidden", { get: () => true }));
+    result = await shot();
+    assert.deepEqual([result.status, result.width, result.by], [200, 1280, "first"]);
+    await context.close();
+    await until("the player gone", async () => (await shot()).status === 422);
+    assert.match((await shot()).text, /^shooter doesn't have the game open.*query_world and logs/);
+  });
 });
 
 describe("the host closes the game", () => {
