@@ -19,7 +19,6 @@
   .copy-row b { flex: 1; min-width: 0; font: 700 18px/1.2 var(--display); overflow: hidden; text-overflow: ellipsis; }
   .dot { width: 8px; height: 8px; background: #55524c; flex: none; } .dot.on { background: var(--ok); }
   #app .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
-  #app .items { margin-top: 32px; }
 </style>
 </head>
 <body>
@@ -89,15 +88,13 @@
   <section id="app" class="screen" data-nav hidden>
     <h1>Desktop app</h1>
     <div class="copy-row"><span>Install</span><code id="app-install"></code><button data-copy="app-install">Copy</button></div>
-    <div class="copy-row"><span>Source</span><code id="app-clone"></code><button data-copy="app-clone">Copy</button></div>
     <p class="note">Mac and Linux. On Windows, in WSL.</p>
-    <div class="items"><button class="item" id="app-dismiss">Not now</button></div>
   </section>
 
   <div id="error" class="error"></div>
 </main>
 <div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span id="back-hint"><kbd>Esc</kbd>Back</span></div>
-<div class="corner" id="app-offer" hidden><button class="quiet" id="app-get">Desktop app</button><button class="quiet" id="app-later" title="Not now">✕</button></div>
+<div class="corner" id="app-offer" hidden><button class="quiet" id="app-get">Desktop app</button></div>
 <script type="module">
   import { backdrop, logo, pick } from "/front.js";
   const $ = (id) => document.getElementById(id);
@@ -292,24 +289,12 @@
       setTimeout(() => (button.textContent = "Copy"), 1500);
     };
 
-  /** The desktop app, offered quietly in the corner to browsers on computers until dismissed. The app marks its user agent with SandboxDesktop. */
+  /** The desktop app, offered quietly in the corner to browsers on computers. The app marks its user agent with SandboxDesktop. */
   function offerApp(link) {
-    const dismissed = "sandbox-app-offer";
-    try {
-      if (localStorage.getItem(dismissed)) return;
-    } catch {}
     if (navigator.userAgent.includes("SandboxDesktop") || matchMedia("(pointer: coarse)").matches) return;
-    $("app-install").textContent = `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '${link}'`;
-    $("app-clone").textContent = `git clone https://github.com/theolundqvist/sandbox && cd sandbox && bun desktop '${link}'`;
+    $("app-install").textContent = `curl -fsSL ${location.origin}/desktop/install | bash -s -- '${link}'`;
     $("app-offer").hidden = false;
     $("app-get").onclick = () => current()?.id !== "app" && show("app");
-    $("app-later").onclick = $("app-dismiss").onclick = () => {
-      $("app-offer").hidden = true;
-      if (current()?.id === "app") back();
-      try {
-        localStorage.setItem(dismissed, "1");
-      } catch {}
-    };
   }
 
   if (!key) {

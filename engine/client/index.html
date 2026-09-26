@@ -293,7 +293,6 @@
     <div id="join-app" class="screen" data-nav hidden>
       <h1>Desktop app</h1>
       <div class="copy-row"><span>Install</span><code id="app-install"></code><button type="button" data-copy="app-install">Copy</button></div>
-      <div class="copy-row"><span>Source</span><code id="app-clone"></code><button type="button" data-copy="app-clone">Copy</button></div>
       <p class="note">Mac and Linux. On Windows, in WSL.</p>
       <div class="gap"></div>
       <div class="items"><button type="button" class="item" id="app-back">Back</button><button type="button" class="item" id="app-dismiss">Not now</button></div>
@@ -364,6 +363,7 @@
     <section data-tab="mods" hidden><ul id="menu-mods"></ul></section>
     <section data-tab="settings" hidden>
       <label class="field"><span>Volume</span><span class="range"><input type="range" id="volume" min="0" max="100" step="5"><input type="number" id="volume-exact" min="0" max="100"><em>%</em></span></label>
+      <div class="copy-row" id="app-row" hidden><span>Desktop app</span><code id="app-command"></code><button data-copy="app-command">Copy</button></div>
       <div id="help-keys"></div>
     </section>
   </div>

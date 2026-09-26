@@ -1,32 +1,41 @@
 #!/usr/bin/env bash
-# Installs or updates the Sandbox desktop app and opens it. Run it again to update.
-#   curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '<invite link>'
+# Installs or updates the Sandbox desktop app from the computer hosting the world, then opens it. Run it again to update.
+#   curl -fsSL http://host:7777/desktop/install | bash -s -- '<invite link>'
+# Needs curl and tar; installs Bun, which downloads Electron, if it's missing.
 set -euo pipefail
 
 dir="${SANDBOX_APP_DIR:-$HOME/.sandbox-app}"
-repo="${SANDBOX_REPO:-https://github.com/theolundqvist/sandbox.git}"
 bin="$HOME/.local/bin"
+
+# The app comes from the host in the link, or from the host of the last install.
+world='^(https?://[^/?#]+(/r/[a-z0-9-]+)?)'
+if [[ "${1:-}" =~ $world ]]; then
+  host="${BASH_REMATCH[1]}"
+elif [ -f "$dir/host" ]; then
+  host="$(cat "$dir/host")"
+else
+  echo "Add the link your host sent: curl -fsSL <host>/desktop/install | bash -s -- '<invite link>'" >&2
+  exit 1
+fi
 
 if ! command -v bun >/dev/null; then
   curl -fsSL https://bun.sh/install | bash
   export PATH="$HOME/.bun/bin:$PATH"
 fi
 
-if [ -d "$dir/.git" ]; then
-  git -C "$dir" pull --ff-only --quiet
-else
-  git clone --depth 1 --quiet "$repo" "$dir"
-fi
+mkdir -p "$dir/desktop"
+curl -fsSL "$host/desktop/app.tar.gz" | tar -xzf - -C "$dir/desktop"
+printf '%s\n' "$host" >"$dir/host"
 bun install --cwd "$dir/desktop" --frozen-lockfile
 # Electron fetches its own binary on first run; do it now so the first launch isn't a silent download.
 bun "$dir/desktop/node_modules/electron/install.js"
 
 mkdir -p "$bin"
-cat > "$bin/sandbox" <<EOF
+cat >"$bin/sandbox" <<SCRIPT
 #!/usr/bin/env bash
-# Opens the Sandbox desktop app, with an optional invite link. Update with: curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash
+# Opens the Sandbox desktop app, with an optional invite link. Update with: curl -fsSL $host/desktop/install | bash
 cd "$dir/desktop" && nohup "$(command -v bun)" run start "\$@" >"$dir/app.log" 2>&1 &
-EOF
+SCRIPT
 chmod +x "$bin/sandbox"
 
 "$bin/sandbox" "$@"

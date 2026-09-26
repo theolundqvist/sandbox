@@ -28,16 +28,18 @@ async function join(body: object) {
   history.replaceState(null, "", "/");
 }
 
-/** Offers the desktop app on the join screen: browsers on computers only, until dismissed. The app marks its user agent with SandboxDesktop. */
+/** The desktop app installs from this world's host and opens the link it's given. The app marks its user agent with SandboxDesktop. */
+const appCommand = (link: string) => `curl -fsSL ${origin}/desktop/install | bash -s -- '${link}'`;
+const appWanted = !navigator.userAgent.includes("SandboxDesktop") && !matchMedia("(pointer: coarse)").matches;
+
+/** Offers the desktop app on the join screen: browsers on computers only, until dismissed. Settings keeps offering it. */
 function offerApp(link: string) {
   const dismissed = "sandbox-app-offer";
   try {
     if (localStorage.getItem(dismissed)) return;
   } catch {}
-  if (navigator.userAgent.includes("SandboxDesktop") || matchMedia("(pointer: coarse)").matches) return;
-  const arg = link && ` '${link}'`;
-  $("app-install").textContent = `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash${link && ` -s --${arg}`}`;
-  $("app-clone").textContent = `git clone https://github.com/theolundqvist/sandbox && cd sandbox && bun desktop${arg}`;
+  if (!appWanted) return;
+  $("app-install").textContent = appCommand(link);
   $("app-offer").hidden = false;
   const showApp = (on: boolean) => {
     $("join-app").hidden = !on;
@@ -73,7 +75,7 @@ async function start() {
   $("join").hidden = false;
   $("join-name-field").hidden = left;
   if (!left && !hashParams.get("invite")) $("join-error").textContent = "Ask the host for an invite link.";
-  offerApp(hashParams.get("invite") ? `${origin}/#invite=${hashParams.get("invite")}` : "");
+  offerApp(hashParams.get("invite") ? `${origin}/#invite=${hashParams.get("invite")}` : `${origin}/`);
   const name = $<HTMLInputElement>("join-name");
   name.value = localStorage.getItem("sandbox-name") ?? "";
   const named = () => ($<HTMLButtonElement>("join-go").disabled = !left && !name.value.trim());
@@ -2035,6 +2037,8 @@ addEventListener("unhandledrejection", (e: PromiseRejectionEvent) => {
 });
 
 await start();
+$("app-row").hidden = !appWanted;
+$("app-command").textContent = appCommand(`${origin}/#key=${key}`);
 $("hud").hidden = false;
 $("howto-world").textContent = info.name;
 howto.hidden = false;
