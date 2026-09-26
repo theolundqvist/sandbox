@@ -29,17 +29,17 @@
     <svg class="logo" id="logo"></svg>
     <p id="waiting" class="status" hidden>Waiting for the host</p>
     <div class="items">
-      <button class="item" id="go-create" data-to="create">New game</button>
-      <button class="item" id="go-worlds" data-to="worlds">Saved games</button>
+      <button class="item" id="go-worlds" data-to="worlds">Worlds</button>
       <button class="item" id="go-join" data-to="join">Join game</button>
+      <button class="item" id="go-create" data-to="create">Host game</button>
       <button class="item" id="go-app" data-to="app" hidden>Desktop app</button>
     </div>
   </section>
 
   <section id="worlds" class="screen" data-nav hidden>
-    <h1>Saved games</h1>
+    <h1>Worlds</h1>
     <div class="items" id="world-list"></div>
-    <p id="no-worlds" class="status" hidden>No saved games yet</p>
+    <p id="no-worlds" class="status" hidden>No worlds yet</p>
   </section>
 
   <section id="join" class="screen" data-nav hidden>
@@ -67,7 +67,7 @@
   </section>
 
   <section id="create" class="screen" data-nav hidden>
-    <h1>New game</h1>
+    <h1>Host game</h1>
     <label class="field"><span>Name</span><input type="text" id="create-name" placeholder="Untitled" maxlength="40" autocomplete="off" spellcheck="false"></label>
     <div class="field"><span>House rules</span><div class="pick rules" id="create-rules" data-options="open:Open,additive:Additive"></div></div>
     <div class="field"><span>Start with</span><div class="pick" id="create-start" data-options="blank:Blank,basics:3D field,hills:3D hills"></div></div>
