@@ -10,7 +10,7 @@
   [hidden] { display: none !important; }
   html, body { margin: 0; height: 100%; background: #101113; color: var(--text); font: 15px/1.45 system-ui, sans-serif; overflow: hidden; user-select: none; }
   #title .logo { margin-bottom: 64px; }
-  .front { top: 36px; bottom: 96px; padding-top: 60px; padding-bottom: 0; scrollbar-width: none; }
+  .front { top: 36px; bottom: 96px; padding-top: 60px; padding-bottom: 0; }
   .status { margin: 0; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .16em; text-transform: uppercase; }
   #down .lead { margin: -16px 0 32px; }
   .hints span { white-space: nowrap; }
@@ -29,20 +29,19 @@
   body.mac #top { padding-left: 84px; }
   body:not(.mac) #top { padding-right: 150px; }
   body.playing #top { background: #0b0b0c; border-bottom: 1px solid var(--line); }
-  #top .mark { width: 10px; height: 10px; background: var(--accent); flex: none; }
   #world { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #top .spacer { flex: 1; }
   #top kbd { font: inherit; font-size: 10px; border: 1px solid rgba(255,255,255,.35); padding: 2px 5px; margin-right: 6px; color: var(--text); }
   #leave { height: 36px; padding: 0 12px; background: none; border: 0; color: var(--text); font: inherit; letter-spacing: inherit; text-transform: uppercase; cursor: pointer; outline: none; }
   #leave:hover, #leave:focus-visible { background: var(--accent); color: #0b0b0c; }
-  body:not(.playing) :is(.mark, #world, #bar-hint, #leave) { display: none; }
+  body:not(.playing) :is(#world, #bar-hint, #leave) { display: none; }
   body.playing :is(.backdrop, .front, .hints) { display: none; }
 </style>
 </head>
 <body>
 <div id="backdrop" class="backdrop"></div>
 <div id="top">
-  <span class="mark"></span><span id="world"></span>
+  <span id="world"></span>
   <span class="spacer"></span>
   <span id="bar-hint"><kbd>F11</kbd>Full screen</span>
   <button id="leave">Leave game</button>
@@ -167,13 +166,13 @@
   async function refresh() {
     const s = await shell.state();
     const games = [
-      ...s.hosted.map((g) => ({ ...g, value: g.live ? "Live" : ago(g.at), go: () => open(g.url) })),
-      ...s.joined.map((g) => ({ ...g, value: ago(g.at), go: () => ((selected = g), ($("game-name").textContent = g.name), show("game")) })),
+      ...s.hosted.map((g) => ({ ...g, value: g.live ? "Live" : ago(g.at), kind: "Hosted", go: () => open(g.url) })),
+      ...s.joined.map((g) => ({ ...g, value: ago(g.at), kind: "Joined", go: () => ((selected = g), ($("game-name").textContent = g.name), show("game")) })),
     ].sort((a, b) => (b.live ? Infinity : b.at) - (a.live ? Infinity : a.at));
     const focused = $("games").contains(document.activeElement) ? document.activeElement.dataset.key : null;
     $("games").replaceChildren(
       ...games.map((g) => {
-        const b = el("button", { className: "item", textContent: g.name, onclick: g.go }, el("span", { className: g.live ? "value live" : "value", textContent: g.value }));
+        const b = el("button", { className: "item", textContent: g.name, onclick: g.go }, el("span", { className: g.live ? "value live" : "value", textContent: g.value }), el("span", { className: "value", textContent: g.kind }));
         b.dataset.key = g.url;
         return b;
       }),

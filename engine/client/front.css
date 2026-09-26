@@ -12,7 +12,7 @@
 .logo rect { fill: var(--text); }
 .logo rect.block { fill: var(--accent); }
 
-.front { position: fixed; inset: 0; display: flex; flex-direction: column; padding: 96px 96px 72px; overflow-y: auto; }
+.front { position: fixed; inset: 0; display: flex; flex-direction: column; padding: 96px 96px 72px; overflow-y: auto; scrollbar-width: none; }
 .screen { display: flex; flex-direction: column; width: min(640px, 100%); }
 .screen > h1, .screen-title { margin: 0 0 40px; font: 800 64px/1 var(--display); letter-spacing: .02em; text-transform: uppercase; overflow-wrap: anywhere; }
 
