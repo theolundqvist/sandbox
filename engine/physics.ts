@@ -10,7 +10,7 @@ const EDGE = 0.05;
 const cellKey = (cx: number, cz: number) => cx * 1_000_003 + cz;
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
-function sizeOf(e: Entity) {
+export function sizeOf(e: Entity) {
   const s = typeof e.solid === "number" ? e.solid : (e.solid?.size ?? e.mesh?.size ?? 1);
   const [x = 1, y = x, z = x] = Array.isArray(s) ? s : [s];
   return finite(x) && finite(y) && finite(z) ? [x, y, z] : null;

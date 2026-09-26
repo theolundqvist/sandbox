@@ -2,7 +2,7 @@ import { toCanvas } from "html-to-image";
 import * as THREE from "three";
 import type { ClientCtx, ClientHooks, ClientMod, Entity, ReplayShot } from "../api";
 import { clock, extent, isAvatar, plan, position, type Activity, type Plan, type Tick as Moment, type Shot } from "./director";
-import { PhysicsIndex } from "../physics";
+import { PhysicsIndex, sizeOf } from "../physics";
 import { phrases } from "./phrases";
 
 /** The Tab menu, where players vote on mods, is in a closed shadow root only this file holds, so no mod can reach, hide or remove it; mods' blocks on its pages stay in the page, slotted in. Everything else on screen is the page's, for mods to restyle or remove. */
@@ -209,6 +209,8 @@ const objects = new Map<number, THREE.Object3D>();
 const looks = new Map<number, string>();
 /** Objects a mod's object hook made, by that mod. */
 const claimed = new Map<THREE.Object3D, Loaded>();
+/** The mod that made each solid entity nothing draws. */
+const makers = new Map<number, string>();
 const physics = new PhysicsIndex();
 
 const geometries = new Map<string, { geometry: THREE.BufferGeometry; users: number }>();
@@ -220,6 +222,24 @@ function sharedGeometry(shape: string, size: number[]) {
   entry.users++;
   entry.geometry.userData.key = key;
   return entry.geometry;
+}
+
+const materials = new Map<string, { material: THREE.Material; users: number }>();
+
+function sharedMaterial(key: string, make: () => THREE.Material) {
+  const entry = materials.get(key) ?? { material: make(), users: 0 };
+  materials.set(key, entry);
+  entry.users++;
+  entry.material.userData.key = key;
+  return entry.material;
+}
+
+function releaseMaterial(m: THREE.Material & { map?: THREE.Texture | null }) {
+  const entry = materials.get(m.userData.key);
+  if (entry?.material === m && --entry.users > 0) return;
+  if (entry?.material === m) materials.delete(m.userData.key);
+  m.map?.dispose();
+  m.dispose();
 }
 
 function releaseGeometry(g: THREE.BufferGeometry) {
@@ -241,6 +261,8 @@ function geometry(shape: string, size: number[]) {
       return new THREE.ConeGeometry(x / 2, y, 24);
     case "plane":
       return new THREE.BoxGeometry(x, 0.001, z ?? y);
+    case "edges":
+      return new THREE.EdgesGeometry(new THREE.BoxGeometry(x, y, z));
     default:
       return new THREE.BoxGeometry(x, y, z);
   }
@@ -275,11 +297,21 @@ function build(id: number, e: Entity) {
       return made;
     }
   }
-  return defaultObject(e);
+  return defaultObject(id, e);
 }
 
-function defaultObject(e: Entity) {
+function defaultObject(id: number, e: Entity) {
   const group = new THREE.Group();
+  const size = e.solid && !e.mesh && sizeOf(e);
+  if (size) {
+    const wall = new THREE.LineSegments(sharedGeometry("edges", size), sharedMaterial("wall", () => new THREE.LineBasicMaterial({ color: "#ff9a2e", transparent: true, opacity: 0.7 })));
+    group.add(wall);
+    const maker = makers.get(id);
+    group.userData.wall = maker ?? "unknown";
+    const sprite = labelSprite(maker ? `${maker}'s invisible wall` : "invisible wall");
+    sprite.position.y = size[1] / 2 + 0.6;
+    group.add(sprite);
+  }
   if (e.mesh && e.mesh.opacity !== 0) {
     const size = typeof e.mesh.size === "number" ? [e.mesh.size] : (e.mesh.size ?? [1]);
     const material = new THREE.MeshStandardMaterial({
@@ -309,8 +341,7 @@ function dispose(obj: THREE.Object3D) {
   if (claimed.delete(obj)) return;
   obj.traverse((o: any) => {
     if (o.geometry) releaseGeometry(o.geometry);
-    o.material?.map?.dispose();
-    o.material?.dispose();
+    if (o.material) releaseMaterial(o.material);
   });
 }
 
@@ -322,7 +353,7 @@ function syncObject(id: number, e: Entity | undefined, snap: boolean) {
     looks.delete(id);
     return;
   }
-  const look = JSON.stringify([e.mesh, e.label, e.look]);
+  const look = JSON.stringify([e.mesh, e.label, e.look, e.solid]);
   let obj = old;
   if (!obj || looks.get(id) !== look) {
     if (old) dispose(old);
@@ -399,10 +430,11 @@ function updateColliders(now: number) {
   }
 }
 
-type Tick = { reset?: true; set: Record<string, Entity>; unset: Record<string, string[]>; removed: number[]; events?: { from: string; name: string; data: any }[] };
+type Tick = { reset?: true; set: Record<string, Entity>; unset: Record<string, string[]>; removed: number[]; events?: { from: string; name: string; data: any }[]; makers?: Record<string, string> };
 
-function applyTick({ reset, set, unset, removed, events }: Tick) {
+function applyTick({ reset, set, unset, removed, events, makers: made }: Tick) {
   if (reset) for (const id of [...entities.keys()]) if (!(id in set)) removed.push(id);
+  for (const [id, mod] of Object.entries(made ?? {})) makers.set(Number(id), mod);
   for (const [key, changes] of Object.entries(set)) {
     const id = Number(key);
     const e = reset ? changes : Object.assign(entities.get(id) ?? {}, changes);
@@ -419,6 +451,7 @@ function applyTick({ reset, set, unset, removed, events }: Tick) {
   }
   for (const id of removed) {
     entities.delete(id);
+    makers.delete(id);
     syncObject(id, undefined, false);
     physics.update(id, undefined);
   }
@@ -2363,6 +2396,7 @@ setInterval(() => {
     geometriesByMod: topMade(made.geometries),
     texturesByMod: topMade(made.textures),
     ...sceneCost(),
+    solidWithoutModel: invisibleWalls(),
     entities: entities.size,
     pingMs: stats.ping,
     downloadKBps: r(stats.bytes / 1024 / ((now - reportedAt) / 1000)),
@@ -2386,6 +2420,13 @@ THREE.Object3D.prototype.add = function (...objects) {
   if (mod) for (const o of objects) o.userData.mod ??= mod;
   return add.apply(this, objects);
 };
+/** The solid entities drawn as wireframes because nothing else draws them, by the mod that made them. */
+function invisibleWalls() {
+  const byMod: Record<string, number> = {};
+  for (const obj of objects.values()) if (obj.userData.wall) byMod[obj.userData.wall] = (byMod[obj.userData.wall] ?? 0) + 1;
+  return { count: Object.values(byMod).reduce((a, b) => a + b, 0), byMod };
+}
+
 function sceneCost() {
   let sceneObjects = 0;
   const heavy: { mod: string; object: string; triangles: number; shadow: boolean }[] = [];

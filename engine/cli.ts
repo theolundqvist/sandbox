@@ -173,7 +173,7 @@ const tools = [
   },
   {
     name: "query_world",
-    description: "Read live entities that have all the given components, e.g. [\"player\", \"pos\"].",
+    description: "Read live entities that have all the given components, e.g. [\"player\", \"pos\"]. solidWithoutModel counts the solid entities nothing draws, by mod: players see them as orange wireframes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -443,7 +443,10 @@ export function createCli(ctx: CliContext) {
         const components: string[] = args.components ?? [];
         const query = () => {
           const found = [...ctx.sim.entities].filter(([, e]) => components.every((c) => c in e));
-          return JSON.stringify(Object.fromEntries(found.slice(0, args.limit ?? 50))) + `\n(${found.length} matching entities)`;
+          const games = Object.entries((ctx.perf() as { players: Record<string, { solidWithoutModel?: { count: number } }> }).players);
+          const [player, report] = games.find(([name]) => name === who) ?? games[0] ?? [];
+          const walls = report?.solidWithoutModel?.count ? `\nsolidWithoutModel: ${JSON.stringify(report.solidWithoutModel)} (solid entities nothing draws, orange wireframes in ${player}'s game)` : "";
+          return JSON.stringify(Object.fromEntries(found.slice(0, args.limit ?? 50))) + `\n(${found.length} matching entities)` + walls;
         };
         const first = query();
         const until = Date.now() + Math.min(Number(args.wait) || 0, 60) * 1000;

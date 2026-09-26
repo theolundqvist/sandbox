@@ -297,7 +297,7 @@ function visible(p: Player, id: number, e: Entity) {
   return true;
 }
 
-type Out = { reset?: true; set: Record<number, Entity>; unset: Record<number, string[]>; removed: number[]; events?: Omit<Event, "to">[] };
+type Out = { reset?: true; set: Record<number, Entity>; unset: Record<number, string[]>; removed: number[]; events?: Omit<Event, "to">[]; makers?: Record<number, string> };
 
 function stream(p: Player, d: Diff, full: boolean): Out {
   const out: Out = { set: {}, unset: {}, removed: [] };
@@ -312,6 +312,8 @@ function stream(p: Player, d: Diff, full: boolean): Out {
     } else if (!seen.has(id)) {
       seen.add(id);
       out.set[id] = e;
+      // A solid with nothing drawn shows as a wireframe named after the mod that made it.
+      if (e.solid && !e.mesh && creators.has(id)) (out.makers ??= {})[id] = creators.get(id)!;
     } else {
       if (d.set[id]) out.set[id] = d.set[id];
       if (d.unset[id]) out.unset[id] = d.unset[id];

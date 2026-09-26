@@ -820,6 +820,22 @@ export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(() => bla
     assert.match((await shot()).text, /^shooter doesn't have the game open.*query_world and logs/);
   });
 
+  test("a solid entity nothing draws shows as an orange wireframe named after its mod, and query_world counts it", async () => {
+    const key = await join("mason");
+    const content = `import type { ServerMod } from "../../api";
+export default {
+  load(world) {
+    for (const [id] of world.query("wallTest")) world.remove(id);
+    world.spawn({ wallTest: true, pos: [3, 1, 3], solid: { size: [2, 2, 0.4] } });
+    world.spawn({ wallTest: true, pos: [6, 1, 3], solid: true, mesh: { opacity: 0 } });
+  },
+} satisfies ServerMod;`;
+    await tool(key, "write_file", { path: "mods/masonry/server.ts", content });
+    assert.match(await tool(key, "reload", { mod: "masonry" }), /^masonry v1 is live/);
+    await until("the wall counted in the browser's game", async () => (await tool(key, "query_world", { components: ["wallTest"] })).includes(`solidWithoutModel: {"count":1,"byMod":{"masonry":1}}`));
+    assert.match(await tool(key, "query_world", { components: ["wallTest"] }), /\(2 matching entities\)/);
+  });
+
   test("joining draws the world before mods start and between slow ones, counts them in on Play, and names a slow one in the feed", async () => {
     const key = await join("slow");
     for (const mod of ["slowpoke", "sluggard"]) {
