@@ -487,6 +487,14 @@ function use(name: string) {
   return Object.fromEntries(Object.entries(target.mod.exports).map(([k, fn]) => [k, (...a: any[]) => fn.call(target.mod.exports, target.ctx, ...a)])) as any;
 }
 
+/** Materials disposed while a mod is swapped stay alive until the next frame is drawn, so the new version's identical materials reuse their compiled shaders instead of stalling that frame to compile them again. */
+let heldMaterials: THREE.Material[] | null = null;
+const disposeMaterial = THREE.Material.prototype.dispose;
+THREE.Material.prototype.dispose = function () {
+  if (heldMaterials) heldMaterials.push(this);
+  else disposeMaterial.call(this);
+};
+
 /** Mods load one at a time in the order the server sent them, so a slow import never lands an old version over a newer one. */
 let loading = Promise.resolve();
 const queue = (load: () => Promise<unknown>) => (loading = loading.then(load).then(() => {}, (e) => console.error(e)));
@@ -506,6 +514,7 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
     }
   }
   if (old) {
+    heldMaterials ??= [];
     call(old, "dispose");
     for (const el of old.owned) el.remove();
     if (panel?.mod === old) closePanel();
@@ -720,6 +729,11 @@ function connect() {
         );
         return;
       }
+      case "voice":
+        voiceAvailable = msg.on;
+        return showMic();
+      case "voice-failed":
+        return toast(hosting ? (msg.refused ? "ElevenLabs refused the voice key. Add it again in Settings." : "Voice didn't go through. Try again.") : "Voice didn't go through. Try again.", "error");
       case "public":
         publicUrl = msg.url;
         joinCode = msg.code;
@@ -729,17 +743,13 @@ function connect() {
         claudes.set(msg.name, { state: msg.state, task: msg.task });
         return showBuilders();
       case "tick":
-      case "voice":
-        voiceAvailable = msg.on;
-        return showMic();
-      case "voice-failed":
-        return toast(hosting ? (msg.refused ? "ElevenLabs refused the voice key. Add it again in Settings." : "Voice didn't go through. Try again.") : "Voice didn't go through. Try again.", "error");
         if (!replay) applyTick(msg);
         return;
       case "mod":
         if (msg.url) live.set(msg.name, msg.url);
         else live.delete(msg.name);
-        return !replay && queue(() => loadMod(msg.name, msg.url));
+        // Loads whichever build is live by the time its turn comes, so versions that arrive in quick succession load once.
+        return !replay && queue(() => loadMod(msg.name, live.get(msg.name) ?? null));
       case "shot":
         return send({ t: "shot", id: msg.id, data: await screenshot() });
       case "feed":
@@ -1891,16 +1901,6 @@ $("leave").onclick = () => {
   location.reload();
 };
 
-/** Master volume, remembered on this device. */
-function setVolume(percent: number) {
-  const v = Math.max(0, Math.min(100, Math.round(percent)));
-  audio.output.gain.value = v / 100;
-  $<HTMLInputElement>("volume").value = $<HTMLInputElement>("volume-exact").value = String(v);
-  try {
-    localStorage.setItem("sandbox-volume", String(v));
-  } catch {}
-}
-let savedVolume = 100;
 /** The host's ElevenLabs key, kept by their launcher and shown only by its last characters. */
 $("voice-field").hidden = !hosting;
 $<HTMLInputElement>("voice-key").placeholder = hosting?.voiceKey ?? "Paste your ElevenLabs key";
@@ -1914,6 +1914,16 @@ $("voice-key").onchange = async () => {
   toast(data.voiceKey ? "Voice is on" : "Voice is off");
 };
 
+/** Master volume, remembered on this device. */
+function setVolume(percent: number) {
+  const v = Math.max(0, Math.min(100, Math.round(percent)));
+  audio.output.gain.value = v / 100;
+  $<HTMLInputElement>("volume").value = $<HTMLInputElement>("volume-exact").value = String(v);
+  try {
+    localStorage.setItem("sandbox-volume", String(v));
+  } catch {}
+}
+let savedVolume = 100;
 try {
   savedVolume = Number(localStorage.getItem("sandbox-volume") ?? 100);
 } catch {}
@@ -2061,6 +2071,8 @@ renderer.setAnimationLoop(() => {
   const drawStart = performance.now();
   if (screen.scene !== false) draw(dt);
   view.position.sub(shakeOffset);
+  if (heldMaterials) for (const m of heldMaterials.splice(0)) disposeMaterial.call(m);
+  heldMaterials = null;
   stats.drawMs += performance.now() - drawStart;
   stats.loopMs += performance.now() - now;
   stats.calls += renderer.info.render.calls;
