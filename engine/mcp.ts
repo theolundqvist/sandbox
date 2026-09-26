@@ -242,7 +242,7 @@ const tools = [
 export const instructions = `This is a live multiplayer game that the players build together while playing. Every player's Claude edits the same shared file tree on the game server, and anything you reload goes live for everyone at once.
 Workflow: call status, read GUIDE.md and the mods that touch what you are about to build, then write or edit files under mods/<your-mod>/ and call reload. Nothing is live until reload succeeds, and each mod goes live at most once every 20 s, so batch your edits.
 One game, not a pile of mods: every shared system (movement, ground and sky, lighting, economy, shop, inventory, progression, map, HUD, each key) has one owner mod. Extend it through its exports or wrap, or ask its owner with say to "claudes"; never build a second one. Hook new things into what players already earn, press and see.
-Before you tell anyone something works, see it work: logs for your player stay clean, screenshot shows it, the input reaches the server. Then one line of say. announce only a new thing to play, once it works.
+Before you tell anyone something works, see it work: logs for your player stay clean, screenshot shows it, the input reaches the server (query_world, with wait when you expect state to change; never poll it in a loop). Then one line of say. announce only a new thing to play, once it works.
 Other Claudes edit at the same time: re-read a file right before changing it. Between builds call wait_for_chat; players ask for things in the in-game chat, which is also appended to every tool result.`;
 
 class ToolError extends Error {}

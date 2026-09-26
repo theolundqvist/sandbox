@@ -2035,15 +2035,22 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
 
 /** Single-quotes a shell argument, so prompts may contain apostrophes and world names anything. */
 const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
-/** Permissions off everywhere; only Claude Code can refuse to end a turn (the Stop hook), Codex and OMP keep listening on the prompt alone. */
+const KEEP_LISTENING = "Keep listening: call wait_for_chat and keep building for the whole session. Never end the turn.";
+/** Codex and Claude Code read a Stop hook that answers with this; OMP's session_stop hook returns it as extra context. */
+const STOP_HOOK = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: `echo ${shellQuote(JSON.stringify({ decision: "block", reason: KEEP_LISTENING }))}` }] }] } });
+const OMP_HOOK = `export default (pi) => { pi.on("session_stop", () => ({ continue: true, additionalContext: ${JSON.stringify(KEEP_LISTENING)} })); };`;
+/** Permissions off everywhere, and a hook in each harness that refuses to end the turn, so the agent keeps listening even when the model tries to stop. */
 const HARNESSES = {
-  claude: {
-    launch: (prompt: string) =>
-      `claude ${prompt} --dangerously-skip-permissions --settings ${shellQuote(JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: `echo ${shellQuote(JSON.stringify({ decision: "block", reason: "Keep listening: call wait_for_chat and keep building for the whole session. Never end the turn." }))}` }] }] } }))}`,
-    install: "curl -fsSL https://claude.ai/install.sh | bash",
+  claude: { launch: (prompt: string, dir: string) => `claude ${prompt} --dangerously-skip-permissions --settings ${shellQuote(STOP_HOOK)}`, install: "curl -fsSL https://claude.ai/install.sh | bash" },
+  codex: {
+    launch: (prompt: string, dir: string) =>
+      `mkdir -p ${dir}/.codex && printf %s ${shellQuote(STOP_HOOK)} > ${dir}/.codex/hooks.json && codex -C ${dir} --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${prompt}`,
+    install: "npm i -g @openai/codex",
   },
-  codex: { launch: (prompt: string) => `codex --dangerously-bypass-approvals-and-sandbox ${prompt}`, install: "npm i -g @openai/codex" },
-  omp: { launch: (prompt: string) => `omp --approval-mode=yolo ${prompt}`, install: "curl -fsSL https://omp.sh/install | sh" },
+  omp: {
+    launch: (prompt: string, dir: string) => `mkdir -p ${dir} && printf %s ${shellQuote(OMP_HOOK)} > ${dir}/hook.js && omp --approval-mode=yolo --hook ${dir}/hook.js ${prompt}`,
+    install: "curl -fsSL https://omp.sh/install | sh",
+  },
 };
 type Harness = keyof typeof HARNESSES;
 let harness: Harness = "claude";
@@ -2056,7 +2063,7 @@ const connectCommand = (prompt: (tools: string) => string) => {
   const base = publicUrl ?? origin;
   const bin = `~/.local/bin/${slug(world)}`;
   const tools = `the ${bin} command: run it alone to list its tools, call one as ${bin} <tool> name=value, and give wait_for_chat calls a shell timeout of at least 300 seconds`;
-  return `mkdir -p ~/.local/bin && curl -fsS -H ${shellQuote(`Authorization: Bearer ${key}`)} ${shellQuote(`${base}/cli?name=${slug(world)}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin} && ${HARNESSES[harness].launch(shellQuote(prompt(tools)))}`;
+  return `mkdir -p ~/.local/bin && curl -fsS -H ${shellQuote(`Authorization: Bearer ${key}`)} ${shellQuote(`${base}/cli?name=${slug(world)}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin} && ${HARNESSES[harness].launch(shellQuote(prompt(tools)), `~/.local/share/sandbox/${slug(world)}`)}`;
 };
 for (const button of document.querySelectorAll<HTMLButtonElement>("[data-harness]")) {
   button.classList.toggle("active", button.dataset.harness === harness);
