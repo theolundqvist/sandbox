@@ -44,6 +44,7 @@
     <h1 id="world-name"></h1>
     <div class="items">
       <button class="item" id="world-play"></button>
+      <button class="item" id="world-timelapse">Timelapse</button>
       <button class="item" id="world-rewind" data-to="rewind">Rewind</button>
       <button class="item" id="world-settings" data-to="configure">Settings</button>
       <button class="item" id="world-stop">Stop</button>
@@ -262,6 +263,14 @@
   }
   $("go-play").onclick = () => play(state);
   $("world-play").onclick = () => hostWorld(selected);
+  /** The timelapse plays from the world's own server, so a world that isn't running is hosted first. */
+  $("world-timelapse").onclick = async () => {
+    if (state.running && state.running.id !== selected && !(await ask(`Stop ${state.running.name}?`, "Stop and watch"))) return;
+    await attempt(async () => {
+      const s = state.running?.id === selected ? state : await api("host", { id: selected });
+      location.assign(`/#watch=${s.running.hostKey}`);
+    });
+  };
   $("world-stop").onclick = async () => (await ask(`Stop ${state.running.name}?`, "Stop")) && attempt(() => api("stop", {}));
   $("world-delete").onclick = async () => {
     const w = state.worlds.find((x) => x.id === selected);

@@ -260,12 +260,12 @@ const inWorker = <T>(msg: object) =>
   });
 /** Viewers opening the timelapse within a few seconds of each other share one build. */
 let built: { at: number; ticks: Promise<Tick[]> } | null = null;
-async function timelapseFor(who: string) {
+async function timelapseFor(who: string | null) {
   if (!built || Date.now() - built.at > 10_000) {
     const live = Object.fromEntries([...mods.running].map(([name, m]) => [name, m.build.client]));
     built = { at: Date.now(), ticks: inWorker<{ ticks: Tick[] }>({ t: "build", path: join(DATA, "world.sqlite"), limit: 900, older: olderReloads(), builds: BUILD, live }).then((r) => r.ticks) };
   }
-  const seen = await sim.visibleTo(who, await built.ticks);
+  const seen = who ? await sim.visibleTo(who, await built.ticks) : await built.ticks;
   return (await inWorker<{ gz: Uint8Array<ArrayBuffer> }>({ t: "encode", ticks: seen })).gz;
 }
 for (const signal of ["SIGINT", "SIGTERM"] as const)
@@ -461,12 +461,14 @@ const server = Bun.serve<Conn>({
       }
     }
     if (path === "/api/timelapse") {
-      const who = nameByKey(bearer(req));
-      if (!who) return new Response(null, { status: 401 });
+      // The host watches from the main menu without joining, and sees everything.
+      const host = bearer(req) === config.hostKey;
+      const who = host ? null : (nameByKey(bearer(req)) ?? null);
+      if (!host && !who) return new Response(null, { status: 401 });
       try {
         const started = performance.now();
         const body = await timelapseFor(who);
-        record.add("action", who, { what: "timelapse", ms: Math.round(performance.now() - started), bytes: body.length });
+        record.add("action", who ?? "host", { what: "timelapse", ms: Math.round(performance.now() - started), bytes: body.length });
         return new Response(body, { headers: { "content-type": "application/json", "content-encoding": "gzip" } });
       } catch (e: any) {
         built = null;

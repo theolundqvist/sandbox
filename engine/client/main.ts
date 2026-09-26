@@ -11,7 +11,10 @@ const hashParams = new URLSearchParams(location.hash.slice(1));
 const origin = location.origin + (location.pathname.match(/^\/r\/[a-z0-9-]+/)?.[0] ?? "");
 const info = await (await fetch("/api/info")).json();
 const keyName = `sandbox-key:${info.id}`;
-let key = hashParams.get("key") ?? localStorage.getItem(keyName);
+/** The host watching the timelapse from the main menu, without joining: their world's host key. */
+const watching = hashParams.get("watch");
+if (watching) history.replaceState(null, "", "/");
+let key = watching ?? hashParams.get("key") ?? localStorage.getItem(keyName);
 let me = "";
 let world = "";
 let invite = "";
@@ -842,24 +845,28 @@ const trails = new Map<string, { id: number; tag: THREE.Sprite; dots: THREE.Poin
 let marks: THREE.Points | null = null;
 const TRAIL = 16;
 
-$("timelapse").onclick = async () => {
-  const button = $<HTMLButtonElement>("timelapse");
-  button.disabled = true;
-  button.textContent = "Loading…";
+/** Loads and plays the timelapse; says why when it can't. */
+async function playTimelapse() {
   try {
     const res = await fetch("/api/timelapse", { headers: { authorization: `Bearer ${key}` } });
     if (!res.ok) return toast(`The timelapse didn't load: the server answered ${res.status}. Try again in a moment.`, "error");
     const frames: Moment[] = await res.json();
     if (frames.length < 2) return toast("Nothing to replay yet: the world records a moment every two seconds, so come back in a minute.");
     startReplay(frames);
+    return true;
   } catch (e: any) {
     console.error(e);
     return toast(e instanceof TypeError ? "The timelapse didn't load: the server can't be reached. Try again in a moment." : "The timelapse couldn't be played. Try again in a moment.", "error");
-  } finally {
-    button.disabled = false;
-    button.textContent = "Timelapse";
   }
-  menu.hidden = true;
+}
+$("timelapse").onclick = async () => {
+  const button = $<HTMLButtonElement>("timelapse");
+  button.disabled = true;
+  button.textContent = "Loading…";
+  const played = await playTimelapse();
+  button.disabled = false;
+  button.textContent = "Timelapse";
+  if (played) menu.hidden = true;
 };
 
 function startReplay(frames: Moment[]) {
@@ -904,6 +911,7 @@ function startReplay(frames: Moment[]) {
 function leaveReplay() {
   const r = replay;
   if (!r) return;
+  if (watching) return location.assign("/menu");
   replay = null;
   director.shot = null;
   replayKeys.clear();
@@ -2036,10 +2044,16 @@ addEventListener("unhandledrejection", (e: PromiseRejectionEvent) => {
   if (mod && ++forwarded <= 30) send({ t: "error", mod, text: `unhandled rejection: ${e.reason?.stack ?? e.reason}` });
 });
 
-await start();
-$("app-row").hidden = !appWanted;
-$("app-command").textContent = appCommand(`${origin}/#key=${key}`);
-$("hud").hidden = false;
-$("howto-world").textContent = info.name;
-howto.hidden = false;
-connect();
+if (watching) {
+  $("hud").hidden = false;
+  $("status").hidden = true;
+  if (!(await playTimelapse())) setTimeout(() => location.assign("/menu"), 4000);
+} else {
+  await start();
+  $("app-row").hidden = !appWanted;
+  $("app-command").textContent = appCommand(`${origin}/#key=${key}`);
+  $("hud").hidden = false;
+  $("howto-world").textContent = info.name;
+  howto.hidden = false;
+  connect();
+}
