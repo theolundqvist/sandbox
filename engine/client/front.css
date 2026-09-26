@@ -6,7 +6,7 @@
 .backdrop { position: fixed; inset: 0; background: #101113 center / cover no-repeat; overflow: hidden; }
 .backdrop video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 1.2s ease; }
 .backdrop video.on { opacity: 1; }
-.backdrop::after { content: ""; position: absolute; inset: 0; background: var(--shade); }
+.backdrop::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(7,8,10,.5), transparent 55%), var(--shade); }
 
 .logo { display: block; height: 72px; width: auto; aspect-ratio: 41 / 5; align-self: flex-start; }
 .logo rect { fill: var(--text); }
