@@ -1845,6 +1845,7 @@ function showMic() {
   $("mic").textContent = !voiceAvailable ? (hosting ? "Turn on voice" : `Voice off: ask ${voiceHost ?? "the host"} to turn it on`) : listening ? "Mic on" : talking ? "Talking" : "Hold T to talk";
   $("mic").dataset.state = !voiceAvailable ? (hosting ? "setup" : "none") : listening || talking ? "on" : "off";
   $("open-mic-field").hidden = !voiceAvailable;
+  for (const row of [...document.querySelectorAll<HTMLElement>(".talk-key"), ...uiRoot.querySelectorAll<HTMLElement>(".talk-key")]) row.hidden = !voiceAvailable;
 }
 $("mic").onclick = () => {
   if (voiceAvailable || !hosting) return;

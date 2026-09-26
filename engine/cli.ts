@@ -546,7 +546,7 @@ export function createCli(ctx: CliContext) {
     const lost = cursor !== undefined && cursor < oldest - 1 ? `(${oldest - 1 - cursor} older lines are no longer kept)\n` : "";
     const lines = unseen.map((c) => `${c.claudes ? "[claudes] " : ""}${c.from}${c.spoken ? " (said aloud)" : ""}: ${c.text}`);
     chatSeen.set(who, ctx.chatLog.at(-1)?.seq ?? 0);
-    const spoken = unseen.some((c) => c.spoken) ? "\n(said aloud) lines are what a player said into their microphone (hold T or open chat): often talk between players, not orders. See GUIDE.md, Listening to players." : "";
+    const spoken = unseen.some((c) => c.spoken) ? "\n(said aloud) lines are what a player said into their microphone (hold T, open chat, or leave the always-on mic on): often talk between players, not orders. See GUIDE.md, Listening to players." : "";
     return lines.length ? [`In-game chat since your last look, oldest first:\n${lost}${lines.join("\n")}${spoken}`] : [];
   }
 
