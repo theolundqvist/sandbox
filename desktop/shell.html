@@ -57,6 +57,7 @@
   #invite { font: inherit; font-size: 15px; letter-spacing: .06em; text-transform: none; font-weight: 400; color: var(--ink); background: none; border: 0; border-bottom: 1px solid #3a3a3f; padding: 6px 0 8px; outline: none; width: 100%; user-select: text; }
   #invite:focus { border-bottom-color: var(--accent); }
   #invite::placeholder { color: #55534e; }
+  #down { margin: -28px 0 28px 52px; font-size: 15px; letter-spacing: .06em; color: var(--bad); }
   #error { font-size: 13px; letter-spacing: .08em; text-transform: none; font-weight: 400; color: var(--bad); min-height: 16px; }
 
   aside { align-self: center; max-width: 560px; }
@@ -84,7 +85,9 @@
   <section>
     <h1><span class="mark"></span>Sandbox</h1>
     <p class="tag">Live multiplayer game builder</p>
+    <p id="down" hidden></p>
     <nav id="nav">
+      <button class="item" id="retry" hidden>Retry <small></small></button>
       <label class="item join">
         <span>Join with invite</span>
         <input id="invite" spellcheck="false" autocomplete="off" placeholder="Paste the link your host sent">
@@ -120,6 +123,7 @@
 
   async function open(url) {
     $("error").textContent = "";
+    $("down").hidden = $("retry").hidden = true;
     const error = await shell.open(url);
     if (error) $("error").textContent = error;
   }
@@ -128,7 +132,7 @@
     const s = await shell.state();
     if (s.copied && !invite.value) invite.value = s.copied;
     const last = s.recents[0];
-    $("continue").hidden = !last;
+    $("continue").hidden = !last || !$("retry").hidden;
     if (last) {
       $("continue").querySelector("small").textContent = last.name;
       $("continue").onclick = () => open(last.url);
@@ -158,7 +162,7 @@
 
   addEventListener("keydown", (e) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    const items = [invite, ...document.querySelectorAll("nav button:not([hidden]), .row")];
+    const items = [...document.querySelectorAll("nav :is(button, input):not([hidden]), .row")];
     const at = items.indexOf(document.activeElement);
     items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
     e.preventDefault();
@@ -173,7 +177,13 @@
       invite.focus();
     }
   });
-  shell.on("error", (text) => ($("error").textContent = text));
+  shell.on("down", ({ url, text }) => {
+    $("down").textContent = text;
+    $("retry").querySelector("small").textContent = new URL(url).host;
+    $("retry").onclick = () => open(url);
+    $("down").hidden = $("retry").hidden = false;
+    $("retry").focus();
+  });
   refresh();
   invite.focus();
 </script>

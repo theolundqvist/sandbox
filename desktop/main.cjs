@@ -12,7 +12,10 @@ const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write
 const linkIn = (argv) => argv.slice(1).find((a) => /^https?:\/\//.test(a));
 
 // A second copy can't open the saved logins, so it hands its link over to the first.
-if (!app.requestSingleInstanceLock()) app.exit();
+if (!app.requestSingleInstanceLock()) {
+  console.log("Sandbox is already open");
+  app.exit();
+}
 app.on("second-instance", (_event, argv) => {
   if (win.isMinimized()) win.restore();
   win.focus();
@@ -78,7 +81,16 @@ function play(raw) {
   if (!/^https?:$/.test(url.protocol)) return "Paste the http:// or https:// link your host sent.";
   leave();
   const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
+  view.setBackgroundColor("#0b0b0c");
   game = { view, name: url.host };
+  const fail = (reason) => {
+    if (game?.view !== view) return;
+    console.log(`Couldn't reach ${url.href}: ${reason}`);
+    leave();
+    shell.webContents.send("down", { url: url.href, text: `Couldn't reach ${url.host}. Is the world running?` });
+  };
+  // A host that drops packets never answers; don't leave a blank window for the minute Chromium waits.
+  const timer = setTimeout(() => fail("no answer"), 15000);
   const wc = view.webContents;
   // Lets the web client skip its "get the desktop app" offer.
   wc.setUserAgent(`${wc.getUserAgent()} SandboxDesktop`);
@@ -89,14 +101,14 @@ function play(raw) {
   wc.on("will-redirect", stayHome);
   wc.setWindowOpenHandler(() => ({ action: "deny" }));
   wc.on("before-input-event", keys);
-  wc.on("did-navigate", (_, to) => {
+  wc.on("did-navigate", (_, to, status) => {
+    clearTimeout(timer);
+    if (status >= 400) return fail(`HTTP ${status}`);
     const u = new URL(to);
     if (u.pathname !== "/menu") void remember(worldBase(u));
   });
   wc.on("did-fail-load", (_, code, description, _url, mainFrame) => {
-    if (!mainFrame || code === -3 || game?.view !== view) return;
-    leave();
-    shell.webContents.send("error", `Couldn't reach ${url.host} (${description}). Is the world running?`);
+    if (mainFrame && code !== -3) fail(description);
   });
   win.contentView.addChildView(view);
   layout();
@@ -145,8 +157,11 @@ function createWindow() {
   shell.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.contentView.addChildView(shell);
   void shell.webContents.loadFile(join(__dirname, "shell.html"));
-  const link = linkIn(process.argv);
-  if (link) shell.webContents.once("did-finish-load", () => play(link));
+  // Straight back into the last world, or the one hosted on this computer.
+  shell.webContents.once("did-finish-load", () => {
+    play(linkIn(process.argv) ?? state.recents[0]?.url ?? LOCAL);
+    console.log("Sandbox is open");
+  });
   layout();
   win.contentView.on("bounds-changed", layout);
   for (const change of ["enter-full-screen", "leave-full-screen"])

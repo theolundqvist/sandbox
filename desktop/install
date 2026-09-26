@@ -3,32 +3,101 @@
 #   curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '<invite link>'
 set -euo pipefail
 
-dir="${SANDBOX_APP_DIR:-$HOME/.sandbox-app}"
-repo="${SANDBOX_REPO:-https://github.com/theolundqvist/sandbox.git}"
+release="${SANDBOX_RELEASE:-https://github.com/theolundqvist/sandbox/releases/latest/download}"
 bin="$HOME/.local/bin"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
 
-if ! command -v bun >/dev/null; then
-  curl -fsSL https://bun.sh/install | bash
-  export PATH="$HOME/.bun/bin:$PATH"
-fi
+fetch() {
+  echo "Downloading $1"
+  curl -fL --progress-bar -o "$tmp/$1" "$release/$1"
+}
 
-if [ -d "$dir/.git" ]; then
-  git -C "$dir" pull --ff-only --quiet
-else
-  git clone --depth 1 --quiet "$repo" "$dir"
+case "$(uname -s)" in
+  Darwin)
+    arch=x64
+    [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ] && arch=arm64
+    fetch "Sandbox-mac-$arch.zip"
+    ditto -x -k "$tmp/Sandbox-mac-$arch.zip" "$tmp"
+    # Unsigned: a download from curl carries no quarantine, but strip it in case, so Gatekeeper doesn't block the first launch.
+    xattr -dr com.apple.quarantine "$tmp/Sandbox.app" 2>/dev/null || true
+    apps=/Applications
+    [ -w "$apps" ] || apps="$HOME/Applications"
+    mkdir -p "$apps"
+    osascript -e 'if application id "com.theolundqvist.sandbox" is running then tell application id "com.theolundqvist.sandbox" to quit' >/dev/null 2>&1 || true
+    while pgrep -x Sandbox >/dev/null; do sleep 0.5; done
+    rm -rf "$apps/Sandbox.app"
+    mv "$tmp/Sandbox.app" "$apps/Sandbox.app"
+    echo "Installed to $apps/Sandbox.app"
+    log="$HOME/Library/Logs/Sandbox.log"
+    launch="open -n -a \"$apps/Sandbox.app\" --stdout \"$log\" --stderr \"$log\" --args \"\$@\""
+    ;;
+  Linux)
+    [ "$(uname -m)" = x86_64 ] || { echo "Sandbox is built for x86_64 Linux only, not $(uname -m)." >&2; exit 1; }
+    fetch Sandbox-linux-x86_64.AppImage
+    # Unpacked once here, so it runs without FUSE 2, which newer distributions leave out.
+    chmod +x "$tmp/Sandbox-linux-x86_64.AppImage"
+    (cd "$tmp" && ./Sandbox-linux-x86_64.AppImage --appimage-extract >/dev/null)
+    app="$HOME/.local/share/sandbox"
+    mkdir -p "$HOME/.local/share/applications"
+    rm -rf "$app"
+    mv "$tmp/squashfs-root" "$app"
+    cat >"$HOME/.local/share/applications/sandbox.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Sandbox
+Comment=Live multiplayer game builder
+Exec=$bin/sandbox %U
+Icon=$app/sandbox.png
+StartupWMClass=sandbox
+Categories=Game;
+EOF
+    echo "Installed to $app"
+    log="$app/app.log"
+    launch="nohup \"$app/sandbox\" \"\$@\" >>\"$log\" 2>&1 &"
+    ;;
+  *)
+    echo "Sandbox runs on macOS and Linux (on Windows, through WSL)." >&2
+    exit 1
+    ;;
+esac
+
+# The first desktop installer ran the app from a git clone in ~/.sandbox-app; that copy holds the app lock until it quits.
+old="$HOME/.sandbox-app"
+if [ -d "$old/desktop" ]; then
+  if pgrep -f "$old/desktop/node_modules/electron" >/dev/null; then
+    echo "Quit the old Sandbox window to continue."
+    while pgrep -f "$old/desktop/node_modules/electron" >/dev/null; do sleep 1; done
+  fi
+  rm -rf "$old"
+  echo "Removed the old install in $old"
 fi
-bun install --cwd "$dir/desktop" --frozen-lockfile
-# Electron fetches its own binary on first run; do it now so the first launch isn't a silent download.
-bun "$dir/desktop/node_modules/electron/install.js"
 
 mkdir -p "$bin"
-cat > "$bin/sandbox" <<EOF
+cat >"$bin/sandbox" <<EOF
 #!/usr/bin/env bash
 # Opens the Sandbox desktop app, with an optional invite link. Update with: curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash
-cd "$dir/desktop" && nohup "$(command -v bun)" run start "\$@" >"$dir/app.log" 2>&1 &
+$launch
 EOF
 chmod +x "$bin/sandbox"
 
+touch "$log"
+seen=$(wc -c <"$log")
 "$bin/sandbox" "$@"
-echo "Sandbox is opening. Next time, run: sandbox"
-case ":$PATH:" in *":$bin:"*) ;; *) echo "(Add $bin to your PATH first, or run $bin/sandbox.)" ;; esac
+for _ in $(seq 80); do
+  said=$(tail -c +$((seen + 1)) "$log")
+  if grep -q "Sandbox is open" <<<"$said"; then
+    echo "Sandbox is open. Next time, run: sandbox"
+    case ":$PATH:" in *":$bin:"*) ;; *) echo "(Add $bin to your PATH first, or run $bin/sandbox.)" ;; esac
+    exit 0
+  fi
+  if grep -q "Sandbox is already open" <<<"$said"; then
+    echo "Sandbox was already open; quit it and run sandbox to use this version."
+    exit 0
+  fi
+  grep -qE "FATAL|A JavaScript error occurred" <<<"$said" && break
+  sleep 0.25
+done
+echo "Sandbox didn't open. The end of $log:" >&2
+tail -c +$((seen + 1)) "$log" | tail -n 20 >&2
+exit 1

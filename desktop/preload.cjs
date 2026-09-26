@@ -7,5 +7,5 @@ contextBridge.exposeInMainWorld("shell", {
   open: (url) => ipcRenderer.invoke("open", url),
   leave: () => ipcRenderer.send("leave"),
   quit: () => ipcRenderer.send("quit"),
-  on: (channel, fn) => ["mode", "error"].includes(channel) && ipcRenderer.on(channel, (_, value) => fn(value)),
+  on: (channel, fn) => ["mode", "down"].includes(channel) && ipcRenderer.on(channel, (_, value) => fn(value)),
 });
