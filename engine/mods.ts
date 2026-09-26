@@ -16,6 +16,8 @@ export type ModEvents = {
 };
 
 const MOD_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+/** Every accepted reload swaps the mod in every player's game, so one mod goes live at most once per this many ms. */
+export const RELOAD_GAP_MS = 20_000;
 const KEY_CODE = /(?:[=!]==?\s*|\.has\(\s*|case\s+)["'`](Key[A-Z]|Digit[0-9]|F[0-9]{1,2}|Arrow(?:Up|Down|Left|Right)|Tab|Enter|Escape|Backquote|Backspace|CapsLock|Minus|Equal|Bracket(?:Left|Right)|Semicolon|Quote|Comma|Period|Slash|Backslash|Numpad\w+|(?:Control|Alt|Meta)(?:Left|Right)|Space|Shift(?:Left|Right)?)["'`]/g;
 const MENU_TAB = /menuTab\(\s*["'`]([^"'`]+)["'`]/g;
 /** Keys the engine itself handles. */
@@ -28,6 +30,7 @@ export const hasGit = (() => {
   if (process.platform === "darwin" && git === "/usr/bin/git") return Bun.spawnSync(["xcode-select", "-p"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
   return !!git;
 })();
+const sameFile = (a: string, b: string) => existsSync(a) && existsSync(b) && readFileSync(a).equals(readFileSync(b));
 // Run by bun itself: its script asks for node, which players may not have.
 const TSC = join(import.meta.dir, "../node_modules/typescript/bin/tsc");
 
@@ -49,6 +52,8 @@ export class Mods {
   running = new Map<string, Mod>();
   private nextId = 1;
   private queue: Promise<unknown> = Promise.resolve();
+  private waiting = new Map<string, { who: string; author: string; force: boolean; run: Promise<{ ok: boolean; report: string }> }>();
+  private wentLive = new Map<string, number>();
   sim!: SimHost;
   private awaitingKeys = new Map<string, () => void>();
 
@@ -87,10 +92,21 @@ export class Mods {
     writeFileSync(this.statePath, JSON.stringify(Object.fromEntries(this.running), null, 2));
   }
 
+  /** A reload of a mod that is still waiting its turn replaces the waiting one, and both callers get its result. */
   reload(name: string, who: string, author: string, force = false) {
-    const run = this.queue.then(() => this.doReload(name, who, author, force));
-    this.queue = run.catch(() => {});
-    return run;
+    const waiting = this.waiting.get(name);
+    if (waiting) {
+      Object.assign(waiting, { who, author, force });
+      return waiting.run;
+    }
+    const next = { who, author, force, run: null as unknown as Promise<{ ok: boolean; report: string }> };
+    next.run = this.queue.then(() => {
+      this.waiting.delete(name);
+      return this.doReload(name, next.who, next.author, next.force);
+    });
+    this.waiting.set(name, next);
+    this.queue = next.run.catch(() => {});
+    return next.run;
   }
 
   private async doReload(name: string, who: string, author: string, force: boolean): Promise<{ ok: boolean; report: string }> {
@@ -116,6 +132,15 @@ export class Mods {
       return { ok: true, report: `Unloaded ${name} for everyone.` };
     }
 
+    const wait = Math.ceil(((this.wentLive.get(name) ?? -Infinity) + RELOAD_GAP_MS - Date.now()) / 1000);
+    if (wait > 0) {
+      this.events.record("reload", who, { mod: name, ok: false, stage: "rate", wait });
+      return {
+        ok: false,
+        report: `Nothing changed: ${name} went live ${RELOAD_GAP_MS / 1000 - wait} s ago, and each mod goes live at most once every ${RELOAD_GAP_MS / 1000} s because every reload swaps it in every player's game. Reload again in ${wait} s, with any further edits batched into that one reload.`,
+      };
+    }
+
     const started = performance.now();
     const ms: Record<string, number> = {};
     let mark = started;
@@ -139,6 +164,8 @@ export class Mods {
     lap("typecheck");
     const build = await this.build(name);
     if (typeof build === "string") return reject("build", `Build failed, nothing changed:\n${build}`);
+    // Players' games keep the client they have when this change leaves it byte for byte the same.
+    if (build.client && current?.build.client && sameFile(join(this.buildDir, build.client.slice("/build/".length)), join(this.buildDir, current.build.client.slice("/build/".length)))) build.client = current.build.client;
     lap("build");
 
     const id = current?.id ?? this.nextId++;
@@ -151,9 +178,10 @@ export class Mods {
     const version = (current?.version ?? 0) + 1;
     this.running.set(name, { id, author: current?.author ?? author, version, build, previous: current ? [...current.previous, current.build].slice(-5) : [], keys: current?.keys });
     this.save();
+    this.wentLive.set(name, Date.now());
     const loadError = await this.sim.apply({ name, id, server: build.server });
     lap("apply");
-    if (this.events.client(name, build.client) && build.client) await Promise.race([new Promise<void>((r) => this.awaitingKeys.set(name, r)), Bun.sleep(3000)]);
+    if (build.client !== current?.build.client && this.events.client(name, build.client) && build.client) await Promise.race([new Promise<void>((r) => this.awaitingKeys.set(name, r)), Bun.sleep(3000)]);
     this.awaitingKeys.delete(name);
     lap("keys");
     await this.commit(name, `${name} v${version}`, who);
