@@ -60,6 +60,30 @@ function dumpDb(path: string, mentions: (v: unknown) => boolean) {
   }
 }
 
+/** A game's card as it travels: only its own fields, credited to whoever publishes or installs it, since createdBy names a player. Its title and tagline go as written, like mod code: dropping a card would strand the mods that name its game. */
+const CARD = ["id", "title", "tagline", "color", "accent", "status", "order", "spawn", "art", "createdAt"];
+function cards(games: Record<string, Record<string, unknown>>, by: string) {
+  const valid = Object.entries(games).filter(([id, g]) => MOD_NAME.test(id) && g?.id === id);
+  return Object.fromEntries(valid.map(([id, g]) => [id, { ...Object.fromEntries(CARD.filter((k) => g[k] !== undefined).map((k) => [k, g[k]])), createdBy: by }]));
+}
+
+/** A game's entities as its process last saved them, read-only since that process may hold the save open. */
+function readSave(path: string): { nextId: number; entities: Record<string, Entity> } | null {
+  if (!existsSync(path)) return null;
+  const db = new Database(path, { readonly: true });
+  try {
+    db.run("pragma busy_timeout = 5000");
+    return db.transaction(() => {
+      const meta = db.query("select next_id, entities from world").get() as { next_id: number; entities: string | null } | null;
+      if (!meta) return null;
+      const rows = meta.entities ? null : (db.query("select id, data from entity").all() as { id: number; data: string }[]);
+      return { nextId: meta.next_id, entities: rows ? Object.fromEntries(rows.map((r) => [r.id, JSON.parse(r.data)])) : JSON.parse(meta.entities!) };
+    })();
+  } finally {
+    db.close();
+  }
+}
+
 /** What a new host needs to play this world, from an allowlist; anything that mentions a player is theirs and stays home. */
 export function exportWorld(world: { data: string; entities: Iterable<[number, Entity]>; nextId: number }, handle: string, description: string): Files {
   if (!HANDLE.test(handle)) throw new Error("handle must be a GitHub user name: letters, digits and dashes.");
@@ -68,7 +92,10 @@ export function exportWorld(world: { data: string; entities: Iterable<[number, E
   const keys: Record<string, string> = readJson(join(data, "keys.json"));
   const owners: Record<string, string> = readJson(join(data, "owners.json"));
   const live: Record<string, { author: string }> = readJson(join(data, "mods.json"));
-  const names = [...new Set([config.host ?? "", ...Object.values(keys), ...Object.values(owners), ...Object.values(live).map((m) => m.author)])].filter((n) => n && n !== "world");
+  const games: Record<string, Record<string, unknown>> = readJson(join(data, "games.json"));
+  // seats.json never leaves: it is a list of players. Its names still keep them out of everything that does.
+  const seated = Object.keys(readJson(join(data, "seats.json")));
+  const names = [...new Set([config.host ?? "", ...Object.values(keys), ...Object.values(owners), ...Object.values(live).map((m) => m.author), ...seated, ...Object.values(games).map((g) => String(g?.createdBy ?? ""))])].filter((n) => n && n !== "world");
   const mentions = mentioner(names);
   const mods = Object.keys(live).filter((m) => MOD_NAME.test(m) && existsSync(join(data, "world/mods", m)));
 
@@ -85,6 +112,12 @@ export function exportWorld(world: { data: string; entities: Iterable<[number, E
   }
   const entities = Object.fromEntries([...world.entities].filter(([, e]) => !mentions(e)));
   files["state/entities.json"] = JSON.stringify({ nextId: world.nextId, entities });
+  const published = cards(games, handle);
+  if (Object.keys(published).length) files["games.json"] = JSON.stringify(published, null, 2) + "\n";
+  for (const id of Object.keys(published)) {
+    const save = readSave(join(data, "games", id, "world.sqlite"));
+    if (save) files[`state/games/${id}/entities.json`] = JSON.stringify({ nextId: save.nextId, entities: Object.fromEntries(Object.entries(save.entities).filter(([, e]) => !mentions(e))) });
+  }
   const about = readJson(join(data, "about.json"));
   files["state/about.json"] = JSON.stringify(Object.fromEntries(Object.entries(about).filter(([mod, a]) => mods.includes(mod) && !mentions(a))), null, 2) + "\n";
   for (const mod of mods) if (existsSync(join(data, "db", `${mod}.sqlite`))) files[`state/db/${mod}.sql`] = dumpDb(join(data, "db", `${mod}.sqlite`), mentions);
@@ -101,7 +134,7 @@ export function exportWorld(world: { data: string; entities: Iterable<[number, E
   return files;
 }
 
-const SAFE_PATH = /^(mods\/[a-z][a-z0-9-]{0,31}\/([\w.@ -]+\/)*[\w.@ -]+|state\/(entities|about)\.json|state\/db\/[a-z][a-z0-9-]{0,31}\.sql|world\.json|cover\.jpg|package\.json|bun\.lock)$/;
+const SAFE_PATH = /^(mods\/[a-z][a-z0-9-]{0,31}\/([\w.@ -]+\/)*[\w.@ -]+|state\/(entities|about)\.json|state\/games\/[a-z][a-z0-9-]{0,31}\/entities\.json|games\.json|state\/db\/[a-z][a-z0-9-]{0,31}\.sql|world\.json|cover\.jpg|package\.json|bun\.lock)$/;
 const MAX_BYTES = 200 << 20;
 
 /** A world's files from a GitHub tarball, without the folder GitHub wraps them in. */
@@ -149,6 +182,14 @@ export async function importWorld(files: Map<string, Blob>, dir: string, fresh: 
   }
   const state = await files.get("state/entities.json")?.json();
   if (state) seedStore(join(dir, "world.sqlite"), Number(state.nextId) || 1, state.entities ?? {});
+  const games = cards((await files.get("games.json")?.json().catch(() => null)) ?? {}, author);
+  if (Object.keys(games).length) writeFileSync(join(dir, "games.json"), JSON.stringify(games, null, 2));
+  for (const id of Object.keys(games)) {
+    const save = await files.get(`state/games/${id}/entities.json`)?.json();
+    if (!save) continue;
+    mkdirSync(join(dir, "games", id), { recursive: true });
+    seedStore(join(dir, "games", id, "world.sqlite"), Number(save.nextId) || 1, save.entities ?? {});
+  }
   const cover = files.get("cover.jpg");
   if (cover) writeFileSync(join(dir, "cover.jpg"), await cover.bytes());
   writeFileSync(join(dir, "about.json"), (await files.get("state/about.json")?.text()) ?? "{}");

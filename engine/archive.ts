@@ -7,12 +7,15 @@ import { unzipSync, zipSync, type Zippable } from "fflate";
 
 declare var self: Worker;
 
-/** Everything that defines a game. keys.json, the players' signing keys, never leaves, and config.json leaves without its invite and host key. */
-const FILES = new Set(["config.json", "owners.json", "seeded.json", "about.json", "mods.json", "world.sqlite", "record.sqlite", "cover.jpg"]);
+/** Everything that defines a world. keys.json, the players' signing keys, never leaves, and config.json leaves without its invite and host key. */
+const FILES = new Set(["config.json", "owners.json", "seeded.json", "about.json", "mods.json", "games.json", "seats.json", "world.sqlite", "record.sqlite", "cover.jpg"]);
 const DIRS = new Set(["world", "db", "build"]);
 /** Packages come back with bun install, SQLite's side files are folded into each database's copy, and a lock in .git is a commit caught halfway. */
 const SKIP = /(^|\/)node_modules(\/|$)|\.sqlite-(wal|shm|journal)$|\/\.git\/.*\.lock$/;
 const DATABASE = /^(db\/)?[^/]+\.sqlite$/;
+/** Of a game's folder only its save travels; whatever else its process keeps there is its own business. */
+const GAME_ID = /^[a-z][a-z0-9-]{0,31}$/;
+const GAME_SAVE = /^games\/[a-z][a-z0-9-]{0,31}\/world\.sqlite$/;
 const UNZIPPED_LIMIT = 2 ** 31;
 const NOT_A_WORLD = "That file isn't a Sandbox world.";
 
@@ -51,7 +54,7 @@ function pack(dir: string) {
       const portable = (b: Build) => ({ ...b, server: b.server && relative(join(dir, "build"), resolve(dir, "build", b.server)).split(sep).join("/") });
       const mods: Record<string, Mod> = readJson(path);
       files[rel] = json(Object.fromEntries(Object.entries(mods).map(([name, m]) => [name, { ...m, build: portable(m.build), previous: m.previous.map(portable) }])));
-    } else if (DATABASE.test(rel)) files[rel] = snapshot(path, join(scratch, rel.replaceAll("/", "-")), secrets);
+    } else if (DATABASE.test(rel) || GAME_SAVE.test(rel)) files[rel] = snapshot(path, join(scratch, rel.replaceAll("/", "-")), secrets);
     // Git objects are compressed already.
     else files[rel] = rel.includes("/.git/objects/") ? [readFileSync(path), { level: 0 }] : readFileSync(path);
   };
@@ -71,6 +74,7 @@ function pack(dir: string) {
   try {
     // Whatever points is read before what it points to, so a reload landing mid-export can't leave it dangling: mods.json before the builds, git's refs before its objects.
     for (const part of [...FILES, ...DIRS]) if (existsSync(join(dir, part))) statSync(join(dir, part)).isDirectory() ? walk(part) : add(part);
+    if (existsSync(join(dir, "games"))) for (const id of readdirSync(join(dir, "games"))) if (GAME_ID.test(id) && existsSync(join(dir, "games", id, "world.sqlite"))) add(`games/${id}/world.sqlite`);
     for (const rel of objects) walk(rel);
     return zipSync(files);
   } finally {
@@ -83,7 +87,9 @@ function safe(name: string, into: string) {
   const folder = name.endsWith("/");
   const parts = (folder ? name.slice(0, -1) : name).split("/");
   if (!parts.every((p) => p && p !== "." && p !== ".." && !/[\\:\0]/.test(p))) return false;
-  if (!(parts.length === 1 && !folder ? FILES.has(parts[0]!) : DIRS.has(parts[0]!))) return false;
+  // Game saves by exact path; their folders too, for zip tools that list folders.
+  const game = GAME_SAVE.test(name) || (folder && parts[0] === "games" && (parts.length === 1 || (parts.length === 2 && GAME_ID.test(parts[1]!))));
+  if (!game && !(parts.length === 1 && !folder ? FILES.has(parts[0]!) : DIRS.has(parts[0]!))) return false;
   return resolve(into, name).startsWith(into + sep);
 }
 
