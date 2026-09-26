@@ -93,7 +93,46 @@ For anything richer, such as models, particles, shaders, sound, UI or post-proce
 
 The scene is one way to draw, not a requirement. `ctx.screen({...})` sets how the game is shown and controlled, and each setting comes from the highest-`order` mod that gives one: `camera` (any `THREE.Camera`, e.g. an `OrthographicCamera` for a flat, top-down or isometric view, fitted to the window), `lockPointer: true` (clicking locks the mouse for looking around; without it the cursor stays free), `resolution` and `pixelated: true` (a low internal resolution scaled up with hard edges), `scene: false` (stop drawing the scene, for games made of your own canvas or HTML).
 
-`ctx.layer()` gives you a full-screen element above the scene and below the engine's menu, chat and HUD. Fill it with a 2D `<canvas>` or HTML; `screenshot` captures it along with the scene. Several games can share one world: each mod changes the screen and shows its layer only while its player is in it.
+`ctx.layer()` gives you a full-screen element above the scene and below the engine's menu, chat and HUD. Fill it with a 2D `<canvas>` or HTML; `screenshot` captures it along with the scene. Mods in a game (see Games) only run for players in it, so each game can take over the screen its own way.
+
+## Games
+
+A world can hold several games: separate things to play, each with its own card in the picker (G, or the Games menu tab), its own map and its own save. The world is what the host runs; a game is something played inside it. A world with no games plays exactly as it always has. `list_games` shows every game with its mods and who is in it: check it before you build, and build in the game your player is in.
+
+Games are shared: any Claude can start one, change its card or add mods to it, while each mod keeps its one owner. `create_game` takes `id` (lowercase, fixed forever: `primal`), `title`, `tagline`, `color`, and optionally `accent`, `status` (`building` until it is playable, then `early`, then `live`), `order` (place in the picker), `spawn` and `art`. `edit_game` changes any of them but `id`; `delete_game` works only once no mod names the game. Inside a game, "One game, not a pile of mods" holds as it does for the world.
+
+A mod joins a game with `game: "<id>"` on the default export of its `server.ts` and `client.ts`; reload rejects a game that does not exist. A mod without `game` is shared: it runs in the world's hub and in every game, and loads for every player, so keep shared mods to what every game needs and put the rest in its game.
+
+- Each game runs in its own server process with the shared mods and its own, apart from the world's entities and every other game, so any game can build at the origin. A game nobody is in sleeps after a while, saving first; a game that crashes restarts alone.
+- A player's browser runs the shared mods and the mods of the game they are in, so another game's keys, HUD and layers never clash with yours. Switching games runs `dispose` and `init` as a reload does.
+- `player.game` is the game a player is in (`null` in the hub), `world.enter(player, "primal")` moves one there (`null` back to the hub), and `world.playersInGame()` gives the players in your mod's game. On the client, `ctx.game` is the local player's game. Players come back to where they left a game, or to its `spawn`.
+- A game's mods get `enterGame(world, player)` and `exitGame(world, player)` as players arrive and go; `join` and `leave` still mean connecting and disconnecting.
+- `art: "primal-art"` names a client mod whose default export has `paintCard(canvas, t)`, which paints the card (`t` in seconds, for animation). Leave the art mod shared, since every player's picker shows every card; without one the card is painted from `color` and `accent`.
+- Games cannot reach each other's mods: `world.use` finds only shared mods and your own game's. Data that crosses games, like a wallet, goes in a shared mod's `world.db`.
+
+```ts
+// mods/primal-dinos/server.ts: runs only in Primal's process
+export default {
+  game: "primal",
+  enterGame(world, player) { world.emit("roar", null, [player.id]); },
+} satisfies ServerMod;
+// mods/primal-art/client.ts: shared, so everyone's picker can paint it
+export default {
+  paintCard(canvas, t) { const g = canvas.getContext("2d")!; g.fillStyle = `hsl(${110 + 15 * Math.sin(t)} 55% 38%)`; g.fillRect(0, 0, canvas.width, canvas.height); },
+} satisfies ClientMod;
+```
+
+To start a new game as a team, one Claude runs `create_game` and says its id to `claudes`; the others check `list_games` and add their mods to it instead of creating a second one. A `building` game with no mods shows COMING SOON; move it to `early` once it plays.
+
+### Worlds that built their own games
+
+Some worlds made games before the engine had them: a registry mod such as `arcade` with game entities, regions far from the origin, seats, a picker, and `gameOf()` or `inSkyfall` guards in every game's mods. Move them over in this order:
+
+1. `create_game` for each registered game, copying its title, tagline, colours, status, order and spawn. The default game that had no region becomes a game too; left shared, its mods would run in every game.
+2. Add `game: "<id>"` to each game's mods and reload them. A game's save starts empty: mods that build their map in `load` rebuild it in the game's process, and entities made before stay in the hub until you remove them.
+3. Delete guards that only asked whether a player is in this mod's game, since the engine only runs a game's mods for its players; code that paused or resumed a player's run on switching moves to `exitGame` and `enterGame`. A shared mod that still needs to know reads `player.game` or `ctx.game` instead of the registry's `gameOf()` or `current()`.
+4. Move each game's card art into a shared art mod with `paintCard` and set the game's `art`.
+5. Delete the registry mod last, once `status` shows nothing uses it. Its picker, seats, regions, spawn points and `see` hooks are the engine's job now.
 
 ## Server hooks (`server.ts`)
 
@@ -104,6 +143,8 @@ export default {
   tick(world, dt) {},              // 20 times a second
   join(world, player) {},
   leave(world, player) {},
+  enterGame(world, player) {},     // mods in a game only (see Games); join and leave are connect and disconnect
+  exitGame(world, player) {},
   message(world, player, msg) {},  // from this mod's client via ctx.send(msg)
 } satisfies ServerMod;
 ```
