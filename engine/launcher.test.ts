@@ -6,6 +6,7 @@ import { unzipSync, zipSync } from "fflate";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
+import { openStore, seedStore } from "./world";
 
 const dir = mkdtempSync(join(tmpdir(), "sandbox-launcher-"));
 const LAUNCHER = 17000 + Math.floor(Math.random() * 1000);
@@ -390,6 +391,27 @@ export default {
   for (let i = 0; i < 100 && !count(join(worldDir(id), "world.sqlite"), `select count(*) n from entity where data like '%"note"%'`); i++) await Bun.sleep(100);
   await menu("stop", {});
   expect(count(join(worldDir(id), "record.sqlite"), `select count(*) n from events where data like '%${invite}%'`)).toBeGreaterThan(0);
+  // A game with a save its process holds open, mid-WAL, beside a file of its own that stays home.
+  const games = JSON.stringify({ arena: { id: "arena", title: "Arena", tagline: "Last one standing.", color: "#c33", status: "early", createdBy: "alice", createdAt: 1 } }, null, 2);
+  const seats = JSON.stringify({ alice: { game: "arena", lastPos: { arena: [1, 2, 3] } } }, null, 2);
+  writeFileSync(join(worldDir(id), "games.json"), games);
+  writeFileSync(join(worldDir(id), "seats.json"), seats);
+  mkdirSync(join(worldDir(id), "games/arena"), { recursive: true });
+  const arenaSave = join(worldDir(id), "games/arena/world.sqlite");
+  seedStore(arenaSave, 3, { 1: { pillar: "north" }, 2: { pillar: "south" } });
+  const arena = { entities: new Map(), nextId: 0 };
+  const store = openStore(arenaSave);
+  store.load(arena);
+  store.save(arena);
+  writeFileSync(join(worldDir(id), "games/arena/game.log"), "arena is running");
+  const saved = (path: string) => {
+    const db = new Database(path, { readonly: true });
+    try {
+      return [db.query("select next_id, entities from world").all(), db.query("select id, data from entity order by id").all()];
+    } finally {
+      db.close();
+    }
+  };
   await menu("host", { id });
 
   const cover = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
@@ -405,6 +427,8 @@ export default {
   expect(names).toContain("db/note.sqlite");
   expect(files["cover.jpg"]).toEqual(cover);
   expect(names.filter((n) => /^(keys\.json|launcher\.json)$|node_modules|\.sqlite-(wal|shm)$/.test(n))).toEqual([]);
+  expect(names.filter((n) => n.startsWith("games"))).toEqual(["games.json", "games/arena/world.sqlite"]);
+  expect(names).toContain("seats.json");
   expect(JSON.parse(new TextDecoder().decode(files["config.json"]))).toEqual({ name: "Export Test", rules: "additive", start: "basics" });
   expect(JSON.parse(new TextDecoder().decode(files["mods.json"])).note.build.server).toMatch(/^note\/[a-z0-9]+\/server\/server\.js$/);
   for (const [name, data] of Object.entries(files)) for (const secret of [hostKey, invite, alice]) expect(Buffer.from(data).includes(secret), `${secret} in ${name}`).toBe(false);
@@ -415,6 +439,11 @@ export default {
   const copy = imported.worlds.find((w: any) => w.name === "Export Test" && w.id !== id);
   expect(copy).toBeTruthy();
   expect(readFileSync(join(worldDir(copy.id), "cover.jpg"))).toEqual(Buffer.from(cover));
+  expect(readFileSync(join(worldDir(copy.id), "games.json"), "utf8")).toBe(games);
+  expect(readFileSync(join(worldDir(copy.id), "seats.json"), "utf8")).toBe(seats);
+  expect(saved(join(worldDir(copy.id), "games/arena/world.sqlite"))).toEqual(saved(arenaSave));
+  expect(saved(arenaSave)[1]).toHaveLength(2);
+  expect(existsSync(join(worldDir(copy.id), "games/arena/game.log"))).toBe(false);
   const hosted = await menu("host", { id: copy.id });
   expect(hosted.running.hostKey).not.toBe(hostKey);
   expect(hosted.running.invite).not.toBe(invite);
@@ -451,6 +480,10 @@ test("an import that isn't a world, or climbs out of its folder, is turned away"
     { "config.json": config, "/tmp/evil.txt": payload },
     { "config.json": config, "world\\..\\..\\evil.txt": payload },
     { "config.json": config, "keys.json": payload },
+    { "config.json": config, "games/arena/game.log": payload },
+    { "config.json": config, "games/Arena/world.sqlite": payload },
+    { "config.json": config, "games/arena/world.sqlite-wal": payload },
+    { "config.json": config, "games/arena/deeper/world.sqlite": payload },
     { "notes.txt": payload },
   ]) {
     const zip = zipSync(files);

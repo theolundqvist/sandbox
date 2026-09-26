@@ -1,9 +1,11 @@
 // A world published through the CLI, served by a stand-in GitHub, and played again on a throwaway launcher from Browse.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import type { Subprocess } from "bun";
+import { openStore, seedStore } from "./world";
 
 const dir = mkdtempSync(join(tmpdir(), "sandbox-share-"));
 const LAUNCHER = 21000 + Math.floor(Math.random() * 1000);
@@ -80,21 +82,34 @@ test("a published world holds only what a new host needs, never a key, a recordi
   expect((await tool(ana, "reload", { mod: "stash" })).status).toBe(200);
   expect((await tool(ana, "say", { text: "my secret chat line" })).status).toBe(200);
   writeFileSync(join(worldDir, "cover.jpg"), COVER);
+  // dee is known only from seats.json, as a player who sat in a game and never joined since.
+  const arena = { id: "arena", title: "Arena", tagline: "Last one standing.", color: "#c33", status: "early", spawn: [0, 5, 0], createdBy: "ana", createdAt: 7 };
+  writeFileSync(join(worldDir, "games.json"), JSON.stringify({ arena, Bad: { ...arena, id: "Bad" } }));
+  writeFileSync(join(worldDir, "seats.json"), JSON.stringify({ dee: { game: "arena", lastPos: { arena: [4, 0, 4] } } }));
+  mkdirSync(join(worldDir, "games/arena"), { recursive: true });
+  seedStore(join(worldDir, "games/arena/world.sqlite"), 5, { 1: { pillar: "north" }, 2: { trophy: "won by dee" } });
+  const save = { entities: new Map(), nextId: 0 };
+  const store = openStore(join(worldDir, "games/arena/world.sqlite"));
+  store.load(save);
+  store.save(save);
 
   const res = await tool(ana, "publish", { handle: "maker", description: "A well and a chest." });
   expect(res.status).toBe(200);
   const files = await new Bun.Archive(await res.bytes()).files();
   const paths = [...files.keys()].sort();
-  expect(paths.every((p) => /^(world\.json|README\.md|cover\.jpg|mods\/(basics|stash)\/.+|state\/(entities|about)\.json|state\/db\/stash\.sql)$/.test(p))).toBe(true);
+  expect(paths.every((p) => /^(world\.json|README\.md|cover\.jpg|games\.json|mods\/(basics|stash)\/.+|state\/(entities|about)\.json|state\/games\/arena\/entities\.json|state\/db\/stash\.sql)$/.test(p))).toBe(true);
   expect(paths).toContain("mods/stash/server.ts");
+  expect(paths).toContain("state/games/arena/entities.json");
+  expect(JSON.parse(await files.get("games.json")!.text())).toEqual({ arena: { ...arena, createdBy: "maker" } });
   expect(await files.get("cover.jpg")!.bytes()).toEqual(COVER);
 
   const config = JSON.parse(readFileSync(join(worldDir, "config.json"), "utf8"));
   const playerKeys = Object.keys(JSON.parse(readFileSync(join(worldDir, "keys.json"), "utf8")));
   const everything = (await Promise.all([...files.values()].map((f) => f.text()))).join("\n");
   for (const secret of [config.hostKey, config.invite, ...playerKeys, VOICE_KEY, HOST_TOKEN, "my secret chat line"]) expect(everything).not.toContain(secret);
-  const state = (await files.get("state/entities.json")!.text()) + (await files.get("state/db/stash.sql")!.text());
-  expect(state).not.toMatch(/\bana\b|\bbo\b/i);
+  const state = (await files.get("state/entities.json")!.text()) + (await files.get("state/db/stash.sql")!.text()) + (await files.get("games.json")!.text()) + (await files.get("state/games/arena/entities.json")!.text());
+  expect(state).not.toMatch(/\bana\b|\bbo\b|\bdee\b/i);
+  expect(JSON.parse(await files.get("state/games/arena/entities.json")!.text())).toEqual({ nextId: 5, entities: { 1: { pillar: "north" } } });
   expect(state).toContain("the well is north");
   expect(state).toContain('"marker":"well"');
   expect(JSON.parse(await files.get("world.json")!.text())).toMatchObject({ name: "Secret Keep", description: "A well and a chest.", author: "maker", start: "basics", rules: "additive" });
@@ -118,7 +133,13 @@ test("Browse lists the marketplace, and a listed world plays after one download,
 
   const s = await menu("install", { repo: "maker/listed-world" });
   expect(s.running.name).toBe("Secret Keep");
-  expect(readFileSync(join(dir, "data/worlds", s.running.id, "cover.jpg"))).toEqual(Buffer.from(COVER));
+  const installed = join(dir, "data/worlds", s.running.id);
+  expect(readFileSync(join(installed, "cover.jpg"))).toEqual(Buffer.from(COVER));
+  expect(JSON.parse(readFileSync(join(installed, "games.json"), "utf8"))).toEqual({ arena: { id: "arena", title: "Arena", tagline: "Last one standing.", color: "#c33", status: "early", spawn: [0, 5, 0], createdBy: "maker", createdAt: 7 } });
+  expect(existsSync(join(installed, "seats.json"))).toBe(false);
+  const db = new Database(join(installed, "games/arena/world.sqlite"), { readonly: true });
+  expect(db.query("select next_id, entities from world").get()).toEqual({ next_id: 5, entities: JSON.stringify({ 1: { pillar: "north" } }) });
+  db.close();
   const cy = await join_(s.running.invite, "cy");
   const status = JSON.parse((await (await tool(cy, "status")).text()).split("\n\n")[0]!);
   expect(status.rules).toStartWith("additive");
