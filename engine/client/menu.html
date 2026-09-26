@@ -340,7 +340,7 @@
     for (const b of $("title").querySelectorAll(".item")) b.hidden = true;
     $("waiting").hidden = false;
     show("title");
-    if (location.pathname.endsWith("/menu")) $("waiting").textContent = "Open the menu link from the host's terminal.";
+    if (location.pathname.endsWith("/menu")) $("waiting").textContent = "Only the host can open this menu, on their own computer.";
     else setInterval(async () => (await fetch("/api/info")).ok && location.assign("./"), 2000);
   } else {
     api("state").catch(() => {

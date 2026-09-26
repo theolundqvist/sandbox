@@ -219,8 +219,9 @@
       refresh();
     }
   });
-  shell.on("down", ({ url, host }) => {
-    $("down-text").textContent = `${host} isn't answering. Is the game running?`;
+  shell.on("down", ({ url, name, why }) => {
+    const world = name ?? "The game";
+    $("down-text").textContent = { offline: "You're offline. Check your internet, then retry.", closed: `${world} is closed. Ask the host to open it, then retry.`, silent: `${world} isn't answering. Ask the host if it's running, then retry.` }[why];
     $("retry").dataset.url = url;
     show("title", { reset: true });
     show("down");

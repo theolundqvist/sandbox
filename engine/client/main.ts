@@ -24,6 +24,7 @@ let world = "";
 let invite = "";
 let publicUrl: string | null = null;
 let joinCode: string | null = null;
+let lanUrl: string | null = null;
 
 async function join(body: object) {
   const res = await fetch("/api/join", { method: "POST", body: JSON.stringify(body) });
@@ -737,6 +738,7 @@ function connect() {
         invite = msg.invite;
         publicUrl = msg.publicUrl;
         joinCode = msg.joinCode;
+        lanUrl = msg.lanUrl;
         voiceAvailable = msg.voice;
         showMic();
         me = msg.playerId;
@@ -772,6 +774,7 @@ function connect() {
       case "public":
         publicUrl = msg.url;
         joinCode = msg.code;
+        lanUrl = msg.lan;
         return;
       case "claude":
         if (msg.name === me) showClaude(msg.state);
@@ -824,8 +827,17 @@ function connect() {
       return;
     }
     $("status").textContent = "Reconnecting…";
-    setTimeout(connect, 1000);
+    setTimeout(reconnect, 1000);
   };
+}
+
+/** Back in once the world answers again; while the host has it closed, the game says so. */
+async function reconnect() {
+  const res = await fetch("/api/info").catch(() => null);
+  if (res?.status === 503) $("status").textContent = "The host closed the game. You're back in when they open it.";
+  if (!res?.ok) return void setTimeout(reconnect, 2000);
+  if ((await res.json()).id !== info.id) return location.reload();
+  connect();
 }
 
 /** The scene with every mod layer and HTML overlay (engine HUD and mod UI) drawn on top, as base64 JPEG. */
@@ -1591,7 +1603,7 @@ function startTalking() {
   });
   recorder.catch(() => {
     micStream = null;
-    toast("The microphone is blocked. Allow it in the browser's address bar, then try again.", "error");
+    toast(desktop ? "Voice needs the microphone. Hold T again to allow it." : "The microphone is blocked. Allow it in the browser's address bar, then try again.", "error");
   });
   talking = { recorder };
   showMic();
@@ -2022,7 +2034,10 @@ async function openMenu() {
   }
   if (document.pointerLockElement) document.exitPointerLock();
   $("menu-world").textContent = world;
-  $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;
+  // A host playing on their own computer while the relay is out of reach invites friends on the same Wi-Fi.
+  const nearby = !publicUrl && /^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(`${origin}/`) && lanUrl;
+  $("invite-label").textContent = nearby ? "Wi-Fi link" : "Link";
+  $("invite-link").textContent = `${nearby || publicUrl || origin}/#invite=${invite}`;
   $("invite-code-row").hidden = !joinCode;
   $("invite-code").textContent = joinCode ? `${joinCode.slice(0, 3)}-${joinCode.slice(3)}` : "";
   $("claude-install").textContent = HARNESSES[harness].install;

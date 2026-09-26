@@ -338,6 +338,8 @@ setInterval(() => {
 
 let publicUrl: string | null = null;
 let joinCode: string | null = null;
+/** The host's Wi-Fi address, where friends nearby join when the relay can't be reached. */
+let lanUrl: string | null = null;
 const shots = new Map<string, (data: string) => void>();
 const mcp = createMcp({
   root: ROOT,
@@ -447,7 +449,8 @@ const server = Bun.serve<Conn>({
         case "public":
           publicUrl = body.url ?? null;
           joinCode = body.code ?? null;
-          broadcast({ t: "public", url: publicUrl, code: joinCode });
+          lanUrl = body.lan ?? null;
+          broadcast({ t: "public", url: publicUrl, code: joinCode, lan: lanUrl });
           return Response.json({});
         case "invite":
           config.invite = token();
@@ -567,6 +570,7 @@ const server = Bun.serve<Conn>({
           invite: config.invite,
           publicUrl,
           joinCode,
+          lanUrl,
           voice: !!voiceKey(),
           mods: clientMods(),
           feed: feedLog.slice(-8),

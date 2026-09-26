@@ -56,6 +56,8 @@ const relayUrl = `http://127.0.0.1:${RELAY}`;
 /** Another player's computer, hosting a world through the same relay. */
 const OTHER = port();
 let other;
+let otherLauncher;
+const startOther = () => bun("engine/launcher.ts", { PORT: String(OTHER), SANDBOX_DATA: join(dir, "other"), SANDBOX_RELAY: relayUrl, SANDBOX_NO_OPEN: "1" });
 
 async function menu(base, key, action, body) {
   const res = await fetch(`${base}/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) });
@@ -64,7 +66,7 @@ async function menu(base, key, action, body) {
 
 before(async () => {
   bun("relay/relay.ts", { PORT: String(RELAY), RELAY_CLAIMS: join(dir, "claims.json") });
-  bun("engine/launcher.ts", { PORT: String(OTHER), SANDBOX_DATA: join(dir, "other"), SANDBOX_RELAY: relayUrl, SANDBOX_NO_OPEN: "1" });
+  otherLauncher = startOther();
   const base = `http://127.0.0.1:${OTHER}`;
   const { key } = await until("the other launcher", async () => (await fetch(`${base}/api/local-key`)).json());
   await menu(base, key, "share", { on: true });
@@ -96,6 +98,7 @@ async function launch(name, env = {}) {
 }
 
 const gamePage = (app) => until("the game view", async () => app.windows().find((w) => /^https?:/.test(w.url())));
+const menuShown = (shell) => shell.locator("#title .items").isVisible();
 const shown = (page, sel) => page.locator(sel).isVisible();
 const rows = (shell) => shell.locator("#games .item").evaluateAll((items) => items.map((b) => [...b.childNodes].map((n) => n.textContent).join(" | ")));
 /** Answers the app's next question dialogs with this button, and keeps what they asked. */
@@ -132,6 +135,7 @@ describe("hosting and joining", () => {
   after(() => close(app));
 
   test("first launch: the title menu, no update, and no worlds yet", async () => {
+    await until("the menu", () => menuShown(shell));
     assert.deepEqual(await shell.locator("#title .item:visible").allTextContents(), ["Worlds", "Join game", "Host game", "Quit"]);
     await shell.click("text=Worlds");
     assert.equal(await shown(shell, "#no-games"), true);
@@ -316,7 +320,7 @@ describe("the relay down", () => {
     await shell.click("text=Join game");
     await shell.fill("#join-link", "K7F-M2Q");
     await shell.press("#join-link", "Enter");
-    await until("the error", async () => (await shell.textContent("#error")) === "Can't reach the relay. Check your connection.");
+    await until("the error", async () => (await shell.textContent("#error")) === "Can't look up codes right now. Check your connection, or ask for the invite link.");
     await shell.keyboard.press("Escape");
   });
 
@@ -327,17 +331,40 @@ describe("the relay down", () => {
     assert.match(game.url(), /^http:\/\/localhost:\d+\/menu/);
   });
 
+  test("the host's invite is a Wi-Fi link, and the main menu says why", async () => {
+    const game = await gamePage(app);
+    await game.fill("#create-name", "Home World");
+    await game.click("#create-go");
+    await joinAs(game, "host");
+    await game.locator("#menu-button").dispatchEvent("click");
+    await game.click("#rail [data-tab=invite]");
+    assert.equal(await game.textContent("#invite-label"), "Wi-Fi link");
+    assert.match(await game.textContent("#invite-link"), /^http:\/\/(\d+\.){3}\d+:\d+\/#invite=[0-9a-f]+$/);
+    await game.goto(new URL("/menu", game.url()).href);
+    await until("the relay error", async () => (await game.textContent("#error")) === "Can't reach the Sandbox relay, so only people on your Wi-Fi can join. Trying again…");
+  });
+
   test("a crashed app leaves no game server behind", async () => {
     const own = JSON.parse(readFileSync(join(dir, "offline", "Sandbox", "state.json"), "utf8")).port;
     assert.equal(await portAnswers(own), true);
     app.process().kill("SIGKILL");
     await until("the server to stop", async () => !(await portAnswers(own)), 10000);
   });
+
+  test("reopened after the crash, the world is there and opens again", async () => {
+    ({ app, shell } = await launch("offline", { SANDBOX_RELAY: `http://127.0.0.1:${port()}` }));
+    await shell.click("text=Worlds");
+    const [row] = await until("the world", async () => (await rows(shell)).length && rows(shell));
+    assert.match(row, /^Home World \| .+ \| Hosted$/);
+    await shell.click("#games .item");
+    const game = await gamePage(app);
+    await game.locator("#world-name").waitFor();
+    assert.equal(await game.textContent("#world-name"), "Home World");
+  });
 });
 
 /** The real installer's handshake: download, say so, wait for the app to quit, then install; this one writes down the app it waited for. */
 const installer = (marker) => `echo "Downloading Sandbox"; sleep 1; echo "Quit Sandbox to continue."; while kill -0 "$SANDBOX_APP_PID" 2>/dev/null; do sleep 0.2; done; echo "$SANDBOX_APP_PID" > '${marker}'`;
-const menuShown = (shell) => shell.locator("#title .items").isVisible();
 
 describe("starting up", () => {
   after(() => {
@@ -346,7 +373,7 @@ describe("starting up", () => {
   });
 
   test("offline, the menu shows and offers no update", async () => {
-    const { app, shell } = await launch("offline", { SANDBOX_UPDATES: "http://127.0.0.1:1/latest" });
+    const { app, shell } = await launch("start-offline", { SANDBOX_UPDATES: "http://127.0.0.1:1/latest" });
     await until("the menu", () => menuShown(shell));
     assert.equal(await shown(shell, "#go-update"), false);
     await close(app);
@@ -477,9 +504,9 @@ describe("in a browser", () => {
   });
   after(() => browser?.close());
 
-  test("/menu through the relay, without the host's key, sends people to the host's terminal", async () => {
+  test("/menu through the relay, without the host's key, tells people it is the host's", async () => {
     await page.goto(`${other.url}/menu`);
-    await until("the message", async () => (await page.textContent("#waiting")) === "Open the menu link from the host's terminal.");
+    await until("the message", async () => (await page.textContent("#waiting")) === "Only the host can open this menu, on their own computer.");
     assert.equal(await page.locator("#title .item:visible").count(), 0);
   });
 
@@ -500,5 +527,36 @@ describe("in a browser", () => {
     await page.click("#join-go");
     await until("the game", () => page.evaluate(() => document.getElementById("join").hidden));
     assert.ok(page.url().startsWith(other.url));
+  });
+});
+
+describe("the host closes the game", () => {
+  let app, shell, game;
+  before(async () => ({ app, shell } = await launch("closing")));
+  after(() => close(app));
+
+  test("players in it are told, not left reconnecting", async () => {
+    await shell.click("text=Join game");
+    await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
+    await shell.press("#join-link", "Enter");
+    game = await gamePage(app);
+    await joinAs(game, "stayer");
+    otherLauncher.kill();
+    await until("the message", async () => (await game.textContent("#status")) === "The host closed the game. You're back in when they open it.");
+  });
+
+  test("opening it again from Worlds says it is closed, and Retry opens it once the host is back", async () => {
+    await shell.click("#leave");
+    await shell.click("text=Worlds");
+    await until("the world", async () => (await rows(shell)).some((r) => r.startsWith("Snow Race")));
+    await shell.click("#games .item >> text=Snow Race");
+    await shell.click("#game-continue");
+    await until("the message", async () => (await shell.textContent("#down-text")) === "Snow Race is closed. Ask the host to open it, then retry.");
+    otherLauncher = startOther();
+    await until("the world back", async () => (await fetch(`${other.url}/api/info`)).ok, 20000);
+    await shell.click("#retry");
+    game = await gamePage(app);
+    await until("Snow Race", async () => (await game.textContent("#world-name")) === "Snow Race");
+    assert.equal(game.url().startsWith(other.url), true);
   });
 });

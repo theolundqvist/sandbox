@@ -149,7 +149,7 @@ export async function joinLink(text, relay) {
   const code = t.replace(/[\s-]/g, "").toUpperCase();
   if (!JOIN_CODE.test(code)) throw new Error("Type the code or paste the link your host sent.");
   const res = await fetch(`${relay}/join/${code}`).catch(() => null);
-  if (!res) throw new Error("Can't reach the relay. Check your connection.");
+  if (!res) throw new Error("Can't look up codes right now. Check your connection, or ask for the invite link.");
   const body = await res.json().catch(() => ({ error: `The relay answered ${res.status}.` }));
   if (!res.ok) throw new Error(body.error);
   return body.url;

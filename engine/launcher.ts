@@ -104,7 +104,7 @@ async function host(id: string) {
   });
   const port = await new Promise<number>((resolve, reject) => {
     reportPort = resolve;
-    proc.exited.then(() => reject(new Error("The game crashed while starting; the terminal shows why.")));
+    proc.exited.then(() => reject(new Error("The world crashed while starting. Try again.")));
   });
   running = { id, proc, port, record, recorded };
   state.hosting = id;
@@ -227,8 +227,8 @@ function share(on: boolean) {
     if (tunnel !== current) return;
     tunnel = null;
     void publish();
-    tunnelError = `Lost the connection to ${RELAY}${e.reason ? `: ${e.reason}` : ""}. Retrying in 5 seconds.`;
-    console.error(tunnelError);
+    tunnelError = "Can't reach the Sandbox relay, so only people on your Wi-Fi can join. Trying again…";
+    console.error(`Lost the connection to ${RELAY}${e.reason ? `: ${e.reason}` : ""}. Retrying in 5 seconds.`);
     setTimeout(() => state.sharing && !tunnel && share(true), 5_000);
   };
 }
@@ -254,7 +254,7 @@ async function world(action: string, body?: object) {
 async function publish() {
   const code = tunnel?.url ? state.code : null;
   if (code && tunnel?.ws.readyState === WebSocket.OPEN) tunnel.ws.send(JSON.stringify({ t: "code", code, invite: running ? config(running.id).invite : null }));
-  if (running) await world("public", { url: tunnel?.url ?? null, code });
+  if (running) await world("public", { url: tunnel?.url ?? null, code, lan: lan ? `http://${lan}:${PORT}` : null });
 }
 
 type Secrets = { elevenlabs?: { key: string; host: string } };
@@ -305,7 +305,7 @@ async function menuState() {
 }
 
 async function menuApi(req: Request, action: string) {
-  if (req.headers.get("authorization") !== `Bearer ${state.hostKey}`) return Response.json({ error: "Only the host can use the main menu. Open the link printed in the host's terminal." }, { status: 401 });
+  if (req.headers.get("authorization") !== `Bearer ${state.hostKey}`) return Response.json({ error: "Only the host can open this menu, on their own computer." }, { status: 401 });
   const body = req.method === "POST" ? await req.json() : {};
   try {
     if (action === "create") await host(create(body));

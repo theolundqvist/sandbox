@@ -103,11 +103,13 @@ function play(raw) {
   const view = new WebContentsView({ webPreferences: { preload: join(__dirname, "game-preload.cjs"), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
   view.setBackgroundColor("#0b0b0c");
   game = { view, name: url.host };
-  const fail = (reason) => {
+  /** Why the game didn't open: this computer is offline, the world is closed, or its host doesn't answer. */
+  const fail = (reason, why = "silent") => {
     if (game?.view !== view) return;
     console.log(`Couldn't reach ${url.href}: ${reason}`);
     leave();
-    shell.webContents.send("down", { url: url.href, host: url.host });
+    const name = state.recents.find((r) => r.url === worldBase(url))?.name ?? null;
+    shell.webContents.send("down", { url: url.href, name, why });
   };
   // A host that drops packets never answers; don't leave a blank window for the minute Chromium waits.
   const timer = setTimeout(() => fail("no answer"), 15000);
@@ -126,7 +128,7 @@ function play(raw) {
   wc.on("before-input-event", keys);
   wc.on("did-navigate", (_, to, status) => {
     clearTimeout(timer);
-    if (status >= 400) return fail(`HTTP ${status}`);
+    if (status >= 400) return fail(`HTTP ${status}`, status === 503 ? "closed" : "silent");
     const u = new URL(to);
     const key = new URLSearchParams(u.hash.slice(1)).get("key");
     // The relay's own pages, like its join page, are not a game.
@@ -136,7 +138,8 @@ function play(raw) {
     } else if (!relayPage) void remember(worldBase(u));
   });
   wc.on("did-fail-load", (_, code, description, _url, mainFrame) => {
-    if (mainFrame && code !== -3) fail(description);
+    // -106 is Chromium's ERR_INTERNET_DISCONNECTED.
+    if (mainFrame && code !== -3) fail(description, code === -106 ? "offline" : "silent");
   });
   wc.on("dom-ready", () => wc.send("update", update));
   win.contentView.addChildView(view);
