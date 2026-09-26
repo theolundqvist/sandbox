@@ -144,28 +144,63 @@ test("a computer without git hosts worlds, reloads mods, and says history needs 
   expect(await history.text()).toStartWith("Needs Git");
 }, 60_000);
 
-test("the host adds a voice key in the game: checked, kept private, live without a restart, and removable", async () => {
-  const GOOD = "sk_test_good_voice_key";
-  let accepted = GOOD;
-  const eleven = Bun.serve({
+/** Every speech-to-text provider on one server, each knowing one key and answering the way the real one does. */
+function speechProviders(keys: Record<string, string>) {
+  const checked: string[] = [];
+  const said = (provider: string) => `build a bridge, heard by ${provider}`;
+  const server = Bun.serve({
     port: 0,
     async fetch(req) {
-      if (req.headers.get("xi-api-key") !== accepted) return Response.json({ detail: { status: "invalid_api_key" } }, { status: 401 });
-      const file = (await req.formData()).get("file") as Blob;
-      return file.size ? Response.json({ text: "build a bridge" }) : Response.json({ detail: "empty audio" }, { status: 400 });
+      const { pathname } = new URL(req.url);
+      const bearer = req.headers.get("authorization")?.replace(/^(Bearer|Token) /, "");
+      const [provider, key, refused] = pathname.startsWith("/openai/v1/")
+        ? ["Groq", bearer, 401]
+        : pathname.startsWith("/v1beta/")
+          ? ["Gemini", req.headers.get("x-goog-api-key"), 400]
+          : pathname === "/v1/speech-to-text"
+            ? ["ElevenLabs", req.headers.get("xi-api-key"), 400]
+            : pathname.startsWith("/v1/listen")
+              ? ["Deepgram", bearer, 401]
+              : ["OpenAI", bearer, 401];
+      const body = req.method === "POST" ? await req.blob() : null;
+      const audio = provider === "Gemini" ? body?.size && JSON.parse(await body.text()).contents[0].parts[1].inline_data.data : body && provider !== "Deepgram" ? ((await new Response(body, { headers: { "content-type": req.headers.get("content-type")! } }).formData()).get("file") as Blob | null)?.size : body?.size;
+      if (!audio) checked.push(provider);
+      if (key !== keys[provider]) return Response.json({ detail: { type: "authentication_error" } }, { status: refused as number });
+      if (!audio) return Response.json({ error: "no audio" }, { status: pathname.endsWith(":generateContent") || req.method === "POST" ? 400 : 200 });
+      const text = said(provider as string);
+      return Response.json(provider === "Gemini" ? { candidates: [{ content: { parts: [{ text }] } }] } : provider === "Deepgram" ? { results: { channels: [{ alternatives: [{ transcript: text }] }] } } : { text });
     },
   });
+  return { server, checked, said };
+}
+
+test("the host pastes a speech key from any provider: recognised by its shape or by asking each in turn, kept private, live without a restart, and removable", async () => {
+  const keys: Record<string, string> = {
+    Groq: "gsk_test_groq_key",
+    OpenAI: "sk-proj-test_openai_key",
+    Gemini: "AIzaTest_gemini_key",
+    ElevenLabs: "sk_test_elevenlabs_key",
+    Deepgram: "0123456789abcdef0123456789abcdef01234567",
+  };
+  const stt = speechProviders(keys);
   const port = LAUNCHER + 600;
   const data = join(dir, "voice");
-  const launcher = Bun.spawn(["bun", join(import.meta.dir, "launcher.ts")], { env: { ...env, PORT: String(port), SANDBOX_DATA: data, SANDBOX_NO_OPEN: "1", SANDBOX_ELEVENLABS: `http://127.0.0.1:${eleven.port}` }, stdout: "pipe", stderr: "pipe" });
+  // A key added before other providers existed was ElevenLabs'.
+  mkdirSync(data, { recursive: true });
+  writeFileSync(join(data, "secrets.json"), JSON.stringify({ elevenlabs: { key: keys.ElevenLabs, host: `http://127.0.0.1:${stt.server.port}` } }), { mode: 0o600 });
+  const launcher = Bun.spawn(["bun", join(import.meta.dir, "launcher.ts")], { env: { ...env, PORT: String(port), SANDBOX_DATA: data, SANDBOX_NO_OPEN: "1", SANDBOX_STT: `http://127.0.0.1:${stt.server.port}` }, stdout: "pipe", stderr: "pipe" });
   procs.push(launcher);
   const base = `http://127.0.0.1:${port}`;
   await up(`${base}/menu`);
   const { key } = await (await localKey(base)).json();
   const menu = (action: string, body: object) => fetch(`${base}/api/menu/${action}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
   const s = await (await menu("create", { name: "Voice Test", start: "blank" })).json();
-  expect(s.voiceKey).toBeNull();
-  const player = await (await fetch(`${base}/api/join`, { method: "POST", body: JSON.stringify({ invite: s.running.invite, name: "talker" }) })).json();
+  expect(s.voiceKey).toBe("ElevenLabs ••••_key");
+  expect(s.voiceProviders.map((p: { name: string; free: boolean }) => p.name + (p.free ? " (free)" : ""))).toEqual(["Groq (free)", "OpenAI", "Gemini", "ElevenLabs", "Deepgram"]);
+  const secrets = join(data, "secrets.json");
+  expect(JSON.parse(readFileSync(secrets, "utf8"))).toEqual({ voice: { provider: "ElevenLabs", key: keys.ElevenLabs, host: `http://127.0.0.1:${stt.server.port}` } });
+
+  const player = await (await fetch(`${base}/api/join`, { method: "POST", body: JSON.stringify({ invite: s.running.invite, name: "talker", host: s.running.hostKey }) })).json();
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?key=${player.key}`);
   const got: any[] = [];
   ws.onmessage = (e) => got.push(JSON.parse(String(e.data)));
@@ -176,33 +211,49 @@ test("the host adds a voice key in the game: checked, kept private, live without
     }
     throw new Error(`no ${t}`);
   };
-  expect((await next("welcome")).voice).toBe(false);
+  expect(await next("welcome")).toMatchObject({ voice: true, host: "talker" });
+  const speak = () => fetch(`${base}/api/voice`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: new Blob([new Uint8Array(2000)], { type: "audio/wav" }) });
+  const status = async () => (await (await fetch(`${base}/api/status`, { headers: { authorization: `Bearer ${player.key}` } })).json()).voice;
 
-  const wrong = await menu("voice", { key: "sk_not_it" });
-  expect(await wrong.json()).toEqual({ error: "That key didn't work. Copy it again from elevenlabs.io." });
-  const added = await (await menu("voice", { key: ` ${GOOD} ` })).json();
-  expect(added.voiceKey).toBe("••••_key");
+  for (const [provider, pasted] of Object.entries(keys)) {
+    stt.checked.length = 0;
+    const added = await (await menu("voice", { key: ` ${pasted} ` })).json();
+    expect(added.voiceKey).toBe(`${provider} ••••${pasted.slice(-4)}`);
+    // A key's shape names its provider, so no other provider ever sees it.
+    expect(stt.checked).toEqual([provider]);
+    expect(await next("voice")).toEqual({ t: "voice", on: true });
+    await speak();
+    expect(await next("chat")).toMatchObject({ from: "talker", text: stt.said(provider), spoken: true });
+  }
+  expect(await status()).toStartWith("on");
+
+  // A key shaped like no provider's is asked of each in turn.
+  keys.Deepgram = "plain-key-no-provider-shape";
+  stt.checked.length = 0;
+  expect((await (await menu("voice", { key: keys.Deepgram })).json()).voiceKey).toBe("Deepgram ••••hape");
+  expect(stt.checked).toEqual(["Groq", "OpenAI", "Gemini", "ElevenLabs", "Deepgram"]);
   expect(await next("voice")).toEqual({ t: "voice", on: true });
 
-  const secrets = join(data, "secrets.json");
+  expect(await (await menu("voice", { key: "gsk_not_it" })).json()).toEqual({ error: "Groq didn't accept that key. Copy it again from console.groq.com." });
+  expect(await (await menu("voice", { key: "AIzaNotIt" })).json()).toEqual({ error: "Gemini didn't accept that key. Copy it again from aistudio.google.com." });
+  expect(await (await menu("voice", { key: "not-anyones-key" })).json()).toEqual({ error: "Groq, OpenAI, Gemini, ElevenLabs, or Deepgram didn't accept that key. Copy all of it again." });
+
   expect(statSync(secrets).mode & 0o777).toBe(0o600);
   const files = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(d, e.name)) : [join(d, e.name)]));
-  expect(files(join(data, "worlds")).filter((f) => readFileSync(f).includes(GOOD))).toEqual([]);
+  expect(files(join(data, "worlds")).filter((f) => Object.values(keys).some((k) => readFileSync(f).includes(k)))).toEqual([]);
 
-  await fetch(`${base}/api/voice`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: new Blob([new Uint8Array(2000)], { type: "audio/webm" }) });
-  expect(await next("chat")).toMatchObject({ from: "talker", text: "build a bridge", spoken: true });
-
-  accepted = "sk_rotated";
-  await fetch(`${base}/api/voice`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: new Blob([new Uint8Array(2000)], { type: "audio/webm" }) });
-  expect(await next("voice-failed")).toEqual({ t: "voice-failed", refused: true });
+  keys.Deepgram = "rotated";
+  await speak();
+  expect(await next("voice-failed")).toEqual({ t: "voice-failed", refused: true, provider: "Deepgram" });
 
   expect((await (await menu("voice", { key: "" })).json()).voiceKey).toBeNull();
   expect(await next("voice")).toEqual({ t: "voice", on: false });
+  expect(await status()).toStartWith("off: talker turns it on");
   ws.close();
   launcher.kill();
-  eleven.stop(true);
+  stt.server.stop(true);
   const printed = (await new Response(launcher.stdout).text()) + (await new Response(launcher.stderr).text());
-  expect(printed).not.toContain(GOOD);
+  for (const k of ["gsk_test_groq_key", "sk-proj-test_openai_key", "AIzaTest_gemini_key", "sk_test_elevenlabs_key", "plain-key-no-provider-shape"]) expect(printed).not.toContain(k);
 }, 60_000);
 
 test("a world that crashes is hosted again by itself, its players' games reconnect and hear why, and the crash is in world.log", async () => {

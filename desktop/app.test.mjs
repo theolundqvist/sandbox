@@ -112,7 +112,7 @@ async function launch(name, env = {}) {
   const app = await _electron.launch({
     executablePath: ELECTRON,
     args: [DESKTOP, "--no-sandbox", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
-    env: { ...ownEnv, SANDBOX_ELEVENLABS: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_MARKET: `http://127.0.0.1:${RELEASES}/worlds.json`, SANDBOX_RAW: `http://127.0.0.1:${RELEASES}/raw`, SANDBOX_CODELOAD: `http://127.0.0.1:${RELEASES}/codeload`, ...env },
+    env: { ...ownEnv, SANDBOX_STT: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_MARKET: `http://127.0.0.1:${RELEASES}/worlds.json`, SANDBOX_RAW: `http://127.0.0.1:${RELEASES}/raw`, SANDBOX_CODELOAD: `http://127.0.0.1:${RELEASES}/codeload`, ...env },
   });
   await app.context().addInitScript(OPEN_UI);
   const shell = await until("the start screen", async () => app.windows().find((w) => w.url().startsWith("sandbox://app/shell.html")));
@@ -254,11 +254,15 @@ describe("hosting and joining", () => {
     assert.equal(await shown(game, "#howto"), false);
     await game.fill("#voice-key", "sk_wrong");
     await game.press("#voice-key", "Enter");
-    await until("the refusal", async () => (await game.textContent("#toasts")).includes("That key didn't work. Copy it again from elevenlabs.io."));
+    await until("the refusal", async () => (await game.textContent("#toasts")).includes("ElevenLabs didn't accept that key. Copy it again from elevenlabs.io."));
+    assert.equal(await game.textContent("#voice-where"), "Paste a speech key from Groq (free), OpenAI, Gemini, ElevenLabs or Deepgram.");
+    await app.evaluate(({ shell }) => (shell.openExternal = async (url) => void (globalThis.opened ??= []).push(url)));
+    for (const link of await game.locator("#voice-where a").all()) await link.click();
+    assert.deepEqual(await until("the key pages", () => app.evaluate(() => globalThis.opened?.length === 5 && globalThis.opened)), ["https://console.groq.com/keys", "https://platform.openai.com/api-keys", "https://aistudio.google.com/apikey", "https://elevenlabs.io/app/settings/api-keys", "https://console.deepgram.com/"]);
     await game.fill("#voice-key", VOICE_KEY);
     await game.press("#voice-key", "Enter");
     await until("voice on", async () => (await game.textContent("#mic")) === "Hold T to talk");
-    assert.equal(await game.getAttribute("#voice-key", "placeholder"), "••••_key");
+    assert.equal(await game.getAttribute("#voice-key", "placeholder"), "ElevenLabs ••••_key");
     assert.equal(await game.inputValue("#voice-key"), "");
     assert.equal(readFileSync(join(dir, "host", "Sandbox", "data", "secrets.json"), "utf8").includes(VOICE_KEY), true);
     await game.keyboard.press("Escape");
@@ -299,7 +303,7 @@ describe("hosting and joining", () => {
     game.on("request", (r) => r.url().includes("/clips/") && clips.push(r.url()));
     assert.equal(game.url(), `${other.url}/#invite=${other.invite}`);
     await joinAs(game, "visitor");
-    assert.equal(await game.textContent("#mic"), "Voice off");
+    assert.equal(await game.textContent("#mic"), "Voice off: ask the host to turn it on");
     await game.reload();
     await game.locator("#join").waitFor({ state: "hidden" });
     assert.equal(await game.locator("#join").isHidden(), true);

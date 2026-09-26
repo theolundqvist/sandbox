@@ -176,7 +176,9 @@
   .field input[type=number]:focus { border-color: var(--accent); }
   .field input[type=password] { width: 220px; background: none; border: 0; border-bottom: 1px solid rgba(255,255,255,.28); color: var(--text); font: 15px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 6px 0; outline: none; }
   .field input[type=password]:focus { border-color: var(--accent); }
-  .field a.quiet { text-decoration: none; }
+  .field input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
+  #menu #voice-where { margin: 12px 0 16px; }
+  #voice-where a { color: var(--text); }
   .field em { font-style: normal; color: var(--dim); font-weight: 700; }
   @media (max-width: 760px) {
     #rail { width: 100%; padding: 40px 16px 24px; }
@@ -362,7 +364,9 @@
     </section>
     <section data-tab="mods" hidden><ul id="menu-mods"></ul></section>
     <section data-tab="settings" hidden>
-      <label class="field" id="voice-field" hidden><span>Voice key</span><input type="password" id="voice-key" autocomplete="off" spellcheck="false"><a class="quiet" href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noreferrer">Get a key</a></label>
+      <label class="field" id="voice-field" hidden><span>Voice key</span><input type="password" id="voice-key" autocomplete="off" spellcheck="false"></label>
+      <p class="note" id="voice-where" hidden></p>
+      <label class="field" id="open-mic-field" hidden><span>Always-on mic</span><input type="checkbox" id="open-mic"></label>
       <label class="field"><span>Volume</span><span class="range"><input type="range" id="volume" min="0" max="100" step="5"><input type="number" id="volume-exact" min="0" max="100"><em>%</em></span></label>
       <div class="copy-row" id="app-row" hidden><span>Desktop app</span><code id="app-command"></code><button data-copy="app-command">Copy</button></div>
       <div id="help-keys"></div>

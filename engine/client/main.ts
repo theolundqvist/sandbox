@@ -3,6 +3,7 @@ import * as THREE from "three";
 import type { ClientCtx, ClientHooks, ClientMod, Entity, ReplayShot } from "../api";
 import { clock, extent, isAvatar, plan, position, type Activity, type Plan, type Tick as Moment, type Shot } from "./director";
 import { PhysicsIndex } from "../physics";
+import { phrases } from "./phrases";
 
 /** The Tab menu, where players vote on mods, is in a closed shadow root only this file holds, so no mod can reach, hide or remove it; mods' blocks on its pages stay in the page, slotted in. Everything else on screen is the page's, for mods to restyle or remove. */
 const ui = document.getElementById("ui")!;
@@ -58,7 +59,7 @@ let joinCode: string | null = null;
 let lanUrl: string | null = null;
 
 async function join(body: object) {
-  const res = await fetch("/api/join", { method: "POST", body: JSON.stringify(body) });
+  const res = await fetch("/api/join", { method: "POST", body: JSON.stringify({ ...body, host: hosting?.running?.hostKey }) });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error);
   localStorage.setItem(keyName, data.key);
@@ -819,7 +820,8 @@ function connect() {
         joinCode = msg.joinCode;
         lanUrl = msg.lanUrl;
         voiceAvailable = msg.voice;
-        showMic();
+        voiceHost = msg.host;
+        listen();
         me = msg.playerId;
         $("world-name").textContent = world;
         $("rules").textContent = msg.rules === "additive" ? "additive" : "open";
@@ -849,9 +851,9 @@ function connect() {
       }
       case "voice":
         voiceAvailable = msg.on;
-        return showMic();
+        return listen();
       case "voice-failed":
-        return toast(hosting ? (msg.refused ? "ElevenLabs refused the voice key. Add it again in Settings." : "Voice didn't go through. Try again.") : "Voice didn't go through. Try again.", "error");
+        return toast(hosting && msg.refused ? `${msg.provider} refused the voice key. Add it again in Settings.` : "Voice didn't go through. Try again.", "error");
       case "public":
         publicUrl = msg.url;
         joinCode = msg.code;
@@ -1705,13 +1707,19 @@ function play() {
 
 /** Push to talk: hold T (or the mic button) and the phrase goes to chat, transcribed by the host, so everyone and every Claude hears it. */
 let voiceAvailable = false;
+let voiceHost: string | null = null;
 let micStream: Promise<MediaStream> | null = null;
 let talking: { recorder: Promise<MediaRecorder> } | null = null;
+// The stream stays open after the first use so later phrases record from the first word.
+const mic = () => (micStream ??= navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }));
+const sendVoice = (audio: Blob) => void fetch("/api/voice", { method: "POST", headers: { authorization: `Bearer ${key}` }, body: audio });
+function micBlocked() {
+  micStream = null;
+  toast(desktop ? "Voice needs the microphone. Hold T again to allow it." : "The microphone is blocked. Allow it in the browser's address bar, then try again.", "error");
+}
 function startTalking() {
-  if (!voiceAvailable || talking) return;
-  // The stream stays open after the first press so later presses record from the first word.
-  micStream ??= navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-  const recorder = micStream.then((stream) => {
+  if (!voiceAvailable || talking || listening) return;
+  const recorder = mic().then((stream) => {
     const r = new MediaRecorder(stream);
     const chunks: Blob[] = [];
     r.ondataavailable = (e) => chunks.push(e.data);
@@ -1719,15 +1727,12 @@ function startTalking() {
     // Presses shorter than 300 ms of actual recording are accidental taps, and a press released before the mic was ready recorded nothing.
     r.onstop = () => {
       const audio = new Blob(chunks, { type: r.mimeType });
-      if (audio.size && performance.now() - began > 300) void fetch("/api/voice", { method: "POST", headers: { authorization: `Bearer ${key}` }, body: audio });
+      if (audio.size && performance.now() - began > 300) sendVoice(audio);
     };
     r.start();
     return r;
   });
-  recorder.catch(() => {
-    micStream = null;
-    toast(desktop ? "Voice needs the microphone. Hold T again to allow it." : "The microphone is blocked. Allow it in the browser's address bar, then try again.", "error");
-  });
+  recorder.catch(micBlocked);
   talking = { recorder };
   showMic();
 }
@@ -1742,9 +1747,64 @@ function stopTalking(keep: boolean) {
     r.stop();
   }, () => {});
 }
+
+/** Always-on mic, remembered on this device: the page picks out each spoken phrase itself, so silence and game sound never leave it. */
+let openMic = false;
+try {
+  openMic = localStorage.getItem("sandbox-open-mic") === "1";
+} catch {}
+let listening: (() => void) | null = null;
+function listen() {
+  if (voiceAvailable && openMic) listening ??= hear();
+  else {
+    listening?.();
+    listening = null;
+  }
+  showMic();
+}
+function hear() {
+  let stop = () => {};
+  let stopped = false;
+  mic().then(
+    (stream) => {
+      if (stopped) return;
+      const source = audio.context.createMediaStreamSource(stream);
+      const tap = audio.context.createScriptProcessor(2048, 1, 1);
+      const feed = phrases(audio.context.sampleRate, sendVoice);
+      tap.onaudioprocess = (e) => feed(e.inputBuffer.getChannelData(0).slice());
+      source.connect(tap);
+      // A processor runs only while connected to an output; it writes nothing, so nothing is heard.
+      tap.connect(audio.context.destination);
+      stop = () => {
+        source.disconnect();
+        tap.disconnect();
+      };
+    },
+    () => {
+      micBlocked();
+      setOpenMic(false);
+    },
+  );
+  return () => {
+    stopped = true;
+    stop();
+  };
+}
+function setOpenMic(on: boolean) {
+  openMic = on;
+  $<HTMLInputElement>("open-mic").checked = on;
+  try {
+    localStorage.setItem("sandbox-open-mic", on ? "1" : "0");
+  } catch {}
+  listen();
+}
+$<HTMLInputElement>("open-mic").checked = openMic;
+$("open-mic").onchange = () => setOpenMic($<HTMLInputElement>("open-mic").checked);
+
 function showMic() {
-  $("mic").textContent = !voiceAvailable ? (hosting ? "Turn on voice" : "Voice off") : talking ? "Talking" : "Hold T to talk";
-  $("mic").dataset.state = !voiceAvailable ? (hosting ? "setup" : "none") : talking ? "on" : "off";
+  $("mic").textContent = !voiceAvailable ? (hosting ? "Turn on voice" : `Voice off: ask ${voiceHost ?? "the host"} to turn it on`) : listening ? "Mic on" : talking ? "Talking" : "Hold T to talk";
+  $("mic").dataset.state = !voiceAvailable ? (hosting ? "setup" : "none") : listening || talking ? "on" : "off";
+  $("open-mic-field").hidden = !voiceAvailable;
 }
 $("mic").onclick = () => {
   if (voiceAvailable || !hosting) return;
@@ -2035,16 +2095,26 @@ $("leave").onclick = () => {
   location.reload();
 };
 
-/** The host's ElevenLabs key, kept by their launcher and shown only by its last characters. */
-$("voice-field").hidden = !hosting;
-$<HTMLInputElement>("voice-key").placeholder = hosting?.voiceKey ?? "Paste your ElevenLabs key";
+/** The host's speech key, kept by their launcher and shown only by its provider and last characters. */
+$("voice-field").hidden = $("voice-where").hidden = !hosting;
+$<HTMLInputElement>("voice-key").placeholder = hosting?.voiceKey ?? "Paste a speech key";
+if (hosting)
+  $("voice-where").replaceChildren(
+    "Paste a speech key from ",
+    ...hosting.voiceProviders.flatMap((p: { name: string; keys: string; free: boolean }, i: number, all: unknown[]) => [
+      i ? (i === all.length - 1 ? " or " : ", ") : "",
+      Object.assign(document.createElement("a"), { href: p.keys, target: "_blank", rel: "noreferrer", textContent: p.name }),
+      p.free ? " (free)" : "",
+    ]),
+    ".",
+  );
 $("voice-key").onchange = async () => {
   const field = $<HTMLInputElement>("voice-key");
   const res = await hostMenu("voice", { key: field.value });
   const data = await res.json().catch(() => ({ error: "The voice key wasn't saved. Try again." }));
   if (!res.ok) return toast(data.error, "error");
   field.value = "";
-  field.placeholder = data.voiceKey ?? "Paste your ElevenLabs key";
+  field.placeholder = data.voiceKey ?? "Paste a speech key";
   toast(data.voiceKey ? "Voice is on" : "Voice is off");
 };
 

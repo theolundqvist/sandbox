@@ -14,8 +14,8 @@ const RELEASES = process.env.SANDBOX_UPDATES ?? "https://api.github.com/repos/th
 const INSTALLER = (version) => process.env.SANDBOX_INSTALLER ?? `https://raw.githubusercontent.com/theolundqvist/sandbox/v${version}/desktop/install`;
 const DOWNLOADS = (version) => process.env.SANDBOX_RELEASE ?? `https://github.com/theolundqvist/sandbox/releases/download/v${version}`;
 const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"]);
-/** Pages a game may open in the browser: where the host gets a voice key. */
-const OUTSIDE = /^https:\/\/elevenlabs\.io\//;
+/** Pages a game may open in the browser: where the host gets a speech key, from each provider in engine/voice.ts. */
+const OUTSIDE = /^https:\/\/(console\.groq\.com|platform\.openai\.com|aistudio\.google\.com|elevenlabs\.io|console\.deepgram\.com)\//;
 
 /** An invite or personal link passed on the command line, e.g. `sandbox http://host:7777/#invite=…`. */
 const linkIn = (argv) => argv.slice(1).find((a) => /^https?:\/\//.test(a));

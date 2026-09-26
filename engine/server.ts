@@ -6,6 +6,7 @@ import { createCli, type Task } from "./cli";
 import { ENGINE_KEYS, hasGit, Mods } from "./mods";
 import { latencies, openRecord, route } from "./record";
 import { SimHost } from "./simhost";
+import { savedVoice, transcribe, type Voice } from "./voice";
 import { openStore, type Activity, type Tick } from "./world";
 
 const ENGINE = import.meta.dir;
@@ -15,7 +16,7 @@ const BUILD = join(DATA, "build");
 const DB = join(DATA, "db");
 const PORT = Number(process.env.PORT ?? 7777);
 
-export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "hills" | "blank"; invite: string; hostKey: string };
+export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "hills" | "blank"; invite: string; hostKey: string; host?: string };
 type Conn = { name: string; ua: string; at: number; spectator?: true };
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
@@ -299,6 +300,7 @@ const status = () => ({
   controls: { engineKeys: ENGINE_KEYS, ...mods.controls() },
   entities: sim.entities.size,
   recent: feedLog.slice(-15).map((f) => f.text),
+  voice: voiceKey() ? "on: players hold T to talk, and what they say arrives as chat" : `off: ${config.host ?? "the host"} turns it on by clicking Turn on voice in the game and pasting a speech key (Groq's is free)`,
 });
 
 const perf = () => ({
@@ -394,26 +396,15 @@ const cli = createCli({
   sendToGame: (who, msg) => !!sockets.get(who)?.send(JSON.stringify(msg)),
 });
 
-/** The key the host added in the game, else one from the environment, which belongs to ElevenLabs' EU data-residency stack. */
-function voiceKey(): { key: string; host: string } | null {
-  const added = process.env.SANDBOX_SECRETS && existsSync(process.env.SANDBOX_SECRETS) ? JSON.parse(readFileSync(process.env.SANDBOX_SECRETS, "utf8")).elevenlabs : null;
-  if (added) return added;
-  return process.env.ELEVENLABS_API_KEY ? { key: process.env.ELEVENLABS_API_KEY, host: "https://api.eu.residency.elevenlabs.io" } : null;
-}
+/** The key the host added in the game, else an ElevenLabs one from the environment, which belongs to its EU data-residency stack. */
+const voiceKey = (): Voice | null =>
+  savedVoice(process.env.SANDBOX_SECRETS) ?? (process.env.ELEVENLABS_API_KEY ? { provider: "ElevenLabs", key: process.env.ELEVENLABS_API_KEY, host: "https://api.eu.residency.elevenlabs.io" } : null);
 
-/** ElevenLabs Scribe in English; it tags sounds like [laughter], and a phrase with nothing but tags was only noise. */
-async function transcribe(audio: Blob) {
-  const form = new FormData();
-  form.append("file", audio, audio.type.includes("mp4") ? "speech.mp4" : "speech.webm");
-  form.append("model_id", "scribe_v2");
-  form.append("language_code", "eng");
-  form.append("tag_audio_events", "true");
-  const voice = voiceKey();
-  if (!voice) throw new Error("no voice key");
-  const res = await fetch(`${voice.host}/v1/speech-to-text`, { method: "POST", headers: { "xi-api-key": voice.key }, body: form });
-  if (!res.ok) throw Object.assign(new Error(`transcription failed: ${res.status} ${await res.text()}`), { refused: res.status === 401 || res.status === 403 });
-  const { text } = (await res.json()) as { text: string };
-  return /\p{L}/u.test(text.replace(/\[[^\]]*\]|\([^)]*\)/g, "")) ? text.trim() : "";
+/** The player playing on the host's computer, named when players are told who can turn voice on. */
+function hostIs(body: { host?: string }, name: string) {
+  if (body.host !== config.hostKey || config.host === name) return;
+  config.host = name;
+  writeJson("config.json", config);
 }
 
 const clientMods = () => [...mods.running].filter(([, m]) => m.build.client).map(([name, m]) => ({ name, url: m.build.client }));
@@ -515,16 +506,19 @@ const server = Bun.serve<Conn>({
     if (path === "/api/voice" && req.method === "POST") {
       const who = nameByKey(bearer(req));
       if (!who) return new Response(null, { status: 401 });
-      const audio = await req.blob();
+      // Bun's req.blob() types every body as text, and providers go by the recording's type.
+      const audio = new Blob([await req.arrayBuffer()], { type: req.headers.get("content-type") ?? "" });
       const started = performance.now();
-      transcribe(audio).then(
+      const voice = voiceKey();
+      if (!voice) return new Response(null, { status: 409 });
+      transcribe(voice, audio).then(
         (text) => {
           record.add("action", who, { what: "voice", ms: Math.round(performance.now() - started), bytes: audio.size, heard: !!text });
           if (text) chat(who, text, "spoken");
         },
         (error) => {
           console.log(`[voice] ${who}: ${error.message}`);
-          sockets.get(who)?.send(JSON.stringify({ t: "voice-failed", refused: !!error.refused }));
+          sockets.get(who)?.send(JSON.stringify({ t: "voice-failed", refused: !!error.refused, provider: voice.provider }));
           record.add("error", who, { mod: "voice", level: "error", text: String(error.message).slice(0, 500) });
         },
       );
@@ -534,7 +528,10 @@ const server = Bun.serve<Conn>({
     if (path === "/api/join" && req.method === "POST") {
       const body = await req.json();
       const known = nameByKey(body.key);
-      if (known) return Response.json({ key: body.key, name: known, invite: config.invite });
+      if (known) {
+        hostIs(body, known);
+        return Response.json({ key: body.key, name: known, invite: config.invite });
+      }
       if (body.invite !== config.invite && body.invite !== config.hostKey) return Response.json({ error: "You need an invite link from the host." }, { status: 403 });
       const name = String(body.name ?? "").trim().toLowerCase();
       if (!/^[a-z0-9][a-z0-9_-]{1,15}$/.test(name)) return Response.json({ error: "Names are 2–16 letters, digits, - or _." }, { status: 400 });
@@ -542,6 +539,7 @@ const server = Bun.serve<Conn>({
       const key = token() + token();
       keys[key] = name;
       writeJson("keys.json", keys);
+      hostIs(body, name);
       return Response.json({ key, name, invite: config.invite });
     }
 
@@ -584,6 +582,7 @@ const server = Bun.serve<Conn>({
           joinCode,
           lanUrl,
           voice: !!voiceKey(),
+          host: config.host ?? null,
           mods: clientMods(),
           feed: feedLog.slice(-8),
           claudes: Object.fromEntries([...claudes.keys()].map((name) => [name, builder(name)])),

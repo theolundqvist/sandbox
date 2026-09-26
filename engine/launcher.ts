@@ -6,6 +6,7 @@ import { frontFile } from "./front";
 import { latencies, openRecord, route, type Recorder } from "./record";
 import type { Config } from "./server";
 import { importWorld, readTarball } from "./share";
+import { identify, PROVIDERS, type Voice } from "./voice";
 
 const ENGINE = import.meta.dir;
 const DATA = process.env.SANDBOX_DATA ?? join(ENGINE, "../data");
@@ -311,38 +312,27 @@ async function publish() {
   if (running) await world("public", { url: tunnel?.url ?? null, code, lan: lan ? `http://${lan}:${PORT}` : null });
 }
 
-type Secrets = { elevenlabs?: { key: string; host: string } };
+type Secrets = { voice?: Voice; elevenlabs?: { key: string; host: string } };
 const secrets = (): Secrets => readJson(SECRETS);
-/** ElevenLabs serves each key from one region; the world transcribes through whichever accepted it. */
-const ELEVENLABS = process.env.SANDBOX_ELEVENLABS ? [process.env.SANDBOX_ELEVENLABS] : ["https://api.elevenlabs.io", "https://api.eu.residency.elevenlabs.io"];
+function saveSecrets(next: Secrets) {
+  writeFileSync(SECRETS, JSON.stringify(next, null, 2), { mode: 0o600 });
+  chmodSync(SECRETS, 0o600);
+}
+// Voice keys were ElevenLabs' alone before any other provider could be added.
+const { elevenlabs, ...migrated } = secrets();
+if (elevenlabs) saveSecrets({ voice: { provider: "ElevenLabs", ...elevenlabs }, ...migrated });
 
-/** Checks a voice key with an empty clip, which ElevenLabs rejects as audio only after accepting the key. */
 async function setVoiceKey(raw: unknown) {
   const key = String(raw ?? "").trim();
   const next = secrets();
-  if (!key) delete next.elevenlabs;
-  else {
-    let reached = false;
-    for (const host of ELEVENLABS) {
-      const form = new FormData();
-      form.append("file", new Blob([new Uint8Array(0)], { type: "audio/webm" }), "check.webm");
-      form.append("model_id", "scribe_v2");
-      const res = await fetch(`${host}/v1/speech-to-text`, { method: "POST", headers: { "xi-api-key": key }, body: form, signal: AbortSignal.timeout(10_000) }).catch(() => null);
-      if (!res) continue;
-      reached = true;
-      if (res.status !== 401 && res.status !== 403) {
-        next.elevenlabs = { key, host };
-        break;
-      }
-    }
-    if (!next.elevenlabs) throw new Error(reached ? "That key didn't work. Copy it again from elevenlabs.io." : "Can't reach ElevenLabs. Check your connection.");
-  }
-  writeFileSync(SECRETS, JSON.stringify(next, null, 2), { mode: 0o600 });
-  chmodSync(SECRETS, 0o600);
+  if (key) next.voice = await identify(key);
+  else delete next.voice;
+  saveSecrets(next);
   if (running) await world("voice", {});
 }
 
 async function menuState() {
+  const { voice } = secrets();
   const live = running && config(running.id);
   return {
     worlds: worlds(),
@@ -354,7 +344,8 @@ async function menuState() {
     tunnel: tunnel ? { url: tunnel.url, code: tunnel.url ? state.code : null } : null,
     relay: RELAY,
     tunnelError,
-    voiceKey: secrets().elevenlabs ? `••••${secrets().elevenlabs!.key.slice(-4)}` : null,
+    voiceKey: voice ? `${voice.provider} ••••${voice.key.slice(-4)}` : null,
+    voiceProviders: PROVIDERS.map(({ name, keys, free }) => ({ name, keys, free: !!free })),
   };
 }
 
