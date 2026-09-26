@@ -207,6 +207,8 @@ test("a game's process that crashes with no mod running, within a minute of a re
 test("switching runs exitGame and enterGame, and a player comes back to where they left a game", async () => {
   // First entry landed ada at alpha's spawn.
   const avatar = async (g: string) => (await found(["player", "pos"], g)).find((e) => e.player === "ada");
+  // The crash test before this one leaves alpha restarting; it answers once its new process is up.
+  await until(async () => !!(await avatar("alpha").catch(() => null)));
   const first = await avatar("alpha");
   expect(first.pos[0]).toBeCloseTo(5, 0);
   expect(first.pos[2]).toBeCloseTo(5, 0);
