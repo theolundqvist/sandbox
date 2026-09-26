@@ -285,18 +285,18 @@
       <div class="items">
         <label class="item entry" id="join-name-field"><input type="text" id="join-name" placeholder="Your name" maxlength="16" autocomplete="off" spellcheck="false"></label>
         <button class="item" type="submit" id="join-go">Join<span class="value" id="join-online"></span></button>
+        <button class="item" type="button" id="join-app-go" hidden>Get the app</button>
       </div>
       <div id="join-error" class="error"></div>
     </div>
     <div id="join-app" class="screen" data-nav hidden>
+      <button type="button" class="back" id="app-back">Back<kbd>Esc</kbd></button>
       <h1>Desktop app</h1>
+      <p class="lead">Full screen. Mouse look without interruptions. Right-click works.</p>
       <div class="copy-row"><span>Install</span><code id="app-install"></code><button type="button" data-copy="app-install">Copy</button></div>
       <p class="note">Mac and Linux. On Windows, in WSL.</p>
-      <div class="gap"></div>
-      <div class="items"><button type="button" class="item" id="app-back">Back</button><button type="button" class="item" id="app-dismiss">Not now</button></div>
     </div>
   </form>
-  <div class="corner" id="app-offer" hidden><button type="button" class="quiet" id="app-get">Desktop app</button><button type="button" class="quiet" id="app-later" title="Not now">✕</button></div>
 </div>
 
 <div id="howto" class="overlay" hidden>

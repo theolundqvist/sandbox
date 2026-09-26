@@ -267,14 +267,6 @@ async function menuApi(req: Request, action: string) {
 
 const page = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });
 
-/** The desktop app installs from whoever hosts the world, since friends only have the invite link. */
-const DESKTOP = join(ENGINE, "../desktop");
-function desktop(path: string) {
-  if (path === "/desktop/install") return new Response(Bun.file(join(DESKTOP, "install")), { headers: { "content-type": "text/plain; charset=utf-8" } });
-  if (path === "/desktop/app.tar.gz")
-    return new Response(Bun.spawn(["tar", "-czf", "-", "-C", DESKTOP, "package.json", "bun.lock", "main.cjs", "preload.cjs", "shell.html"]).stdout, { headers: { "content-type": "application/gzip" } });
-}
-
 Bun.serve<Pipe>({
   port: PORT,
   idleTimeout: 255,
@@ -282,8 +274,6 @@ Bun.serve<Pipe>({
     const url = new URL(req.url);
     if (url.pathname === "/menu") return page("menu.html");
     if (url.pathname.startsWith("/api/menu/")) return menuApi(req, url.pathname.slice("/api/menu/".length));
-    const app = desktop(url.pathname);
-    if (app) return app;
     const front = await frontFile(url.pathname);
     if (front) return front;
     if (url.pathname.startsWith("/vendor/three/")) {

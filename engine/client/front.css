@@ -38,6 +38,7 @@
 .back { align-self: flex-start; display: flex; align-items: center; gap: 12px; margin: 0 0 24px; padding: 8px 0; background: none; border: 0; border-radius: 0; color: var(--dim); font: 700 14px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; cursor: pointer; outline: none; }
 .back:hover, .back:focus-visible { color: var(--text); background: none; }
 .back kbd { font: inherit; font-size: 11px; border: 1px solid rgba(255,255,255,.35); padding: 3px 6px; color: var(--text); }
+.lead { margin: -16px 0 32px; color: var(--text); font-size: 18px; }
 @media (pointer: coarse) { .back { padding: 14px 0; } .back kbd { display: none; } }
 
 /* A setting: its name on the left, its value on the right, changed with the arrows. */
@@ -66,7 +67,6 @@
 .error { color: var(--err); min-height: 1.4em; margin-top: 16px; font: 600 14px/1.4 var(--display); }
 .hints { position: fixed; left: 96px; bottom: 36px; display: flex; gap: 28px; color: var(--dim); font: 700 12px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; pointer-events: none; }
 .hints kbd { font: inherit; display: inline-block; min-width: 24px; text-align: center; border: 1px solid rgba(255,255,255,.35); padding: 4px 6px; margin-right: 8px; color: var(--text); }
-.corner { position: fixed; right: 72px; bottom: 28px; display: flex; gap: 4px; align-items: center; }
 
 @media (pointer: coarse) { .hints { display: none; } }
 @media (max-width: 760px) {
@@ -81,6 +81,5 @@
   .pick output { min-width: 96px; font-size: 14px; }
   .copy-row > span { width: 72px; }
   .hints { display: none; }
-  .corner { right: 16px; bottom: 12px; }
 }
 @media (prefers-reduced-motion: reduce) { .backdrop video { display: none; } .item::before, .field::before { transition: none; } }

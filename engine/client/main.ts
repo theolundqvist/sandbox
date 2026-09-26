@@ -31,32 +31,27 @@ async function join(body: object) {
   history.replaceState(null, "", "/");
 }
 
-/** The desktop app installs from this world's host and opens the link it's given. The app marks its user agent with SandboxDesktop. */
-const appCommand = (link: string) => `curl -fsSL ${origin}/desktop/install | bash -s -- '${link}'`;
+/** The desktop app installs from GitHub and opens the link it's given. The app marks its user agent with SandboxDesktop. */
+const appCommand = (link: string) => `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '${link}'`;
 const appWanted = !navigator.userAgent.includes("SandboxDesktop") && !matchMedia("(pointer: coarse)").matches;
 
-/** Offers the desktop app on the join screen: browsers on computers only, until dismissed. Settings keeps offering it. */
+/** On computers the join screen offers the app as the other way to play. */
 function offerApp(link: string) {
-  const dismissed = "sandbox-app-offer";
-  try {
-    if (localStorage.getItem(dismissed)) return;
-  } catch {}
   if (!appWanted) return;
   $("app-install").textContent = appCommand(link);
-  $("app-offer").hidden = false;
+  $("join-go").firstChild!.textContent = "Play in browser";
+  $("join-app-go").hidden = false;
   const showApp = (on: boolean) => {
     $("join-app").hidden = !on;
     $("join-main").hidden = on;
-    $(on ? "app-back" : "join-name").focus();
+    $(on ? "app-back" : "join-app-go").focus();
   };
-  $("app-get").onclick = () => showApp(true);
+  $("join-app-go").onclick = () => showApp(true);
   $("app-back").onclick = () => showApp(false);
-  $("app-later").onclick = $("app-dismiss").onclick = () => {
-    $("app-offer").hidden = true;
+  $("join-app").onkeydown = (e) => {
+    if (e.key !== "Escape") return;
+    e.stopPropagation();
     showApp(false);
-    try {
-      localStorage.setItem(dismissed, "1");
-    } catch {}
   };
 }
 

@@ -33,6 +33,7 @@
       <button class="item" id="go-invite" data-to="invite">Invite</button>
       <button class="item" id="go-worlds" data-to="worlds">Worlds</button>
       <button class="item" id="go-create" data-to="create">Create</button>
+      <button class="item" id="go-app" data-to="app" hidden>Desktop app</button>
     </div>
   </section>
 
@@ -89,6 +90,7 @@
 
   <section id="app" class="screen" data-nav hidden>
     <h1>Desktop app</h1>
+    <p class="lead">Full screen. Mouse look without interruptions. Right-click works.</p>
     <div class="copy-row"><span>Install</span><code id="app-install"></code><button data-copy="app-install">Copy</button></div>
     <p class="note">Mac and Linux. On Windows, in WSL.</p>
   </section>
@@ -96,7 +98,6 @@
   <div id="error" class="error"></div>
 </main>
 <div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span></div>
-<div class="corner" id="app-offer" hidden><button class="quiet" id="app-get">Desktop app</button></div>
 <script type="module">
   import { backdrop, logo, pick } from "/front.js";
   const $ = (id) => document.getElementById(id);
@@ -300,12 +301,11 @@
       setTimeout(() => (button.textContent = "Copy"), 1500);
     };
 
-  /** The desktop app, offered quietly in the corner to browsers on computers. The app marks its user agent with SandboxDesktop. */
+  /** The desktop app, a menu entry on computers. The app marks its user agent with SandboxDesktop. */
   function offerApp(link) {
     if (navigator.userAgent.includes("SandboxDesktop") || matchMedia("(pointer: coarse)").matches) return;
-    $("app-install").textContent = `curl -fsSL ${location.origin}/desktop/install | bash -s -- '${link}'`;
-    $("app-offer").hidden = false;
-    $("app-get").onclick = () => current()?.id !== "app" && show("app");
+    $("app-install").textContent = `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '${link}'`;
+    $("go-app").hidden = false;
   }
 
   if (!key) {
