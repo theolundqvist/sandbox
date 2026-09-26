@@ -97,6 +97,9 @@ export function navigateIn(root) {
   root.addEventListener("pointermove", hover);
 }
 const focused = () => shadows.find((root) => root.activeElement)?.activeElement ?? document.activeElement;
+/** What the page slots into a shadow root's list: mods' blocks on the game menu's pages. */
+const slotted = (list) => [...list.querySelectorAll("slot")].flatMap((slot) => slot.assignedElements());
+const listOf = (el) => el?.closest("[data-nav]") ?? shadows.flatMap((root) => [...root.querySelectorAll("[data-nav]")]).find((list) => slotted(list).some((block) => block.contains(el)));
 const shown = (el) => el.getClientRects().length > 0 && !el.disabled && !el.closest("[hidden], [aria-disabled=true]");
 
 /** Up and down move between the controls of the list the focus is in, left and right change a pick, Enter steps it. */
@@ -105,14 +108,14 @@ addEventListener("keydown", (e) => {
   const active = focused();
   if (active?.matches("select, textarea, input[type=number]")) return;
   const lists = [document, ...shadows].flatMap((root) => [...root.querySelectorAll("[data-nav]")]).filter(shown);
-  const list = active?.closest("[data-nav]") ?? (active === document.body && lists.length === 1 ? lists[0] : null);
+  const list = listOf(active) ?? (active === document.body && lists.length === 1 ? lists[0] : null);
   if (!list || !shown(list)) return;
   if (active?.classList.contains("pick") && ["ArrowLeft", "ArrowRight", "Enter"].includes(e.key)) {
     e.preventDefault();
     return active.step(e.key === "ArrowLeft" ? -1 : 1);
   }
   if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-  const controls = [...list.querySelectorAll(FOCUSABLE)].filter((el) => shown(el) && el.closest("[data-nav]") === list && !el.closest(".pick > i"));
+  const controls = [...list.querySelectorAll(FOCUSABLE), ...slotted(list).flatMap((block) => [...block.querySelectorAll(FOCUSABLE)])].filter((el) => shown(el) && listOf(el) === list && !el.closest(".pick > i"));
   if (!controls.length) return;
   e.preventDefault();
   const at = controls.indexOf(active);

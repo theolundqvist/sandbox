@@ -4,7 +4,7 @@ import type { ClientCtx, ClientHooks, ClientMod, Entity, ReplayShot } from "../a
 import { clock, extent, isAvatar, plan, position, type Activity, type Plan, type Tick as Moment, type Shot } from "./director";
 import { PhysicsIndex } from "../physics";
 
-/** The engine's own UI (HUD, chat, votes, menus) lives in a closed shadow root only this file holds, so no mod's CSS or script can reach, hide or remove it. Mods' HUD stays in the page, slotted in, so their CSS still applies; their menu pages are inside, styled inline. */
+/** The Tab menu, where players vote on mods, is in a closed shadow root only this file holds, so no mod can reach, hide or remove it; mods' blocks on its pages stay in the page, slotted in. Everything else on screen is the page's, for mods to restyle or remove. */
 const ui = document.getElementById("ui")!;
 const uiRoot = ui.attachShadow({ mode: "closed" });
 uiRoot.adoptedStyleSheets = [...document.styleSheets].map((sheet) => {
@@ -12,7 +12,7 @@ uiRoot.adoptedStyleSheets = [...document.styleSheets].map((sheet) => {
   copy.replaceSync([...sheet.cssRules].map((rule) => rule.cssText).join("\n"));
   return copy;
 });
-uiRoot.append(...document.querySelectorAll("#hud, #join, #howto, #palette, #menu"));
+uiRoot.append(document.getElementById("menu")!);
 const SHOWN = { display: "block", visibility: "visible", opacity: "1" };
 /** Undoes whatever a mod does to #ui or to the page around it: puts it back in the page, drops its attributes, and keeps the page shown. */
 function keepUi() {
@@ -27,13 +27,12 @@ const guard = new MutationObserver(keepUi);
 guard.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
 guard.observe(document.body, { childList: true, attributes: true, attributeFilter: ["style", "class"] });
 guard.observe(ui, { attributes: true });
-const $ = <T extends HTMLElement>(id: string) => (uiRoot.getElementById(id) ?? document.getElementById(id)) as T;
-const pageFocus = Object.getOwnPropertyDescriptor(Document.prototype, "activeElement")!.get!;
-/** The focused element, inside the engine's UI too. */
-const focused = () => uiRoot.activeElement ?? (pageFocus.call(document) as Element | null);
-// Mods tell typing from playing by document.activeElement, which shows only #ui while a field in here has the focus: a stand-in field says "typing" without handing them the engine's own.
-const typingStandIn = document.createElement("input");
-Object.defineProperty(document, "activeElement", { get: () => (uiRoot.activeElement?.matches("input, textarea, [contenteditable]") ? typingStandIn : pageFocus.call(document)) });
+/** The engine's elements, held from the start, so one a mod removes only leaves the screen. */
+const byId = new Map([...document.querySelectorAll<HTMLElement>("[id]"), ...uiRoot.querySelectorAll<HTMLElement>("[id]")].map((el) => [el.id, el]));
+const $ = <T extends HTMLElement>(id: string) => (byId.get(id) ?? document.getElementById(id)) as T;
+const all = <T extends Element>(selector: string) => [...document.querySelectorAll<T>(selector), ...uiRoot.querySelectorAll<T>(selector)];
+/** The focused element, inside the menu too. */
+const focused = () => uiRoot.activeElement ?? document.activeElement;
 (await import(["/front.js"][0]!)).navigateIn(uiRoot);
 const hashParams = new URLSearchParams(location.hash.slice(1));
 
@@ -468,7 +467,7 @@ function keysChanged(mod: string) {
   changedMods.add(mod);
 }
 function showModKeys() {
-  for (const list of uiRoot.querySelectorAll(".mod-keys"))
+  for (const list of all(".mod-keys"))
     list.replaceChildren(
       ...activeBindings().flatMap((b) => {
         const dt = document.createElement("dt");
@@ -656,8 +655,8 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
     has,
     asset: (file) => `/assets/${file.includes("/") ? file : `${name}/${file}`}`,
     menuTab: (title) => {
-      const block = document.createElement("div");
-      menuPage(title).append(block);
+      const block = Object.assign(document.createElement("div"), { slot: menuPage(title) });
+      ui.append(block);
       loaded.owned.push(block);
       return block;
     },
@@ -672,8 +671,8 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
       if (mods.get(name) === loaded) applyScreen();
     },
     hud: (area) => {
-      const el = Object.assign(document.createElement("div"), { slot: area });
-      ui.append(el);
+      const el = document.createElement("div");
+      $(`hud-${area}`).append(el);
       loaded.owned.push(el);
       return el;
     },
@@ -694,11 +693,13 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
   if (rebuild && (mod.object || old?.mod.object)) rebuildAll();
 }
 
-/** The menu page with this title: mods share pages by title, join the engine's by using its title, and a page no mod fills any more goes away. Resume, Timelapse and Leave are the engine's. */
+/** The slot for mods' blocks on the menu page with this title: mods share pages by title, join the engine's by using its title, and a page no mod fills any more goes away. Resume, Timelapse and Leave are the engine's. */
 const CORE_PAGES = ["claude", "invite", "builders", "mods", "settings"];
 const PAGE_ALIASES: Record<string, string> = { help: "Settings", controls: "Settings" };
 const ENGINE_ENTRIES = ["resume", "timelapse", "leave"];
 let pageSeq = 0;
+const slotFor = (section: HTMLElement) => section.appendChild(Object.assign(document.createElement("slot"), { name: section.dataset.tab }));
+for (const section of $("pages").querySelectorAll<HTMLElement>("section[data-tab]")) slotFor(section);
 function menuPage(title: string) {
   const name = title.trim().toLowerCase();
   if (ENGINE_ENTRIES.includes(name)) throw new Error(`${title} belongs to the engine's menu; pick another title`);
@@ -713,13 +714,16 @@ function menuPage(title: string) {
     button.onclick = () => openPage(id);
     $("mod-pages").append(button);
     $("pages").append(section);
+    slotFor(section);
   }
-  return $("pages").querySelector<HTMLElement>(`section[data-tab="${button.dataset.tab}"]`)!;
+  return button.dataset.tab!;
 }
+/** What matches on a menu page, then in the mods' blocks slotted into it, in the order it shows. */
+const onPage = (section: Element, selector: string) => [...section.querySelectorAll<HTMLElement>(selector), ...section.querySelector("slot")!.assignedElements().flatMap((block) => [...block.querySelectorAll<HTMLElement>(selector)])];
 function pruneTabs() {
   for (const section of $("pages").querySelectorAll<HTMLElement>("section[data-tab]")) {
     const tab = section.dataset.tab!;
-    if (CORE_PAGES.includes(tab) || section.childElementCount) continue;
+    if (CORE_PAGES.includes(tab) || section.querySelector("slot")!.assignedElements().length) continue;
     const button = $("rail").querySelector<HTMLElement>(`[data-tab="${tab}"]`);
     if (button?.classList.contains("active")) showTab(null);
     button?.remove();
@@ -952,6 +956,8 @@ function addLine(text: string, kind = "info", feed = $("feed")) {
   line.className = `line ${kind}`;
   line.textContent = text;
   feed.append(line);
+  // It fades after a while and comes back while the chat is open.
+  setTimeout(() => line.classList.add("old"), 10_000);
   while (feed.children.length > 40) feed.firstElementChild!.remove();
   feed.scrollTop = 1e9;
   return line;
@@ -1017,7 +1023,7 @@ $("timelapse").onclick = async () => {
   const played = await playTimelapse();
   button.disabled = false;
   button.textContent = "Timelapse";
-  if (played) menu.hidden = true;
+  if (played) showMenu(false);
 };
 
 function startReplay(frames: Moment[]) {
@@ -1612,6 +1618,8 @@ function toast(text: string, kind = "info") {
 
 const chat = $<HTMLInputElement>("chat");
 const menu = $("menu");
+/** In the menu, or in a mod's block on one of its pages. */
+const inMenu = (el: Element | null) => !!el && (menu.contains(el) || ui.contains(el));
 const howto = $("howto");
 const palette = $("palette");
 const typing = () => {
@@ -1652,8 +1660,13 @@ function openChat() {
   startTalking();
   if (document.pointerLockElement) document.exitPointerLock();
 }
+/** The page knows the menu is open, so the HUD behind it steps aside. */
+function showMenu(shown: boolean) {
+  menu.hidden = !shown;
+  document.body.classList.toggle("menu-open", shown);
+}
 function closeMenu() {
-  menu.hidden = true;
+  showMenu(false);
   showTab(null);
   capture();
 }
@@ -1716,8 +1729,14 @@ $("mic").onpointerup = $("mic").onpointerleave = () => stopTalking(true);
 showMic();
 $("howto-play").onclick = play;
 
-// Capture phase, so mods' own listeners can't swallow declared keys.
+// Capture phase, so mods' own listeners can't swallow declared keys, or Tab, which opens the menu and its votes.
 addEventListener("keydown", (e: KeyboardEvent) => {
+  if (e.code === "Tab" && !spectator && !(replay && !typing()) && (!typing() || focused()!.closest("#layers") || inMenu(focused()))) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    (focused() as HTMLElement).blur();
+    return menu.hidden ? openMenu() : closeMenu();
+  }
   if (e.code === "Escape" && panel && menu.hidden && chat.hidden && palette.hidden) {
     e.stopImmediatePropagation();
     return closePanel();
@@ -1755,11 +1774,6 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     openChat();
     e.preventDefault();
     return;
-  }
-  if (e.code === "Tab" && (!typing() || focused()!.closest("#layers") || menu.contains(focused()))) {
-    e.preventDefault();
-    (focused() as HTMLElement).blur();
-    return menu.hidden ? openMenu() : closeMenu();
   }
   if (!menu.hidden) return menuKey(e);
   // In a game that locks the mouse, Esc arrives as the lock's loss (below); a free cursor may be a mod's own window, which Esc closes first.
@@ -1903,7 +1917,7 @@ function showTab(tab: string | null) {
 function openPage(tab: string) {
   showTab(tab);
   $("pages").scrollTop = 0;
-  const first = [...$("pages").querySelectorAll<HTMLElement>("section:not([hidden]) :is(button, input, select, textarea, a[href], [tabindex='0'])")].find((el) => el.getClientRects().length);
+  const first = onPage($("pages").querySelector("section:not([hidden])")!, "button, input, select, textarea, a[href], [tabindex='0']").find((el) => el.getClientRects().length);
   (first ?? $("pages")).focus({ preventScroll: true });
 }
 function closePage() {
@@ -1916,7 +1930,7 @@ $("page-back").onclick = closePage;
 $("pages").tabIndex = -1;
 /** Esc goes back a level and then resumes; right opens the entry on the rail, left goes back to it. */
 function menuKey(e: KeyboardEvent) {
-  const inPage = $("pages").contains(focused());
+  const inPage = $("pages").contains(focused()) || ui.contains(focused());
   const field = focused()?.matches("input:not([type=range]), textarea, select, [contenteditable]");
   if (e.code === "Escape") {
     e.preventDefault();
@@ -1945,10 +1959,10 @@ function menuCommands(): Command[] {
   for (const section of menu.querySelectorAll<HTMLElement>("section[data-tab]")) {
     const tab = section.dataset.tab!;
     const title = textOf($("rail").querySelector(`[data-tab="${CSS.escape(tab)}"]`));
-    for (const el of section.querySelectorAll<HTMLElement>("button, input, select, textarea")) {
+    for (const el of onPage(section, "button, input, select, textarea")) {
       const hiddenIn = el.parentElement?.closest("[hidden]");
-      if ((el as HTMLButtonElement).disabled || el.hidden || (hiddenIn && hiddenIn !== section && section.contains(hiddenIn))) continue;
-      const heading = [...section.querySelectorAll("h2, h3, b, label")].filter((h) => h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING && !h.contains(el)).pop();
+      if ((el as HTMLButtonElement).disabled || el.hidden || (hiddenIn && hiddenIn !== section && (section.contains(hiddenIn) || ui.contains(hiddenIn)))) continue;
+      const heading = onPage(section, "h2, h3, b, label").filter((h) => h.getRootNode() === el.getRootNode() && h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING && !h.contains(el)).pop();
       const own = el.tagName === "BUTTON" ? textOf(el) : textOf(el.closest("label")) || el.getAttribute("aria-label") || (el as HTMLInputElement).placeholder || textOf(heading);
       if (!own) continue;
       const context = textOf(heading) && textOf(heading) !== own ? `${title} · ${textOf(heading)}` : title;
@@ -2080,7 +2094,7 @@ async function openMenu() {
   leaveReplay();
   releaseKeys();
   const wasHidden = menu.hidden;
-  menu.hidden = false;
+  showMenu(true);
   menuOpenedAt = performance.now();
   if (wasHidden) {
     showTab(null);
@@ -2133,7 +2147,7 @@ async function refreshMenu() {
   if (voting >= 0 || landing) $("menu-mods").querySelectorAll("button")[Math.max(voting, 0)]?.focus();
 }
 
-for (const button of uiRoot.querySelectorAll<HTMLButtonElement>("[data-copy]"))
+for (const button of all<HTMLButtonElement>("[data-copy]"))
   button.onclick = async () => {
     const code = $(button.dataset.copy!);
     // Plain-http LAN links have no clipboard API, and an unfocused page is refused it.

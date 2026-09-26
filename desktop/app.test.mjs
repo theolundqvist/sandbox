@@ -84,7 +84,7 @@ after(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** The game's own UI is a closed shadow root, out of mods' reach; the tests open it so their selectors reach in. */
+/** The game's menu is a closed shadow root, out of mods' reach; the tests open it so their selectors reach in. */
 const OPEN_UI = () => {
   const attach = Element.prototype.attachShadow;
   Element.prototype.attachShadow = function (init) {
@@ -557,7 +557,22 @@ describe("in a browser", () => {
     assert.ok(page.url().startsWith(other.url));
   });
 
-  test("a mod's CSS and script can't reach, hide or remove the vote bar or the chat, and still see the player typing", async () => {
+  test("chat lines fade after a while and come back while the chat is open", async () => {
+    await page.click("#howto-play");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("hello all");
+    await page.keyboard.press("Enter");
+    const line = page.locator("#feed .line", { hasText: "browser: hello all" });
+    const opacity = () => line.evaluate((el) => Number(getComputedStyle(el).opacity));
+    await line.waitFor();
+    assert.equal(await opacity(), 1);
+    await until("the line to fade", async () => (await opacity()) === 0);
+    await page.keyboard.press("Enter");
+    assert.equal(await opacity(), 1);
+    await page.keyboard.press("Escape");
+  });
+
+  test("a mod may remove the vote bar and the chat and hide everything, but Tab still opens the menu and its votes", async () => {
     const join = async (name) => (await (await fetch(`${other.url}/api/join`, { method: "POST", body: JSON.stringify({ invite: other.invite, name }) })).json()).key;
     const key = await join("blackout");
     const tool = async (name, args) => {
@@ -565,19 +580,20 @@ describe("in a browser", () => {
       for (const [k, v] of Object.entries(args)) form.append(k, typeof v === "string" ? v : JSON.stringify(v));
       return (await fetch(`${other.url}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form })).text();
     };
-    const content = `import type { ClientMod } from "../../api";
-function blackout() {
+    const content = `import type { ClientCtx, ClientMod } from "../../api";
+function blackout(ctx: ClientCtx) {
+  document.getElementById("react")!.remove();
+  document.getElementById("chat")!.remove();
   document.head.append(Object.assign(document.createElement("style"), { textContent: "* { display: none !important; }" }));
-  for (const el of document.querySelectorAll<HTMLElement>("*")) el.style.setProperty("display", "none", "important");
-  for (const el of document.querySelectorAll("#react, #chat, #feed")) el.remove();
+  const block = ctx.menuTab("Blackout");
+  for (const root of [block.getRootNode(), block.assignedSlot?.getRootNode(), block.parentElement?.shadowRoot]) (root as ParentNode | undefined)?.querySelector("#menu")?.remove();
+  addEventListener("keydown", (e) => e.stopImmediatePropagation(), true);
   const ui = document.getElementById("ui")!;
-  ui.shadowRoot?.querySelector("#react")?.remove();
-  ui.shadowRoot?.querySelector("#chat")?.remove();
   ui.inert = true;
   ui.remove();
 }
-export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(blackout, 500); } } satisfies ClientMod;`;
-    // This player's UI stays closed, as it is for everyone; the test keeps its own handle to look inside.
+export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(() => blackout(ctx), 500); } } satisfies ClientMod;`;
+    // This player's menu stays closed, as it is for everyone; the test keeps its own handle to look inside.
     const closed = await browser.newPage();
     await closed.addInitScript(() => {
       const attach = Element.prototype.attachShadow;
@@ -587,31 +603,38 @@ export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(blackout,
         return root;
       };
     });
-    await closed.goto(`${other.url}/#key=${await join("closed")}`);
-    // Shown and on top where it is, so it takes the clicks.
-    const shown = (id) => closed.evaluate((id) => {
-      const el = window.uiForTest.getElementById(id);
-      const box = el?.getBoundingClientRect();
-      return !!box && el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && el.contains(window.uiForTest.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
-    }, id);
-    await until("the how-to", () => shown("howto-play"));
-    await closed.keyboard.press("Enter");
+    // A second player online, so one vote to undo doesn't revert the mod.
+    const witness = await guest(other.url, other.invite, "witness");
+    const closedKey = await join("closed");
+    await closed.goto(`${other.url}/#key=${closedKey}`);
+    await closed.click("#howto-play");
     await tool("write_file", { path: "mods/blackout/client.ts", content });
     assert.match(await tool("reload", { mod: "blackout", announce: { title: "Blackout", text: "Lights out" } }), /^blackout v1 is live/);
-    await sleep(1500);
-    await until("the vote bar", () => shown("react"));
-    await closed.keyboard.press("1");
-    assert.match(await closed.evaluate(() => window.uiForTest.querySelector("#react [data-kind=love]").className), /picked/);
+    const removed = () => closed.evaluate(() => !document.getElementById("react") && !document.getElementById("chat"));
+    await until("the mod's attack", removed);
+    await sleep(1000);
+    // The middle of a control in the menu (in a mod's row of votes), if it shows there on top of everything.
+    const onTop = (sel, row) => closed.evaluate(([sel, row]) => {
+      const root = window.uiForTest;
+      const el = row ? [...root.querySelectorAll("#menu-mods li")].find((li) => li.querySelector("b")?.textContent.startsWith(row))?.querySelector(sel) : root.querySelector(sel);
+      const box = el?.getBoundingClientRect();
+      const x = box && box.x + box.width / 2, y = box && box.y + box.height / 2;
+      return !!box && el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && el.contains(window.uiForTest.elementFromPoint(x, y)) && { x, y };
+    }, [sel, row]);
+    await closed.keyboard.press("Tab");
+    const mods = await until("the menu", () => onTop("[data-tab=mods]"));
+    await closed.mouse.click(mods.x, mods.y);
+    await until("the votes page", () => onTop("#menu-mods"));
+    const love = await until("blackout's vote", () => onTop("[data-kind=love]", "blackout"));
+    const votes = async () => (await (await fetch(`${other.url}/api/status`, { headers: { authorization: `Bearer ${closedKey}` } })).json()).mods.find((m) => m.name === "blackout");
+    await closed.mouse.click(love.x, love.y);
+    await until("the love vote", async () => (await votes()).love === 1);
+    await closed.keyboard.press("ArrowDown");
     await closed.keyboard.press("Enter");
-    assert.ok(await shown("chat"));
-    assert.equal(await closed.evaluate(() => document.activeElement?.tagName), "INPUT");
-    await closed.keyboard.type("still here");
-    await closed.keyboard.press("Enter");
-    await until("the chat line", () => closed.evaluate(() => {
-      const feed = window.uiForTest.getElementById("feed");
-      return feed.textContent.includes("closed: still here") && feed.checkVisibility({ opacityProperty: true, visibilityProperty: true });
-    }));
+    await until("the undo vote by keyboard", async () => { const v = await votes(); return v.undo === 1 && v.love === 0; });
+    assert.ok(await removed());
     await closed.close();
+    witness.close();
   });
 });
 

@@ -108,7 +108,7 @@ export interface ClientCtx {
   has(mod: string): boolean;
   /** URL of a file added with add_asset: ctx.asset("dragon.glb") for this mod's, ctx.asset("other-mod/dragon.glb") for another's. */
   asset(name: string): string;
-  /** Your block on the game menu's page with this title (Tab or Esc opens the menu), which is created if no page has it and listed on the menu under the engine's entries. Extend the engine's "Claude", "Invite", "Builders", "Mods" and "Settings" pages or another mod's page by using its title. "Resume", "Timelapse" and "Leave" are the engine's and throw. The menu is the engine's own UI, which stylesheets added to the page don't reach: style your block inline. Removed when this mod reloads. */
+  /** Your block on the game menu's page with this title (Tab or Esc opens the menu), which is created if no page has it and listed on the menu under the engine's entries. Extend the engine's "Claude", "Invite", "Builders", "Mods" and "Settings" pages or another mod's page by using its title. "Resume", "Timelapse" and "Leave" are the engine's and throw. Your block stays in the page, where your CSS reaches it; the menu around it is the engine's and out of reach. Removed when this mod reloads. */
   menuTab(title: string): HTMLElement;
   /** Your element in one of the engine's screen areas, where every mod's elements stack instead of overlapping: "left" (middle of the left edge), "right" (bottom right, growing up), "bottom" (bottom centre, growing up). Removed when this mod reloads. */
   hud(area: "left" | "right" | "bottom"): HTMLElement;
