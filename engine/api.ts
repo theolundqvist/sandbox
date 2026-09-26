@@ -5,6 +5,24 @@ export type Entity = Record<string, any>;
 
 export type Player = { id: string; name: string };
 
+export type GameStatus = "live" | "early" | "building";
+/** A game played inside a world: its card in the picker (games.json). Mods join it with `game: "<id>"`. */
+export type Game = {
+  id: string;
+  title: string;
+  tagline: string;
+  color: string;
+  accent?: string;
+  status: GameStatus;
+  /** Picker order, then title. */
+  order?: number;
+  spawn?: [number, number, number];
+  /** A client mod whose default export has paintCard(canvas, t). */
+  art?: string;
+  createdBy: string;
+  createdAt: number;
+};
+
 /** A solid entity's box: centre, half extents and yaw. */
 export type SolidBox = { readonly id: number; readonly x: number; readonly y: number; readonly z: number; readonly hx: number; readonly hy: number; readonly hz: number; readonly yaw: number };
 
