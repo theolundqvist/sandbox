@@ -44,13 +44,19 @@ function layout() {
 }
 
 const toggleFullscreen = () => win.setFullScreen(!win.isFullScreen());
+/** Reloads the game where it is; the world's key is saved in the page, so it rejoins. */
+const reload = () => game?.view.webContents.reload();
 const showMode = () => shell.webContents.send("mode", game && { name: game.name });
 
-/** F11 everywhere; Ctrl+Cmd+F on a Mac comes from the menu. With no menu elsewhere, Ctrl+W, Ctrl+R, F5, Alt and friends reach the game as plain keys. */
+/** F11 everywhere, and Ctrl+Shift+R to reload off a Mac; a Mac's Ctrl+Cmd+F and Cmd+R come from the menu. With no menu elsewhere, Ctrl+W, Ctrl+R, F5, Alt and friends reach the game as plain keys. */
 function keys(event, input) {
-  if (input.type === "keyDown" && input.key === "F11") {
+  if (input.type !== "keyDown") return;
+  if (input.key === "F11") {
     event.preventDefault();
     toggleFullscreen();
+  } else if (!mac && input.code === "KeyR" && input.control && input.shift && !input.alt) {
+    event.preventDefault();
+    reload();
   }
 }
 
@@ -173,7 +179,7 @@ app.whenReady().then(() => {
       ? Menu.buildFromTemplate([
           { role: "appMenu", submenu: [{ role: "about" }, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" }, { role: "quit" }] },
           { role: "editMenu" },
-          { label: "View", submenu: [{ label: "Toggle Full Screen", accelerator: "Ctrl+Cmd+F", click: toggleFullscreen }] },
+          { label: "View", submenu: [{ label: "Reload", accelerator: "Cmd+R", click: reload }, { label: "Toggle Full Screen", accelerator: "Ctrl+Cmd+F", click: toggleFullscreen }] },
         ])
       : null,
   );

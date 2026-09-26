@@ -105,13 +105,17 @@
   <span class="hint"><kbd>↑</kbd><kbd>↓</kbd>Select</span>
   <span class="hint"><kbd>Enter</kbd>Open</span>
   <span class="hint"><kbd>F11</kbd>Full screen</span>
+  <span class="hint" id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span>
 </footer>
 
 <script>
   const $ = (id) => document.getElementById(id);
   const invite = $("invite");
   document.body.classList.toggle("mac", shell.platform === "darwin");
-  if (shell.platform === "darwin") $("bar-hint").innerHTML = "<kbd>Ctrl</kbd><kbd>⌘</kbd><kbd>F</kbd>Full screen";
+  if (shell.platform === "darwin") {
+    $("bar-hint").innerHTML = "<kbd>Ctrl</kbd><kbd>⌘</kbd><kbd>F</kbd>Full screen";
+    $("reload-hint").innerHTML = "<kbd>⌘</kbd><kbd>R</kbd>Reload";
+  }
 
   const ago = (at) => {
     const m = Math.round((Date.now() - at) / 60000);
