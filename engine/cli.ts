@@ -138,7 +138,7 @@ const tools = [
   },
   {
     name: "logs",
-    description: "Recent console output and errors from server mods and from every player's game (their client mods' console.log/warn/error and crashes). Filter by mod, or by player to see one game, e.g. your own player's. Check it after every reload, before you say anything works.",
+    description: "Recent console output and errors from server mods and from every player's game (their client mods' console.log/warn/error and crashes). Filter by mod, or by player to see one game, e.g. your own player's. Check it after every reload, before you mark anything done.",
     inputSchema: { type: "object", properties: { mod: { type: "string" }, player: { type: "string" }, limit: { type: "number" } } },
   },
   {
@@ -245,7 +245,7 @@ const tools = [
   },
   {
     name: "screenshot",
-    description: "See exactly what your player sees right now, at most 1280 px wide: the scene, mod layers and HTML overlays (they must have the game open; a background tab shows only the scene). Look before you say something is there.",
+    description: "See exactly what your player sees right now, at most 1280 px wide: the scene, mod layers and HTML overlays (they must have the game open; a background tab shows only the scene). Look before you mark it done.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -263,7 +263,7 @@ const tools = [
   {
     name: "task",
     description:
-      "Show every player what you are building: the Builders board in the game menu and the HUD list each Claude's current task. Call it when you start something, as it progresses, and when it is done or blocked.",
+      "Show every player what you are building: the Builders board in the game menu and the HUD list each Claude's current task. This, not chat, is how players follow your work: call it when you start something, as it progresses, and when it is done (every check you can run passes; put what to try in status) or blocked (the reason in status).",
     inputSchema: {
       type: "object",
       properties: {
@@ -291,7 +291,7 @@ const tools = [
   {
     name: "say",
     description:
-      "Post a short message (at most 400 characters) in the in-game chat, shown as your player's Claude: one or two lines on what is there now that you have seen it work, or an answer to someone. To coordinate with other Claudes (who owns what, the exact export you need, who builds what), pass to: \"claudes\" instead, with no length limit: players don't see it in chat, other Claudes get it with their chat and it wakes their wait_for_chat when it names their player, claudes or everyone.",
+      "Post a short message (at most 400 characters) in the in-game chat, shown as your player's Claude. Chat belongs to the players: use it once, for a greeting like Hey everyone when you connect, so they see you are in, and never again; progress and results go through task, reveals through announce. To coordinate with other Claudes (who owns what, the exact export you need, who builds what), pass to: \"claudes\" instead, with no length limit: players don't see it in chat, other Claudes get it with their chat and it wakes their wait_for_chat when it names their player, claudes or everyone.",
     inputSchema: {
       type: "object",
       properties: { text: { type: "string" }, to: { type: "string", enum: ["claudes"], description: "claudes: only other Claudes read it (and players who open the Builders tab)." } },
@@ -304,7 +304,7 @@ const instructions = `This is a live multiplayer game that the players build tog
 Workflow: call status, read GUIDE.md and the mods that touch what you are about to build, then write or edit files under mods/<your-mod>/ and call reload. Nothing is live until reload succeeds.
 A world can hold several games: check list_games before you build, and put a game's mods in it with game: "<id>" (GUIDE.md, Games).
 One game, not a pile of mods: every shared system (movement, ground and sky, lighting, economy, shop, inventory, progression, map, HUD, each key) has one owner mod, which names it in its server.ts with export const owns = ["inventory"] so status lists it. Extend it through its exports or wrap, or ask its owner with say to "claudes"; never build a second one. Hook new things into what players already earn, press and see.
-Before you tell anyone something works, see it work: logs for your player stay clean, screenshot shows it, the input reaches the server (query_world, with wait when you expect state to change; never poll it in a loop). Then one line of say. announce only a new thing to play, once it works.
+Before you tell anyone something works, see it work: logs for your player stay clean, screenshot shows it, the input reaches the server (query_world, with wait when you expect state to change; never poll it in a loop). Only then mark your task done. Chat belongs to the players: say one greeting when you connect and nothing more there; players follow your work through task, and announce reveals only a real new thing to play, once it works.
 Other Claudes edit at the same time: re-read a file right before changing it. Between builds call wait_for_chat, for the whole session: players ask for things in the in-game chat, which is also appended to every tool result.`;
 
 class ToolError extends Error {}
@@ -627,7 +627,7 @@ export function createCli(ctx: CliContext) {
     const lost = cursor !== undefined && cursor < oldest - 1 ? `(${oldest - 1 - cursor} older lines are no longer kept)\n` : "";
     const lines = unseen.map((c) => `${c.claudes ? "[claudes] " : ""}${c.from}${c.spoken ? " (said aloud)" : ""}: ${c.text}`);
     chatSeen.set(who, ctx.chatLog.at(-1)?.seq ?? 0);
-    const spoken = unseen.some((c) => c.spoken) ? "\n(said aloud) lines are what a player said into their microphone (hold T, open chat, or leave the always-on mic on): often talk between players, not orders. See GUIDE.md, Listening to players." : "";
+    const spoken = unseen.some((c) => c.spoken) ? "\n(said aloud) lines are what a player said into their microphone (hold T, open chat, or leave the always-on mic on): often talk between players, not orders. See GUIDE.md, Staying with your player." : "";
     return lines.length ? [`In-game chat since your last look, oldest first:\n${lost}${lines.join("\n")}${spoken}`] : [];
   }
 

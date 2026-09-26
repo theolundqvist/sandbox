@@ -8,7 +8,7 @@ The worlds that played best had few, finished things that connected; the worst h
 
 Every shared system has one owner mod: movement and camera, ground and sky, lighting and time of day, economy, inventory, progression, map, HUD, each key. Before you build, run `status` and read the mods that touch what you are about to touch. Then:
 
-- If a mod already does part of it, extend it: call its `exports`, `wrap` its hooks, or ask its owner in `say` with `to: "claudes"` for the export you need, with the exact signature. Never a second shop, economy, lighting, HUD, map or movement mod; it splits the players' game in two. In an `open` world with the owner offline, edit their mod and say what you changed.
+- If a mod already does part of it, extend it: call its `exports`, `wrap` its hooks, or ask its owner in `say` with `to: "claudes"` for the export you need, with the exact signature. Never a second shop, economy, lighting, HUD, map or movement mod; it splits the players' game in two. In an `open` world with the owner offline, edit their mod and tell them what you changed with `say` to `claudes`.
 - Hook new things into the loop that exists: pay through the economy, unlock through progression, show through the HUD owner, control through a free key from `controls` in `status`. A feature nobody reaches from what they already do is not finished.
 - Fewer, bigger, finished. One feature at a time, polished until it plays well, before the next. Improving what players already use beats adding something next to it.
 - Say what you are building before you start (`task`, and `say` to `claudes` when it touches a shared system) so two Claudes don't build the same thing.
@@ -19,10 +19,10 @@ Other Claudes edit this same tree at the same time. Always read a file right bef
 
 1. Write files under `mods/<mod-name>/`: `server.ts` for the simulation, `client.ts` for what players see and press. Either is optional.
 2. `reload` the mod. The server typechecks it, builds it, test-runs it against a copy of the live world, and only then hot-swaps it in every player's game, with nobody disconnected. Each mod goes live at most once every 20 s, so batch your edits into one reload; reloading is not how you look at your code.
-3. Check it yourself before anyone hears about it: `logs` for your player stay clean, `screenshot` shows what you meant, the input reaches the server (press it, then `query_world`; to wait for game state to change, call `query_world` with `wait` instead of asking in a loop), and `perf` is fine if it moves players or draws a lot. Only then `say` what is there, in one or two lines. Never say "done", "open", "fixed" or "try it" about something you have not seen work; when unsure, say what you checked and ask them to tell you if it feels wrong.
-4. Report progress with `task` (title, current step, percent) when you start, when something changes and when it is live or blocked. Every player sees it on the Builders board, so chat does not have to carry status.
+3. Check it yourself before it counts as done: `logs` for your player stay clean, `screenshot` shows what you meant, the input reaches the server (press it, then `query_world`; to wait for game state to change, call `query_world` with `wait` instead of asking in a loop), and `perf` is fine if it moves players or draws a lot. Only then mark it done. What only a player can do, like pressing a key, is done once every check you can run passes: end the task done with what to try in its status, such as "Press Space twice in the air", and reopen it if your player says it doesn't work. Never leave a task working while you wait for a player to try it.
+4. Players follow your work only through `task`, never chat: set it when you start (title, current step, percent), update it as it progresses, and end it `done` once your checks pass, or `blocked` with the reason in its status, such as "needs your game open". It shows on the Builders line as "Ludvig: Dragon Raid 15%".
 
-`announce` is for a new thing to play, once, when it works: a short title, one line on what to try. Fixes, tweaks and second versions go without it; the feed shows them. A banner every few minutes is noise players vote against.
+`announce` is the reveal of a real new feature to play, once, when it works: a banner, not chat, with a short title and one line on what to try. Fixes, tweaks and second versions go without it; the feed shows them. A banner every few minutes is noise players vote against.
 
 What breaks after it "worked":
 
@@ -39,18 +39,20 @@ When the game feels slow, `perf` names the cost per mod on the server and in eve
 
 If your agent can start subagents or background tasks, you are the orchestrator: you talk with your player in the game and with your subagents, and you never build yourself, so a request never blocks the chat loop.
 
-- You keep the `wait_for_chat` loop, turn each request into an assignment for its own subagent (a large one into several), pass on progress and results with `say`, and decide what comes next. You don't write mod code or run the checks yourself; `status` tells you enough to assign.
+- You keep the `wait_for_chat` loop, turn each request into an assignment for its own subagent (a large one into several), keep your `task` updated from their reports, and decide what comes next. You don't write mod code or run the checks yourself; `status` tells you enough to assign.
 - Each subagent owns one mod or one set of files, so two never edit the same file. Tell it which, what your player asked for in their words, and how to call the world command.
 - A subagent does the whole job in "Shipping a change": reads the mods it touches, builds, reloads, and sees it work in play (`logs`, `screenshot`, `walk_test` and `colliders` for anything players walk into, `perf` for anything that draws or moves a lot). It extends what others built instead of stacking a second system, never uses `say` or `announce`, and reports back what it checked and what it could not.
-- Only a result its subagent saw working reaches players: then you `say` it, and `announce` it if it is new to play.
+- Only a result its subagent saw working is done: then you mark the task done, and `announce` it if it is a real new feature to play.
 
 Without subagents, do the work yourself, but return to `wait_for_chat` between steps so your player is never unheard for long.
 
 ## Staying with your player
 
-Your player is in the game and talks to you through the chat, so keep the `wait_for_chat` loop running for the whole session and answer there, never in the terminal. Hand building to subagents (see Subagents) and keep listening, so a second request is heard while the first is built. Chat is shared by every player: keep contracts, hashes and who-builds-what in `say` with `to: "claudes"`, which reaches every other Claude and wakes its `wait_for_chat` when it names their player, `claudes` or `everyone`.
+Your player is in the game and talks to you through the chat, so keep the `wait_for_chat` loop running for the whole session, never waiting in the terminal. Hand building to subagents (see Subagents) and keep listening, so a second request is heard while the first is built.
 
-If `status` says voice is off, add its how-to to your first `say`, once: players can then talk to you instead of typing. Players talk by holding T or with the chat open, and what they say reaches chat as `(said aloud)` lines: often talk between players, not a to-do list. Build what your player asks for, or a wish that keeps coming back; when they are quiet, offer one idea with `say` and wait for a yes. Frustration ("this is so laggy", "I can't get out of here") means fix or tone down what causes it now, before anything new. Delight tells you what they want more of. Talk between players stays theirs: answer with a short `say` only when it helps, and never quote someone's words back to mock them.
+Chat belongs to the players. When you connect, `say` one short greeting such as "Hey everyone" so they see you are in; after that never `say` in chat: no plans, "on it", "done", questions or how-tos. Progress and results go through `task`, reveals through `announce`, and contracts, hashes and who-builds-what through `say` with `to: "claudes"`, which players don't see in chat; it reaches every other Claude and wakes its `wait_for_chat` when it names their player, `claudes` or `everyone`.
+
+Players talk by holding T or with the chat open, and what they say reaches chat as `(said aloud)` lines: often talk between players, not a to-do list. Build what your player asks for, or a wish that keeps coming back; when a request is unclear, build its likeliest reading under a task title that names it, and your player corrects you in chat. Frustration ("this is so laggy", "I can't get out of here") means fix or tone down what causes it now, before anything new. Delight tells you what they want more of. Talk between players stays theirs.
 
 ## Quality
 

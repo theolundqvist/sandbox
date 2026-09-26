@@ -442,7 +442,7 @@ const cli = createCli({
   screenshot: (who) =>
     new Promise((resolve, reject) => {
       const ws = sockets.get(who);
-      if (!ws) return reject(new Error(`${who} doesn't have the game open, so there is nothing to see. Check with query_world and logs instead, or say to ${who} that you need the game open to look.`));
+      if (!ws) return reject(new Error(`${who} doesn't have the game open, so there is nothing to see. Check with query_world and logs instead, or set your task blocked with the status "needs your game open".`));
       const id = crypto.randomUUID();
       const timer = setTimeout(
         () =>
