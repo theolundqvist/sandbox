@@ -1552,7 +1552,7 @@ function stopTalking(keep: boolean) {
   }, () => {});
 }
 function showMic() {
-  $("mic").textContent = !voiceAvailable ? "No voice here" : talking ? "Talking" : matchMedia("(pointer: coarse)").matches ? "Hold to talk" : "Hold T to talk";
+  $("mic").textContent = !voiceAvailable ? "Voice needs the host's ElevenLabs key" : talking ? "Talking" : matchMedia("(pointer: coarse)").matches ? "Hold to talk" : "Hold T to talk";
   $("mic").dataset.state = !voiceAvailable ? "none" : talking ? "on" : "off";
 }
 $("mic").onpointerdown = startTalking;
