@@ -79,7 +79,7 @@ const CRASH_WINDOW_MS = 10 * 60_000;
 
 async function host(id: string, notice?: string) {
   if (running?.id === id) return;
-  if (!existsSync(join(WORLDS, id, "config.json"))) throw new Error("That game doesn't exist.");
+  if (!existsSync(join(WORLDS, id, "config.json"))) throw new Error("That world doesn't exist.");
   await stop();
   let reportPort!: (port: number) => void;
   const started = Date.now();
@@ -132,7 +132,7 @@ async function host(id: string, notice?: string) {
     if (recent.length <= CRASH_LIMIT) {
       await recorded;
       // Players' games keep reconnecting and land in the restarted world.
-      const restarted = await host(id, "The game crashed and restarted by itself. Anything from the last few seconds before the crash may be gone.").then(() => true, (e) => (console.error(e.message), false));
+      const restarted = await host(id, "The world crashed and restarted by itself. Anything from the last few seconds before the crash may be gone.").then(() => true, (e) => (console.error(e.message), false));
       if (restarted) return;
     }
     for (const ws of players) ws.close(4001, "The world stopped");
@@ -161,7 +161,7 @@ function create(body: any) {
   return id;
 }
 
-/** Packs or unpacks a world in a worker of its own, so the game this launcher proxies keeps flowing meanwhile. */
+/** Packs or unpacks a world in a worker of its own, so the world this launcher proxies keeps flowing meanwhile. */
 function archive(msg: object, transfer: Transferable[] = []): Promise<any> {
   const worker = new Worker(new URL("./archive.ts", import.meta.url));
   return new Promise((resolve, reject) => {
@@ -171,9 +171,9 @@ function archive(msg: object, transfer: Transferable[] = []): Promise<any> {
   }).finally(() => worker.terminate());
 }
 
-/** The whole game as one zip, running or not, without the secrets that let anyone into it here. */
+/** The whole world as one zip, running or not, without the secrets that let anyone into it here. */
 async function packWorld(id: unknown) {
-  if (!exists(id)) throw new Error("That game doesn't exist.");
+  if (!exists(id)) throw new Error("That world doesn't exist.");
   const { zip } = await archive({ t: "pack", dir: join(WORLDS, id) });
   return new Response(zip, { headers: { "content-type": "application/zip", "content-disposition": `attachment; filename="${slug(config(id).name)}.zip"` } });
 }
@@ -306,7 +306,7 @@ async function world(action: string, body?: object) {
   return data;
 }
 
-/** The running world's public address and join code, so its invites point at the relay rather than wherever the host opened the game. */
+/** The running world's public address and join code, so its invites point at the relay rather than wherever the host opened the world. */
 async function publish() {
   const code = tunnel?.url ? state.code : null;
   if (code && tunnel?.ws.readyState === WebSocket.OPEN) tunnel.ws.send(JSON.stringify({ t: "code", code, invite: running ? config(running.id).invite : null }));
@@ -353,7 +353,7 @@ async function menuState() {
 /** A world's picture: its host's game sends a frame of their own view, and Worlds shows it. */
 async function cover(req: Request, id: string) {
   const path = join(WORLDS, id, "cover.jpg");
-  if (!/^[a-z0-9-]+$/.test(id) || !existsSync(join(WORLDS, id, "config.json"))) return Response.json({ error: "That game doesn't exist." }, { status: 404 });
+  if (!/^[a-z0-9-]+$/.test(id) || !existsSync(join(WORLDS, id, "config.json"))) return Response.json({ error: "That world doesn't exist." }, { status: 404 });
   if (req.method !== "POST") return existsSync(path) ? new Response(Bun.file(path), { headers: { "content-type": "image/jpeg", "cache-control": "no-cache" } }) : new Response(null, { status: 404 });
   const jpeg = new Uint8Array(await req.arrayBuffer());
   if (jpeg.length > 2 << 20 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return Response.json({ error: "A cover is a JPEG under 2 MB." }, { status: 400 });
@@ -384,17 +384,17 @@ async function menuApi(req: Request, action: string) {
       saveState();
       await publish();
     } else if (action === "delete") {
-      if (running?.id === body.id) throw new Error("Stop the game before deleting it.");
-      if (!/^[a-z0-9-]+$/.test(body.id ?? "")) throw new Error("That game doesn't exist.");
+      if (running?.id === body.id) throw new Error("Stop the world before deleting it.");
+      if (!/^[a-z0-9-]+$/.test(body.id ?? "")) throw new Error("That world doesn't exist.");
       rmSync(join(WORLDS, body.id), { recursive: true, force: true });
     } else if (action === "configure") {
-      if (running?.id === body.id) throw new Error("Stop the game before changing it.");
-      if (!exists(body.id)) throw new Error("That game doesn't exist.");
+      if (running?.id === body.id) throw new Error("Stop the world before changing it.");
+      if (!exists(body.id)) throw new Error("That world doesn't exist.");
       const current = config(body.id);
       const name = String(body.name ?? current.name).trim().slice(0, 40) || current.name;
       writeFileSync(join(WORLDS, body.id, "config.json"), JSON.stringify({ ...current, name, rules: body.rules === "additive" ? "additive" : body.rules === "open" ? "open" : current.rules }, null, 2));
     } else if (action === "code") {
-      if (!tunnel?.url) throw new Error("Share the game first.");
+      if (!tunnel?.url) throw new Error("Share the world first.");
       state.code = newCode();
       saveState();
       await publish();

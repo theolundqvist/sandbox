@@ -10,7 +10,7 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | --- | --- | --- | --- |
 | One-liner | `curl …/desktop/install \| bash` | download release, extract to `~/.local/share/sandbox`, link `~/.local/bin/sandbox`, open | update: installs 0.2.0 |
 | Release file | AppImage / Mac zip from Releases | opens directly | manual |
-| First launch | app opens | title: Worlds, Join game, Host game, Quit; Worlds empty | app: first launch |
+| First launch | app opens | title: Worlds, Join world, Host world, Quit; Worlds empty | app: first launch |
 
 ## Updates
 
@@ -41,27 +41,27 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | Joined, this computer offline | Worlds, Continue | "You're offline. Check your internet, then retry." | manual |
 | Forget joined | Worlds, Forget | row removed | app: Forget removes it |
 
-## Host game
+## Host world
 
 | Journey | Entry | States | Test |
 | --- | --- | --- | --- |
-| Create | Host game, name or blank | blank gets a distinct place name; host plays it | app: unnamed world; launcher: own names |
-| Relay reachable | Host game | main menu opens through the relay, never "Waiting for the host" | app: Host game through the relay |
-| Relay unreachable | Host game | main menu opens on localhost, says "Can't reach the Sandbox relay, so only people on your Wi-Fi can join. Trying again…"; the game's invite is the Wi-Fi link | app: relay down, Wi-Fi link |
-| World crashes while starting | Host game | "The world crashed while starting. Try again." | manual |
+| Create | Host world, name or blank | blank gets a distinct place name; host plays it | app: unnamed world; launcher: own names |
+| Relay reachable | Host world | main menu opens through the relay, never "Waiting for the host" | app: Host world through the relay |
+| Relay unreachable | Host world | main menu opens on localhost, says "Can't reach the Sandbox relay, so only people on your Wi-Fi can join. Trying again…"; the world's invite is the Wi-Fi link | app: relay down, Wi-Fi link |
+| World crashes while starting | Host world | "The world crashed while starting. Try again." | manual |
 | No git (Mac without Xcode tools) | any | git never runs; history tools say Needs Git | launcher: no git |
 
-## Join game
+## Join world
 
 | Journey | Entry | States | Test |
 | --- | --- | --- | --- |
-| Code | Join game, code | relay looks it up, join screen, game | app: code joins through the relay |
-| Invite link | Join game, link | join screen, game | app: invite link |
-| /r/ link without scheme | Join game | becomes https | app: invite link |
-| Wrong code | Join game | "No game with that code" | app: wrong code |
+| Code | Join world, code | relay looks it up, join screen, game | app: code joins through the relay |
+| Invite link | Join world, link | join screen, game | app: invite link |
+| /r/ link without scheme | Join world | becomes https | app: invite link |
+| Wrong code | Join world | "No world with that code" | app: wrong code |
 | Rate limit | many wrong codes | "Too many tries. Wait a minute." | app: rate limit; launcher: limited per address |
 | Relay down | code | "Can't look up codes right now. Check your connection, or ask for the invite link." | app: relay down, code |
-| Clipboard prefill | Join game | prefills invite links and codes only | app: clipboard, true and false positives |
+| Clipboard prefill | Join world | prefills invite links and codes only | app: clipboard, true and false positives |
 | Other games' clips | join screen | only this world's | app: no /clips/ requests |
 
 ## Invites
@@ -81,7 +81,7 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | Quit, players online | Quit or close | asks, naming the count; Keep hosting keeps the server | app: a friend online |
 | Quit | Quit | server stops | app: quitting stops the server |
 | Crash | app killed | no server left behind; reopening lists the world and opens it | app: crashed app, reopened after the crash |
-| Host quits mid-game | host closes | "The host closed the game. You're back in when they open it."; rejoins by itself | app: host closes the game |
+| Host quits mid-game | host closes | "The host closed the world. You're back in when they open it."; rejoins by itself | app: host closes the game |
 | Voice, host without a key | mic reads Turn on voice | opens Settings on the Voice key field; key checked with ElevenLabs, saved 0600 in the app's data, shown masked, voice on for everyone without a restart | app: host turns voice on; launcher: voice key |
 | Voice, player without host key | mic reads Voice off | disabled | app: code joins (visitor) |
 | Voice, key refused later | hold T | host: "ElevenLabs refused the voice key. Add it again in Settings."; players: "Voice didn't go through. Try again." | manual |

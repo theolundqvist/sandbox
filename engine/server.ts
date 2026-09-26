@@ -123,7 +123,7 @@ function chat(from: string, text: string, how?: "spoken" | "claudes") {
   for (const wake of chatWaiters) wake();
 }
 const sockets = new Map<string, ServerWebSocket<Conn>>();
-/** Visitors with an invite watching the game live behind the join screen: no player, unseen and read-only. */
+/** Visitors with an invite watching the world live behind the join screen: no player, unseen and read-only. */
 const spectators = new Map<string, ServerWebSocket<Conn>>();
 
 /** Players' verdicts on the live version of each mod; more than half of those online voting undo reverts it. */

@@ -93,7 +93,7 @@ test("a join code leads to the game's invite link until the host replaces it or 
 
   const renewed = await menu("code", {});
   expect(renewed.tunnel.code).not.toBe(first);
-  expect(await (await lookup(first)).json()).toEqual({ error: "No game with that code" });
+  expect(await (await lookup(first)).json()).toEqual({ error: "No world with that code" });
   expect((await lookup(renewed.tunnel.code)).status).toBe(200);
 
   await menu("share", { on: false });
@@ -280,7 +280,7 @@ test("a world that crashes is hosted again by itself, its players' games reconne
     });
   }
   expect(welcome?.t).toBe("welcome");
-  expect(welcome.feed.map((f: { text: string }) => f.text)).toContain("The game crashed and restarted by itself. Anything from the last few seconds before the crash may be gone.");
+  expect(welcome.feed.map((f: { text: string }) => f.text)).toContain("The world crashed and restarted by itself. Anything from the last few seconds before the crash may be gone.");
   expect(world()).not.toBe(first);
   const log = readFileSync(join(data, "worlds", s.running.id, "world.log"), "utf8");
   expect(log.match(/Crashy is running/g)).toHaveLength(2);
