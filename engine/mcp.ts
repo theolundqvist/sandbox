@@ -171,7 +171,14 @@ const tools = [
   {
     name: "query_world",
     description: "Read live entities that have all the given components, e.g. [\"player\", \"pos\"].",
-    inputSchema: { type: "object", properties: { components: { type: "array", items: { type: "string" } }, limit: { type: "number" } } },
+    inputSchema: {
+      type: "object",
+      properties: {
+        components: { type: "array", items: { type: "string" } },
+        limit: { type: "number" },
+        wait: { type: "number", description: "Seconds to wait for the answer to change, at most 60, instead of asking again and again: returns as soon as it differs from what it was when you called." },
+      },
+    },
   },
   {
     name: "query_db",
@@ -418,8 +425,18 @@ export function createMcp(ctx: McpContext) {
         return args.on ? "Colliders are showing in your player's game: red boxes are ones nothing draws." : "Colliders are hidden.";
       case "query_world": {
         const components: string[] = args.components ?? [];
-        const found = [...ctx.sim.entities].filter(([, e]) => components.every((c) => c in e));
-        return JSON.stringify(Object.fromEntries(found.slice(0, args.limit ?? 50))) + `\n(${found.length} matching entities)`;
+        const query = () => {
+          const found = [...ctx.sim.entities].filter(([, e]) => components.every((c) => c in e));
+          return JSON.stringify(Object.fromEntries(found.slice(0, args.limit ?? 50))) + `\n(${found.length} matching entities)`;
+        };
+        const first = query();
+        const until = Date.now() + Math.min(Number(args.wait) || 0, 60) * 1000;
+        while (Date.now() < until) {
+          await Bun.sleep(250);
+          const now = query();
+          if (now !== first) return now;
+        }
+        return first;
       }
       case "query_db": {
         if (!/^[a-z][a-z0-9-]{0,31}$/.test(args.mod)) throw new ToolError("Unknown mod.");

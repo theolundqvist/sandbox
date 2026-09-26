@@ -172,3 +172,14 @@ test("perf names the mod behind a slow tick, not just its average", async () => 
   expect(server.modTicks.spiky.max).toBeGreaterThanOrEqual(29);
   expect(server.mods.spiky).toBeLessThan(15);
 }, 30_000);
+
+test("query_world with wait answers when what it asked about changes, not before", async () => {
+  await write("mods/bell/server.ts", serverMod(`{ message(world) { world.spawn({ pos: [0, 0, 0], rung: true }); } }`));
+  expect((await tool("reload", { mod: "bell" })).text).toStartWith("bell v1 is live");
+  const started = Date.now();
+  const answer = tool("query_world", { components: ["rung"], wait: 20 });
+  await Bun.sleep(1000);
+  player.send(JSON.stringify({ t: "m", mod: "bell", msg: {} }));
+  expect((await answer).text).toContain("(1 matching entities)");
+  expect(Date.now() - started).toBeLessThan(3000);
+}, 30_000);
