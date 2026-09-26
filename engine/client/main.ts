@@ -1356,8 +1356,9 @@ function spectate(invite: string) {
   let opened = false;
   document.body.classList.add("spectating");
   void audio.context.suspend();
-  // The sheet covers the left, so what the camera circles sits right of centre.
-  if (innerWidth > 900) camera.setViewOffset(innerWidth, innerHeight, -innerWidth * 0.18, 0, innerWidth, innerHeight);
+  // The menu covers the left of a wide screen and the top of a tall one, so what the camera circles sits right of or below centre.
+  const wide = innerWidth > innerHeight;
+  camera.setViewOffset(innerWidth, innerHeight, wide ? -innerWidth * 0.18 : 0, wide ? 0 : -innerHeight * 0.12, innerWidth, innerHeight);
   ws.onmessage = ({ data }) => {
     opened = true;
     const msg = JSON.parse(data);
