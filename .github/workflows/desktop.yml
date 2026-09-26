@@ -1,0 +1,59 @@
+name: Desktop app
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: --mac zip --arm64
+          - os: macos-15-intel
+            target: --mac zip --x64
+          - os: ubuntu-latest
+            target: --linux
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: ./stage-engine
+      - run: |
+          [[ "$GITHUB_REF" == refs/tags/v* ]] && set -- "-c.extraMetadata.version=${GITHUB_REF_NAME#v}"
+          bunx electron-builder ${{ matrix.target }} --publish never "$@"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            desktop/dist/Sandbox-*.zip
+            desktop/dist/Sandbox-*.AppImage
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp desktop/build/icon.png dist/sandbox.png
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "Sandbox $GITHUB_REF_NAME" --notes "Install or update: curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash"
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber

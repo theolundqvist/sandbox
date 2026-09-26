@@ -15,7 +15,10 @@ const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write
 const linkIn = (argv) => argv.slice(1).find((a) => /^https?:\/\//.test(a));
 
 // A second copy can't open the saved logins, so it hands its link over to the first.
-if (!app.requestSingleInstanceLock()) app.exit();
+if (!app.requestSingleInstanceLock()) {
+  console.log("Sandbox is already open");
+  app.exit();
+}
 app.on("second-instance", (_event, argv) => {
   if (win.isMinimized()) win.restore();
   win.focus();
@@ -23,8 +26,11 @@ app.on("second-instance", (_event, argv) => {
   if (link) play(link);
 });
 
-/** The game's own front end (fonts, clips, menu styles), shipped inside the app so the start screen works offline. */
-const FRONT = app.isPackaged ? join(process.resourcesPath, "client") : join(__dirname, "../engine/client");
+/** The engine this app hosts games with: its launcher, run by the bun shipped inside the app, with its games in the app's data folder. */
+const ENGINE = app.isPackaged ? join(process.resourcesPath, "engine") : join(__dirname, "..");
+const BUN = app.isPackaged ? join(ENGINE, "bun") : "bun";
+/** The game's own front end (fonts, clips, menu styles), which the start screen uses too, so it works offline. */
+const FRONT = join(ENGINE, "engine/client");
 protocol.registerSchemesAsPrivileged([{ scheme: "sandbox", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -90,7 +96,7 @@ function play(raw) {
   }
   if (!/^https?:$/.test(url.protocol)) return "Paste the http:// or https:// link your host sent.";
   leave();
-  const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
+  const view = new WebContentsView({ webPreferences: { preload: join(__dirname, "game-preload.cjs"), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
   view.setBackgroundColor("#0b0b0c");
   game = { view, name: url.host };
   const fail = (reason) => {
@@ -125,6 +131,7 @@ function play(raw) {
   wc.on("did-fail-load", (_, code, description, _url, mainFrame) => {
     if (mainFrame && code !== -3) fail(description);
   });
+  wc.on("dom-ready", () => wc.send("update", update));
   win.contentView.addChildView(view);
   layout();
   showMode();
@@ -133,9 +140,6 @@ function play(raw) {
   return null;
 }
 
-/** The engine this app hosts games with: its launcher, run by the bun shipped inside the app, with its games in the app's data folder. */
-const ENGINE = app.isPackaged ? join(process.resourcesPath, "engine") : join(__dirname, "..");
-const BUN = app.isPackaged ? join(ENGINE, "bun") : "bun";
 const DATA = join(app.getPath("userData"), "data");
 /** @type {{ proc: import("node:child_process").ChildProcess, base: string, key: string } | null} */ let server = null;
 /** @type {Promise<{ base: string, key: string }> | null} */ let starting = null;
@@ -319,6 +323,8 @@ function createWindow() {
   shell.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.contentView.addChildView(shell);
   void shell.webContents.loadURL("sandbox://app/shell.html");
+  shell.webContents.once("did-finish-load", () => console.log("Sandbox is open"));
+  shell.webContents.on("did-finish-load", () => shell.webContents.send("update", update));
   const link = linkIn(process.argv);
   if (link) shell.webContents.once("did-finish-load", () => play(link));
   layout();
@@ -367,6 +373,7 @@ app.whenReady().then(() => {
     save();
   });
   ipcMain.on("leave", (event) => fromShell(event) && leave());
+  ipcMain.handle("update", (event) => (fromShell(event) || event.sender === game?.view.webContents) && install());
   ipcMain.on("quit", (event) => fromShell(event) && app.quit());
 
   protocol.handle("sandbox", (req) => {
@@ -378,7 +385,50 @@ app.whenReady().then(() => {
     return file.startsWith(FRONT) ? net.fetch(pathToFileURL(file).href) : new Response("not found", { status: 404 });
   });
   createWindow();
+  if (app.isPackaged) void checkUpdate();
 });
+
+/** The newest release when it is newer than this app, polled like PR Cockpit: every 5 minutes, backing off while GitHub rate-limits. */
+let update = null;
+let checkEvery = 5 * 60 * 1000;
+const newer = (a, b) => {
+  const [x, y] = [a, b].map((v) => v.split(".").map(Number));
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
+  return false;
+};
+async function checkUpdate() {
+  const res = await net.fetch("https://api.github.com/repos/theolundqvist/sandbox/releases/latest", { headers: { accept: "application/vnd.github+json" } }).catch(() => null);
+  checkEvery = res?.status === 403 || res?.status === 429 ? Math.min(checkEvery * 2, 6 * 60 * 60 * 1000) : 5 * 60 * 1000;
+  const release = res?.ok ? await res.json().catch(() => null) : null;
+  if (release?.tag_name) {
+    const version = release.tag_name.replace(/^v/, "");
+    const next = newer(version, app.getVersion()) ? version : null;
+    if (next !== update) {
+      update = next;
+      shell?.webContents.send("update", update);
+      game?.view.webContents.send("update", update);
+    }
+  }
+  setTimeout(checkUpdate, checkEvery);
+}
+
+/** Updates the way the installer does, since Squirrel won't update an unsigned Mac app: this app quits, and the installer swaps in the release and opens it again. */
+let installing = false;
+async function install() {
+  if (!update || installing) return;
+  const hosting = await guests();
+  if (game || hosting?.count) {
+    const detail = hosting?.count ? `${hosting.count === 1 ? "1 player is" : `${hosting.count} players are`} in ${hosting.name}. Updating ends the game for them.` : `You're in ${game.name}. Sandbox restarts to update.`;
+    const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Update", "Not now"], defaultId: 0, cancelId: 1, message: `Update to Sandbox ${update}?`, detail });
+    if (response !== 0) return;
+  }
+  installing = true;
+  const log = openSync(join(app.getPath("userData"), "update.log"), "a");
+  spawn("bash", ["-c", "curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash"], { detached: true, stdio: ["ignore", log, log] }).unref();
+  quitting = true;
+  await stopServer();
+  app.quit();
+}
 
 /** Asks first when that leaves a game: the host's own, or friends still in the game this app hosts. Then stops the server. */
 let confirming = null;

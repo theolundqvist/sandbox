@@ -56,6 +56,7 @@
       <button class="item" data-to="saved">Worlds</button>
       <button class="item" data-to="join">Join game</button>
       <button class="item" id="go-new">Host game</button>
+      <button class="item" id="go-update" hidden>Update<span class="value" id="update-version"></span></button>
       <button class="item" id="quit">Quit</button>
     </div>
   </section>
@@ -199,6 +200,11 @@
   }
 
   $("quit").onclick = () => shell.quit();
+  $("go-update").onclick = () => shell.update();
+  shell.on("update", (version) => {
+    $("go-update").hidden = !version;
+    $("update-version").textContent = version ?? "";
+  });
   $("leave").onclick = () => shell.leave();
   $("retry").onclick = () => open($("retry").dataset.url);
 

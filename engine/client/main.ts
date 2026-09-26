@@ -1861,6 +1861,10 @@ palette.onclick = (e) => e.target === palette && closePalette();
 for (const keysList of $("howto").querySelectorAll(".keys")) $("help-keys").append(keysList.cloneNode(true));
 /** Leaving closes this game: the host goes back to their main menu, anyone else to this world's join screen. */
 let leaving = false;
+/** The desktop app says when a newer release is out, and installs it when asked. */
+const desktop = (window as { sandboxDesktop?: { update(): void; onUpdate(fn: (version: string | null) => void): void } }).sandboxDesktop;
+desktop?.onUpdate((version) => ($("menu-update").hidden = !version));
+$("menu-update").onclick = () => desktop?.update();
 $("leave").onclick = () => {
   leaving = true;
   socket?.close();

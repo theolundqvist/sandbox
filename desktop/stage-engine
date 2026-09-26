@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Puts the engine, its packages for this platform and this machine's bun into server/engine, which the app ships as its game server.
+# One folder down, because electron-builder leaves out a node_modules at the top of an extraResources folder.
+set -euo pipefail
+cd "$(dirname "$0")"
+(cd .. && bun install --frozen-lockfile)
+rm -rf server
+mkdir -p server/engine
+cp -R ../engine ../package.json server/engine/
+cp -R ../node_modules server/engine/node_modules
+rm -rf server/engine/node_modules/.bin server/engine/engine/launcher.test.ts
+cp -L "$(command -v bun)" server/engine/bun

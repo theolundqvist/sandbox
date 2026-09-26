@@ -156,7 +156,8 @@
   #rail .item::before { width: 12px; height: 12px; }
   #mod-pages { flex: 1; min-height: 0; overflow-y: auto; flex-wrap: nowrap; margin: 16px 0; padding-top: 16px; border-top: 1px solid var(--line); scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.25) transparent; }
   #mod-pages:empty { visibility: hidden; }
-  #leave { flex: none; margin-top: auto; }
+  #leave, #menu-update { flex: none; }
+  #menu-update, #menu-update[hidden] + #leave { margin-top: auto; }
   #pages { position: absolute; top: 0; bottom: 0; left: 400px; width: min(760px, calc(100vw - 440px)); padding: 72px 56px 40px; background: var(--pane); overflow-y: auto; }
   #pages .screen-title { font-size: 44px; margin-bottom: 28px; }
   #pages:focus { outline: none; }
@@ -346,6 +347,7 @@
       <button id="timelapse" class="item">Timelapse</button>
     </div>
     <div id="mod-pages" class="items"></div>
+    <button id="menu-update" class="item" hidden>Update</button>
     <button id="leave" class="item">Leave</button>
   </nav>
   <div id="pages" data-nav hidden>

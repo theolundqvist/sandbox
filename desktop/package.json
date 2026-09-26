@@ -5,10 +5,42 @@
   "description": "Desktop client for Sandbox worlds",
   "private": true,
   "main": "main.cjs",
+  "desktopName": "sandbox.desktop",
   "scripts": {
     "start": "electron ."
   },
-  "dependencies": {
-    "electron": "^44.4.5"
+  "devDependencies": {
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.theolundqvist.sandbox",
+    "artifactName": "Sandbox-${os}-${arch}.${ext}",
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "game-preload.cjs",
+      "shell.html"
+    ],
+    "mac": {
+      "target": "zip",
+      "category": "public.app-category.games",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Push to talk sends what you say to the world's chat."
+      }
+    },
+    "linux": {
+      "executableName": "sandbox",
+      "target": "AppImage",
+      "category": "Game"
+    },
+    "extraResources": [
+      {
+        "from": "server",
+        "to": "."
+      }
+    ]
   }
 }
