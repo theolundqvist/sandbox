@@ -2121,6 +2121,7 @@ renderer.setAnimationLoop(() => {
   if (replay) film(dt, now);
   if (spectator && view === camera && screen.scene !== false) driftCamera(dt, now);
   shakeCamera(dt);
+  updateColliders(now);
   const drawStart = performance.now();
   if (screen.scene !== false) draw(dt);
   view.position.sub(shakeOffset);
