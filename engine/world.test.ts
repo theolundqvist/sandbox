@@ -1,6 +1,6 @@
 // A throwaway world over real HTTP and websockets, driven through the same tools a Claude uses.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -151,3 +151,15 @@ test("a Claude can show colliders in its player's game", async () => {
   await Bun.sleep(100);
   expect(received.some((m) => m.t === "colliders" && m.on === true)).toBe(true);
 });
+
+test("test runs of a mod don't keep copies of the world's databases alive", async () => {
+  await write("mods/ledger/server.ts", serverMod(`{ load(world) { world.db.run("create table if not exists t (s text)"); world.db.transaction(() => { for (let i = 0; i < 2000; i++) world.db.run("insert into t values (?)", "x".repeat(4000)); }); } }`));
+  expect((await tool("reload", { mod: "ledger" })).text).toStartWith("ledger v1 is live");
+  await write("mods/broken/server.ts", serverMod(`{ tick() { throw new Error("broken"); } }`));
+  const rss = () => Number(readFileSync(`/proc/${world.pid}/status`, "utf8").match(/VmRSS:\s+(\d+)/)![1]) / 1024;
+  await tool("reload", { mod: "broken" });
+  const before = rss();
+  for (let i = 0; i < 30; i++) expect((await tool("reload", { mod: "broken" })).text).toStartWith("Test run");
+  // Measured: 84 MB with the copies closed, 584 MB without.
+  expect(rss() - before).toBeLessThan(250);
+}, 60_000);

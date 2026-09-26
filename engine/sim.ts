@@ -38,6 +38,10 @@ for (const level of ["log", "info", "warn", "error"] as const) {
 let dbDir = "";
 const writers = new Map<string, ModDb>();
 const readers = new Map<string, ModDb>();
+/** Every open database, closed before the host terminates this worker. */
+const handles: Database[] = [];
+/** Under the host's 2 s freeze limit, so a locked database throws in the mod instead of getting it reverted as frozen. */
+const BUSY_MS = 1000;
 
 function ownDb(name: string) {
   const cached = writers.get(name);
@@ -45,15 +49,18 @@ function ownDb(name: string) {
   const path = join(dbDir, `${name}.sqlite`);
   let db: Database;
   if (trial) {
-    const copy = existsSync(path) ? new Database(path, { readonly: true }).serialize() : null;
+    const source = existsSync(path) ? new Database(path, { readonly: true }) : null;
+    const copy = source?.serialize() ?? null;
+    source?.close();
     // A WAL-mode header makes the in-memory copy unopenable; bytes 18-19 switch it to rollback journaling.
     if (copy) copy[18] = copy[19] = 1;
     db = copy ? Database.deserialize(copy) : new Database(":memory:");
   } else {
     db = new Database(path, { create: true });
     db.run("pragma journal_mode = wal");
-    db.run("pragma busy_timeout = 2000");
+    db.run(`pragma busy_timeout = ${BUSY_MS}`);
   }
+  handles.push(db);
   writers.set(name, modDb(db));
   return writers.get(name)!;
 }
@@ -65,7 +72,8 @@ function readDb(name: string) {
   const path = join(dbDir, `${name}.sqlite`);
   if (!existsSync(path)) throw new Error(`${name} has no database yet`);
   const db = new Database(path, { readonly: true });
-  db.run("pragma busy_timeout = 2000");
+  db.run(`pragma busy_timeout = ${BUSY_MS}`);
+  handles.push(db);
   readers.set(name, modDb(db));
   return readers.get(name)!;
 }
@@ -443,6 +451,9 @@ self.onmessage = async ({ data: msg }) => {
       }
       return post({ t: "answer", id: msg.id, value: ticks });
     }
+    case "close":
+      for (const db of handles.splice(0)) db.close();
+      return post({ t: "closed" });
     case "walk":
       return void walks.push(msg);
     case "leave": {

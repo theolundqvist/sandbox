@@ -202,3 +202,34 @@ test("the host adds a voice key in the game: checked, kept private, live without
   const printed = (await new Response(launcher.stdout).text()) + (await new Response(launcher.stderr).text());
   expect(printed).not.toContain(GOOD);
 }, 60_000);
+
+test("a world that crashes is hosted again by itself, its players' games reconnect and hear why, and the crash is in world.log", async () => {
+  const port = LAUNCHER + 700;
+  const data = join(dir, "crashy");
+  const launcher = Bun.spawn(["bun", join(import.meta.dir, "launcher.ts")], { env: { ...env, PORT: String(port), SANDBOX_DATA: data, SANDBOX_NO_OPEN: "1" }, stdout: "ignore", stderr: "ignore" });
+  procs.push(launcher);
+  const base = `http://127.0.0.1:${port}`;
+  await up(`${base}/menu`);
+  const { key } = await (await localKey(base)).json();
+  const s = await (await fetch(`${base}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ name: "Crashy", start: "basics" }) })).json();
+  const player = await (await fetch(`${base}/api/join`, { method: "POST", body: JSON.stringify({ invite: s.running.invite, name: "stayer" }) })).json();
+  const world = () => Number(readdirSync(`/proc/${launcher.pid}/task`).flatMap((t) => readFileSync(`/proc/${launcher.pid}/task/${t}/children`, "utf8").trim().split(" ")).find(Boolean));
+  const first = world();
+  process.kill(first, "SIGABRT");
+
+  let welcome: any;
+  for (let i = 0; i < 100 && !welcome; i++) {
+    await Bun.sleep(200);
+    welcome = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?key=${player.key}`);
+      ws.onmessage = (e) => (resolve(JSON.parse(String(e.data))), ws.close());
+      ws.onclose = ws.onerror = () => resolve(null);
+    });
+  }
+  expect(welcome?.t).toBe("welcome");
+  expect(welcome.feed.map((f: { text: string }) => f.text)).toContain("The game crashed and restarted by itself. Anything from the last few seconds before the crash may be gone.");
+  expect(world()).not.toBe(first);
+  const log = readFileSync(join(data, "worlds", s.running.id, "world.log"), "utf8");
+  expect(log.match(/Crashy is running/g)).toHaveLength(2);
+  launcher.kill();
+}, 60_000);

@@ -10,6 +10,17 @@ const HANG_MS = 2000;
 /** Starting a trial loads every server mod, which takes seconds on a busy machine; only its ticks count as hanging. */
 const TRIAL_START_MS = 15_000;
 
+/** Closes a worker's databases before terminating it: Bun never frees what a terminated worker left open, and each test run's database copies stayed in memory until the server crashed. One too stuck to answer is terminated anyway. */
+function retire(worker: Worker) {
+  const timer = setTimeout(() => worker.terminate(), 500);
+  worker.addEventListener("message", ({ data }) => {
+    if (data.t !== "closed") return;
+    clearTimeout(timer);
+    worker.terminate();
+  });
+  worker.postMessage({ t: "close" });
+}
+
 export class SimHost {
   entities = new Map<number, Entity>();
   nextId = 1;
@@ -43,7 +54,7 @@ export class SimHost {
       }
       if (Date.now() - lastChange < HANG_MS) return;
       const culprit = this.mods().find((m) => m.id === Atomics.load(this.beat, 1));
-      this.worker.terminate();
+      retire(this.worker);
       if (culprit) this.on.fault(culprit.name, `froze the server for over ${HANG_MS / 1000} s`);
       this.start();
       lastChange = Date.now();
@@ -121,7 +132,7 @@ export class SimHost {
 
   /** Replaces the world wholesale: a fresh worker loads every mod against the new entities. */
   restart() {
-    this.worker.terminate();
+    retire(this.worker);
     this.start();
   }
 
@@ -154,7 +165,8 @@ export class SimHost {
       let timer = setTimeout(() => done(`did not load within ${TRIAL_START_MS / 1000} s (infinite loop at import?)`), TRIAL_START_MS);
       const done = (error: string | null) => {
         clearTimeout(timer);
-        worker.terminate();
+        worker.onmessage = worker.onerror = null;
+        retire(worker);
         resolve(error);
       };
       worker.onmessage = ({ data: msg }) => {

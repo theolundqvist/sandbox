@@ -229,6 +229,7 @@ const store = openStore(join(DATA, "world.sqlite"));
 store.load(sim);
 await mods.loadAll(owners);
 sim.start();
+if (process.env.SANDBOX_NOTICE) feed(process.env.SANDBOX_NOTICE, "error");
 for (const mod of refreshed) await mods.reload(mod, "world", owners[mod] ?? "world");
 setInterval(() => store.save(sim), 5000);
 store.snapshot(sim);

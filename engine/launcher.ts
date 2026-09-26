@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { Server, ServerWebSocket, Subprocess } from "bun";
@@ -69,15 +69,24 @@ async function stop() {
   await current.recorded;
 }
 
-async function host(id: string) {
+/** When each world last crashed; a world that keeps crashing is left stopped instead of restarted forever. */
+const crashes = new Map<string, number[]>();
+const CRASH_LIMIT = 3;
+const CRASH_WINDOW_MS = 10 * 60_000;
+
+async function host(id: string, notice?: string) {
   if (running?.id === id) return;
   if (!existsSync(join(WORLDS, id, "config.json"))) throw new Error("That game doesn't exist.");
   await stop();
   let reportPort!: (port: number) => void;
   const started = Date.now();
   const record = openRecord(join(WORLDS, id, "record.sqlite"));
+  // Everything the world prints, including Bun's report if it crashes, kept next to its record.
+  const logPath = join(WORLDS, id, "world.log");
+  if (existsSync(logPath) && statSync(logPath).size > 5 << 20) renameSync(logPath, `${logPath}.1`);
+  const log = createWriteStream(logPath, { flags: "a" });
   const proc = Bun.spawn([process.execPath, join(ENGINE, "server.ts")], {
-    env: { ...process.env, SANDBOX_DATA: join(WORLDS, id), SANDBOX_SECRETS: SECRETS, PORT: "0" },
+    env: { ...process.env, SANDBOX_DATA: join(WORLDS, id), SANDBOX_SECRETS: SECRETS, PORT: "0", ...(notice && { SANDBOX_NOTICE: notice }) },
     stdout: "pipe",
     stderr: "pipe",
     ipc: (msg) => reportPort(msg.port),
@@ -87,6 +96,7 @@ async function host(id: string) {
     const decoder = new TextDecoder();
     for await (const chunk of from) {
       to.write(chunk);
+      log.write(chunk);
       lastLines.push(...decoder.decode(chunk, { stream: true }).split("\n").filter(Boolean));
       lastLines.splice(0, lastLines.length - 40);
     }
@@ -101,6 +111,7 @@ async function host(id: string) {
     const lastSample = record.rows({ kind: "server", since: started, limit: 1 })[0];
     record.add("exit", null, { code: proc.exitCode, signal: proc.signalCode, stopped, seconds: Math.round((Date.now() - started) / 1000), lastSample, lastLines });
     record.close();
+    log.end();
   });
   const port = await new Promise<number>((resolve, reject) => {
     reportPort = resolve;
@@ -110,9 +121,17 @@ async function host(id: string) {
   state.hosting = id;
   saveState();
   await publish();
-  proc.exited.then(() => {
+  proc.exited.then(async () => {
     if (running?.proc !== proc) return;
     running = null;
+    const recent = [...(crashes.get(id) ?? []).filter((at) => Date.now() - at < CRASH_WINDOW_MS), Date.now()];
+    crashes.set(id, recent);
+    if (recent.length <= CRASH_LIMIT) {
+      await recorded;
+      // Players' games keep reconnecting and land in the restarted world.
+      const restarted = await host(id, "The game crashed and restarted by itself. Anything from the last few seconds before the crash may be gone.").then(() => true, (e) => (console.error(e.message), false));
+      if (restarted) return;
+    }
     for (const ws of players) ws.close(4001, "The world stopped");
   });
 }
