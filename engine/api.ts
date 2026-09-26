@@ -93,7 +93,7 @@ export interface ClientCtx {
   renderer: THREE.WebGLRenderer;
   /** Replicated copy of the server world. Entities with `pos` and `mesh` are drawn automatically. */
   entities: Map<number, Entity>;
-  /** Scene objects the default renderer made, by entity id. */
+  /** Scene objects the default renderer made, by entity id. Entities that look alike share materials: give one its own with material.clone() before changing it. */
   objects: Map<number, THREE.Object3D>;
   /** The same collision queries as the server's world.physics, over the replicated entities. */
   physics: Physics;

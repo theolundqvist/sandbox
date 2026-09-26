@@ -246,3 +246,15 @@ test("a mod's author can't vote on it, so alone online they can't undo it", asyn
   const status = await (await fetch(`${BASE}/api/status`, { headers: { authorization: `Bearer ${key}` } })).json();
   expect(status.mods.find((m: any) => m.name === "bell")).toMatchObject({ author: "builder", love: 0, undo: 0 });
 });
+
+test("a mod that takes 16 ms or more of every frame for 10 s is named in the feed once", async () => {
+  const report = (bell: number) => player.send(JSON.stringify({ t: "perf", at: 0, modsMsPerFrame: { bell } }));
+  const named = () => received.filter((m) => m.t === "feed" && m.text.includes("of every frame")).map((m) => m.text);
+  for (const ms of [30, 30, 30, 2, 30, 30, 30, 30]) report(ms);
+  await Bun.sleep(200);
+  expect(named()).toEqual([]);
+  report(24);
+  report(24);
+  await Bun.sleep(200);
+  expect(named()).toEqual(["bell takes 24 ms of every frame in builder's game"]);
+});

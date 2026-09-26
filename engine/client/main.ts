@@ -268,7 +268,7 @@ function geometry(shape: string, size: number[]) {
   }
 }
 
-function labelSprite(text: string) {
+function labelMaterial(text: string) {
   const canvas = document.createElement("canvas");
   const g = canvas.getContext("2d")!;
   g.font = "600 44px Inter, system-ui, sans-serif";
@@ -282,11 +282,16 @@ function labelSprite(text: string) {
   g.fillStyle = "#fff";
   g.textBaseline = "middle";
   g.fillText(text, 20, 34);
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), depthTest: false }));
-  sprite.scale.set(canvas.width / 128, 0.5, 1);
+  return new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), depthTest: false });
+}
+
+function labelSprite(material: THREE.SpriteMaterial) {
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set((material.map!.image as HTMLCanvasElement).width / 128, 0.5, 1);
   sprite.renderOrder = 10;
   return sprite;
 }
+const sharedLabel = (text: string) => labelSprite(sharedMaterial(`label ${text}`, () => labelMaterial(text)) as THREE.SpriteMaterial);
 
 function build(id: number, e: Entity) {
   for (const m of [...ordered].reverse()) {
@@ -294,6 +299,7 @@ function build(id: number, e: Entity) {
     const made: THREE.Object3D | null | undefined = call(m, "object", id, e);
     if (made) {
       claimed.set(made, m);
+      made.userData.mod ??= m.name;
       return made;
     }
   }
@@ -302,32 +308,27 @@ function build(id: number, e: Entity) {
 
 function defaultObject(id: number, e: Entity) {
   const group = new THREE.Group();
+  group.userData.mod = "engine";
   const size = e.solid && !e.mesh && sizeOf(e);
   if (size) {
     const wall = new THREE.LineSegments(sharedGeometry("edges", size), sharedMaterial("wall", () => new THREE.LineBasicMaterial({ color: "#ff9a2e", transparent: true, opacity: 0.7 })));
     group.add(wall);
     const maker = makers.get(id);
     group.userData.wall = maker ?? "unknown";
-    const sprite = labelSprite(maker ? `${maker}'s invisible wall` : "invisible wall");
+    const sprite = sharedLabel(maker ? `${maker}'s invisible wall` : "invisible wall");
     sprite.position.y = size[1] / 2 + 0.6;
     group.add(sprite);
   }
   if (e.mesh && e.mesh.opacity !== 0) {
     const size = typeof e.mesh.size === "number" ? [e.mesh.size] : (e.mesh.size ?? [1]);
-    const material = new THREE.MeshStandardMaterial({
-      color: e.mesh.color ?? "#cccccc",
-      emissive: e.mesh.emissive ?? "#000000",
-      roughness: e.mesh.roughness ?? 0.8,
-      metalness: e.mesh.metalness ?? 0,
-      transparent: e.mesh.opacity !== undefined,
-      opacity: e.mesh.opacity ?? 1,
-    });
+    const look = { color: e.mesh.color ?? "#cccccc", emissive: e.mesh.emissive ?? "#000000", roughness: e.mesh.roughness ?? 0.8, metalness: e.mesh.metalness ?? 0, transparent: e.mesh.opacity !== undefined, opacity: e.mesh.opacity ?? 1 };
+    const material = sharedMaterial(JSON.stringify(look), () => new THREE.MeshStandardMaterial(look));
     const mesh = new THREE.Mesh(sharedGeometry(e.mesh.shape ?? "box", size), material);
     mesh.castShadow = mesh.receiveShadow = true;
     group.add(mesh);
   }
   if (e.label) {
-    const sprite = labelSprite(String(e.label));
+    const sprite = sharedLabel(String(e.label));
     const height = Array.isArray(e.mesh?.size) ? (e.mesh.size[1] ?? 1) : (e.mesh?.size ?? 1);
     sprite.position.y = height / 2 + 0.6;
     group.add(sprite);
@@ -382,6 +383,7 @@ function reclaim(name: string) {
     if (!made) continue;
     dispose(obj);
     claimed.set(made, m);
+    made.userData.mod ??= m.name;
     made.position.copy(obj.position);
     scene.add(made);
     objects.set(id, made);
@@ -1517,7 +1519,7 @@ function trace() {
     present.add(e.player);
     let t = trails.get(e.player);
     if (!t) {
-      const tag = labelSprite(String(e.name ?? e.player));
+      const tag = labelSprite(labelMaterial(String(e.name ?? e.player)));
       tag.material.sizeAttenuation = false;
       tag.scale.set((0.03 * tag.scale.x) / tag.scale.y, 0.03, 1);
       const geometry = new THREE.BufferGeometry()
@@ -2319,6 +2321,7 @@ for (const button of all<HTMLButtonElement>("[data-copy]"))
 const emptyHint = $("empty");
 let welcomedAt = Infinity;
 let last = performance.now();
+const target = new THREE.Vector3();
 renderer.setAnimationLoop(() => {
   const now = performance.now();
   // The live view behind the join screen draws about 30 frames a second at no more than a pixel per CSS pixel, whatever mods ask for.
@@ -2332,7 +2335,7 @@ renderer.setAnimationLoop(() => {
   for (const [id, obj] of objects) {
     const e = entities.get(id);
     if (!e?.pos || obj.userData.manual) continue;
-    obj.position.lerp(new THREE.Vector3().fromArray(e.pos), blend);
+    obj.position.lerp(target.fromArray(e.pos), blend);
     if (e.rot) obj.rotation.set(e.rot[0] ?? 0, e.rot[1] ?? 0, e.rot[2] ?? 0);
   }
   for (const m of ordered) call(m, "frame", dt);
@@ -2410,11 +2413,10 @@ setInterval(() => {
   forwarded = 0;
 }, 2000);
 
-// Tags every object with the mod whose code added it, so perf can name who owns the heavy ones.
+// Tags objects with the mod that added them, so perf can name who owns the heavy ones: the mod whose hook is running, or for what a mod's timer or promise adds straight to the scene, the mod in the call stack.
 const add = THREE.Object3D.prototype.add;
 THREE.Object3D.prototype.add = function (...objects) {
-  const mod = modOf(new Error().stack);
-  if (mod) for (const o of objects) o.userData.mod ??= mod;
+  if (running || this === scene) for (const o of objects) o.userData.mod ??= running?.name ?? modOf(new Error().stack);
   return add.apply(this, objects);
 };
 /** The solid entities drawn as wireframes because nothing else draws them, by the mod that made them. */
@@ -2455,8 +2457,10 @@ for (const level of ["log", "info", "warn", "error"] as const) {
   const original = console[level].bind(console);
   console[level] = (...args: any[]) => {
     original(...args);
+    if (forwarded >= 30) return;
     const mod = modOf(new Error().stack);
-    if (!mod || ++forwarded > 30) return;
+    if (!mod) return;
+    forwarded++;
     send({ t: "log", mod, level, text: args.map((a) => (typeof a === "string" ? a : a instanceof Error ? a.stack : JSON.stringify(a) ?? String(a))).join(" ") });
   };
 }
