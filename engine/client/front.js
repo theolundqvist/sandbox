@@ -155,5 +155,5 @@ export async function joinLink(text, relay) {
   return body.url;
 }
 
-/** Whether pasted text is something to join: a code or an invite link. */
-export const joinable = (text) => /^https?:\/\/\S+#(invite|key)=\S+$/.test(text) || /\/r\/[a-z0-9-]+/.test(text) || JOIN_CODE.test(text.replace(/[\s-]/g, "").toUpperCase());
+/** Whether copied text is certainly something to join: an invite link, or a code in the K7F-M2Q form the host menu shows. */
+export const joinable = (text) => /^https?:\/\/\S+#(invite|key)=\S+$/.test(text) || /^[2-9A-HJKMNP-Z]{3}-[2-9A-HJKMNP-Z]{3}$/i.test(text);
