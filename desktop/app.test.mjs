@@ -167,7 +167,7 @@ describe("hosting and joining", () => {
 
   test("first launch: the title menu, no update, and no worlds yet", async () => {
     await until("the menu", () => menuShown(shell));
-    assert.deepEqual(await shell.locator("#title .item:visible").allTextContents(), ["Worlds", "Join game", "Host game", "Quit"]);
+    assert.deepEqual(await shell.locator("#title .item:visible").allTextContents(), ["Worlds", "Join world", "Host world", "Quit"]);
     await shell.click("text=Worlds");
     assert.equal(await shown(shell, "#no-games"), true);
   });
@@ -175,12 +175,12 @@ describe("hosting and joining", () => {
   test("every screen goes back with Esc and with Back", async () => {
     await shell.keyboard.press("Escape");
     assert.equal(await shown(shell, "#title"), true);
-    await shell.click("text=Join game");
+    await shell.click("text=Join world");
     await shell.click("#back");
     assert.equal(await shown(shell, "#title"), true);
   });
 
-  test("Join game fills in a copied invite link or code, and nothing else", async () => {
+  test("Join world fills in a copied invite link or code, and nothing else", async () => {
     const cases = {
       [`${other.url}/#invite=${other.invite}`]: `${other.url}/#invite=${other.invite}`,
       "http://192.168.1.20:7777/#key=0123456789abcdef": "http://192.168.1.20:7777/#key=0123456789abcdef",
@@ -213,15 +213,15 @@ describe("hosting and joining", () => {
   });
 
   test("a wrong code says so", async () => {
-    await shell.click("text=Join game");
+    await shell.click("text=Join world");
     await shell.fill("#join-link", "AAAAAA");
     await shell.press("#join-link", "Enter");
-    await until("the error", async () => (await shell.textContent("#error")) === "No game with that code");
+    await until("the error", async () => (await shell.textContent("#error")) === "No world with that code");
     await shell.keyboard.press("Escape");
   });
 
-  test("Host game opens this computer's main menu through the relay, never Waiting for the host", async () => {
-    await shell.click("text=Host game");
+  test("Host world opens this computer's main menu through the relay, never Waiting for the host", async () => {
+    await shell.click("text=Host world");
     const game = await gamePage(app);
     await game.locator("#create").waitFor();
     assert.equal(await shown(game, "#waiting"), false);
@@ -304,7 +304,7 @@ describe("hosting and joining", () => {
   });
 
   test("a code joins through the relay; reload stays in the room; the world is saved under its relay address", async () => {
-    await shell.click("text=Join game");
+    await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.code.slice(0, 3)}-${other.code.slice(3)}`);
     await shell.press("#join-link", "Enter");
     const game = await gamePage(app);
@@ -334,7 +334,7 @@ describe("hosting and joining", () => {
   });
 
   test("an invite link opens the game; a /r/ link without its scheme becomes https", async () => {
-    await shell.click("text=Join game");
+    await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.base}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
     const game = await gamePage(app);
@@ -345,7 +345,7 @@ describe("hosting and joining", () => {
   });
 
   test("too many wrong codes are refused for a minute", async () => {
-    await shell.click("text=Join game");
+    await shell.click("text=Join world");
     let error = "";
     for (let i = 0; i < 12 && error !== "Too many tries. Wait a minute."; i++) {
       await shell.fill("#join-link", "BBBBBB");
@@ -396,15 +396,15 @@ describe("the relay down", () => {
   after(() => close(app));
 
   test("a code can't be looked up", async () => {
-    await shell.click("text=Join game");
+    await shell.click("text=Join world");
     await shell.fill("#join-link", "K7F-M2Q");
     await shell.press("#join-link", "Enter");
     await until("the error", async () => (await shell.textContent("#error")) === "Can't look up codes right now. Check your connection, or ask for the invite link.");
     await shell.keyboard.press("Escape");
   });
 
-  test("Host game still opens the main menu, on this computer", async () => {
-    await shell.click("text=Host game");
+  test("Host world still opens the main menu, on this computer", async () => {
+    await shell.click("text=Host world");
     const game = await gamePage(app);
     await game.locator("#create").waitFor();
     assert.match(game.url(), /^http:\/\/localhost:\d+\/menu/);
@@ -532,7 +532,7 @@ describe("updates", () => {
   after(() => close(app));
 
   test("a release that comes out while hosting with friends shows Update on the title and in the game, and restarts nothing", async () => {
-    await shell.click("text=Host game");
+    await shell.click("text=Host world");
     game = await gamePage(app);
     await game.fill("#create-name", "Update Test");
     await game.click("#create-go");
@@ -562,7 +562,7 @@ describe("updates", () => {
     await until("the error", async () => game.getByText("The update didn't download. Check your connection.").isVisible());
     const [q] = await asked(app);
     assert.equal(q.message, "Update to Sandbox 9.9.9?");
-    assert.match(q.detail, /^1 player is in Update Test\. Updating ends the game for them\.$/);
+    assert.match(q.detail, /^1 player is in Update Test\. Updating ends the world for them\.$/);
     assert.equal(await portAnswers(own), true);
   });
 
@@ -879,7 +879,7 @@ describe("the host closes the game", () => {
   after(() => close(app));
 
   test("players in it are told, not left reconnecting", async () => {
-    await shell.click("text=Join game");
+    await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
     game = await gamePage(app);
@@ -892,7 +892,7 @@ describe("the host closes the game", () => {
     await sleep(3500);
     assert.doesNotMatch(await game.textContent("#feed"), /peek|stayer left/);
     otherLauncher.kill();
-    await until("the message", async () => (await game.textContent("#status")) === "The host closed the game. You're back in when they open it.");
+    await until("the message", async () => (await game.textContent("#status")) === "The host closed the world. You're back in when they open it.");
     const status = await game.locator("#status").boundingBox();
     for (const button of await game.locator("#top button:visible").all()) {
       const b = await button.boundingBox();

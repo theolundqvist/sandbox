@@ -32,7 +32,7 @@ app.on("second-instance", (_event, argv) => {
   if (link) play(link);
 });
 
-/** The engine this app hosts games with: its launcher, run by the bun shipped inside the app, with its games in the app's data folder. */
+/** The engine this app hosts worlds with: its launcher, run by the bun shipped inside the app, with its worlds in the app's data folder. */
 const ENGINE = app.isPackaged ? join(process.resourcesPath, "engine") : join(__dirname, "..");
 const BUN = app.isPackaged ? join(ENGINE, "bun") : "bun";
 /** The game's own front end (fonts, clips, menu styles), which the start screen uses too, so it works offline. */
@@ -43,7 +43,7 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
 const STATE = join(app.getPath("userData"), "state.json");
-/** @type {{ fullscreen?: boolean, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string }} Joined games by shareable address; main menus opened, by host key; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed. */
+/** @type {{ fullscreen?: boolean, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string }} Joined worlds by shareable address; main menus opened, by host key; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed. */
 const state = { recents: [], hosts: {}, mic: [] };
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
@@ -133,7 +133,7 @@ function play(raw) {
     if (status >= 400) return fail(`HTTP ${status}`, status === 503 ? "closed" : "silent");
     const u = new URL(to);
     const key = new URLSearchParams(u.hash.slice(1)).get("key");
-    // The relay's own pages, like its join page, are not a game.
+    // The relay's own pages, like its join page, are not a world.
     const relayPage = u.origin === new URL(RELAY).origin && !u.pathname.startsWith("/r/");
     if (u.pathname.endsWith("/menu")) {
       if (key) hostSeen(key, worldBase(u));
@@ -223,7 +223,7 @@ function startServer() {
   return starting;
 }
 
-/** Hosts a game of this computer's: shares it through the relay, which gives it a join code, and opens its screen in the main menu. */
+/** Hosts a world of this computer's: shares it through the relay, which gives it a join code, and opens its screen in the main menu. */
 async function hostGame(target) {
   const { base, key } = await startServer();
   const menu = (action, body) => fetch(`${base}/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) }).then((r) => r.json());
@@ -255,7 +255,7 @@ async function stopServer() {
   if (current.proc.exitCode === null && !current.proc.signalCode) current.proc.kill("SIGKILL");
 }
 
-/** Players in the game this app hosts, besides the host playing it here. */
+/** Players in the world this app hosts, besides the host playing it here. */
 async function guests() {
   if (!server) return null;
   const s = await ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null);
@@ -266,7 +266,7 @@ async function guests() {
   return { name: s.running.name, count: s.running.players.filter((p) => p.online && p.key !== me).length };
 }
 
-/** The games this app hosts, read from its data folder so they show without starting the server. */
+/** The worlds this app hosts, read from its data folder so they show without starting the server. */
 function ownGames(live) {
   const dir = join(DATA, "worlds");
   const ids = existsSync(dir) ? readdirSync(dir) : [];
@@ -299,7 +299,7 @@ function hostSeen(key, base) {
 
 const ask = (url, key, ms = 1500) => fetch(url, { headers: key ? { authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(ms) });
 
-/** The start screen's games: this app's own, each other launcher's whose main menu was opened here, through its relay address when it shares, and the games joined. */
+/** The start screen's worlds: this app's own, each other launcher's whose main menu was opened here, through its relay address when it shares, and the worlds joined. */
 async function games() {
   const own = ownKey();
   const ownState = server && (await ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null));
@@ -503,7 +503,7 @@ async function install() {
   if (!update || installing) return null;
   const hosting = await guests();
   if (game || hosting?.count) {
-    const detail = hosting?.count ? `${hosting.count === 1 ? "1 player is" : `${hosting.count} players are`} in ${hosting.name}. Updating ends the game for them.` : `You're in ${game.name}. Sandbox restarts to update.`;
+    const detail = hosting?.count ? `${hosting.count === 1 ? "1 player is" : `${hosting.count} players are`} in ${hosting.name}. Updating ends the world for them.` : `You're in ${game.name}. Sandbox restarts to update.`;
     const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Update", "Not now"], defaultId: 0, cancelId: 1, message: `Update to Sandbox ${update}?`, detail });
     if (response !== 0) return null;
   }
@@ -538,13 +538,13 @@ async function install() {
   return null;
 }
 
-/** Asks first when that leaves a game: the host's own, or friends still in the game this app hosts. Then stops the server. */
+/** Asks first when that leaves a game: the host's own, or friends still in the world this app hosts. Then stops the server. */
 let confirming = null;
 function quit() {
   confirming ??= (async () => {
     const hosting = await guests();
     if (game || hosting?.count) {
-      const detail = hosting?.count ? `${hosting.count === 1 ? "1 player is" : `${hosting.count} players are`} in ${hosting.name}. Quitting ends the game for them.` : `You're in ${game.name}.`;
+      const detail = hosting?.count ? `${hosting.count === 1 ? "1 player is" : `${hosting.count} players are`} in ${hosting.name}. Quitting ends the world for them.` : `You're in ${game.name}.`;
       const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Quit", hosting?.count ? "Keep hosting" : "Keep playing"], defaultId: 1, cancelId: 1, message: "Quit Sandbox?", detail });
       if (response !== 0) return;
     }

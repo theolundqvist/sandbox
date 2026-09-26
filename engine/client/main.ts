@@ -40,7 +40,7 @@ const focused = () => uiRoot.activeElement ?? document.activeElement;
 (await import(["/front.js"][0]!)).navigateIn(uiRoot);
 const hashParams = new URLSearchParams(location.hash.slice(1));
 
-// Through the relay the game lives at /r/<room>/; its own requests reach the room by cookie, but links and Claude need the full address.
+// Through the relay the world lives at /r/<room>/; its own requests reach the room by cookie, but links and Claude need the full address.
 const origin = location.origin + (location.pathname.match(/^\/r\/[a-z0-9-]+/)?.[0] ?? "");
 const info = await (await fetch("/api/info")).json();
 const keyName = `sandbox-key:${info.id}`;
@@ -1075,7 +1075,7 @@ document.addEventListener("visibilitychange", takeOver);
 /** Back in once the world answers again; while the host has it closed, the game says so. */
 async function reconnect() {
   const res = await fetch("/api/info").catch(() => null);
-  if (res?.status === 503) $("status").textContent = "The host closed the game. You're back in when they open it.";
+  if (res?.status === 503) $("status").textContent = "The host closed the world. You're back in when they open it.";
   if (!res?.ok) return void setTimeout(reconnect, 2000);
   if ((await res.json()).id !== info.id) return location.reload();
   connect();
@@ -1697,7 +1697,7 @@ function film(dt: number, now: number) {
 }
 
 // ---------- the live view behind the join screen ----------
-/** A visitor with an invite watches the game behind the join screen: the server streams what a fresh player would see and nobody in the game sees them. Nothing goes back, since `socket` stays unset; mods run silent, with their HUD hidden as in a replay. */
+/** A visitor with an invite watches the world behind the join screen: the server streams what a fresh player would see and nobody in the game sees them. Nothing goes back, since `socket` stays unset; mods run silent, with their HUD hidden as in a replay. */
 let spectator: WebSocket | null = null;
 /** Where things appeared while watching. */
 const built: { at: number; pos: [number, number, number] }[] = [];
@@ -2276,7 +2276,7 @@ $("palette-input").addEventListener("keydown", (e: KeyboardEvent) => {
 });
 palette.onclick = (e) => e.target === palette && closePalette();
 for (const keysList of $("howto").querySelectorAll(".keys")) $("help-keys").append(keysList.cloneNode(true));
-/** Leaving closes this game: the host goes back to their main menu, anyone else to this world's join screen. */
+/** Leaving closes this world: the host goes back to their main menu, anyone else to this world's join screen. */
 let leaving = false;
 /** The desktop app says when a newer release is out, and installs it when asked. */
 const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void } }).sandboxDesktop;

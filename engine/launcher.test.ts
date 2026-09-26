@@ -94,7 +94,7 @@ test("a join code leads to the game's invite link until the host replaces it or 
 
   const renewed = await menu("code", {});
   expect(renewed.tunnel.code).not.toBe(first);
-  expect(await (await lookup(first)).json()).toEqual({ error: "No game with that code" });
+  expect(await (await lookup(first)).json()).toEqual({ error: "No world with that code" });
   expect((await lookup(renewed.tunnel.code)).status).toBe(200);
 
   await menu("share", { on: false });
@@ -293,7 +293,7 @@ test("a world that crashes is hosted again by itself, a Claude waiting on it is 
     });
   }
   expect(welcome?.t).toBe("welcome");
-  expect(welcome.feed.map((f: { text: string }) => f.text)).toContain("The game crashed and restarted by itself without the last change to basics. Anything from the last few seconds before the crash may be gone.");
+  expect(welcome.feed.map((f: { text: string }) => f.text)).toContain("The world crashed and restarted by itself without the last change to basics. Anything from the last few seconds before the crash may be gone.");
   expect(world()).not.toBe(first);
   const log = readFileSync(join(data, "worlds", s.running.id, "world.log"), "utf8");
   expect(log.match(/Crashy is running/g)).toHaveLength(2);
@@ -330,7 +330,7 @@ test("a world that crashes within a minute of a reload comes back without that r
     status = await fetch(`${base}/api/status`, { headers: { authorization: `Bearer ${player.key}` } }).then((r) => r.json(), () => null);
   }
   expect(status.mods).toMatchObject([{ name: "wobbly", version: 3 }]);
-  expect(status.recent).toContain("The game crashed and restarted by itself without the last change to wobbly. Anything from the last few seconds before the crash may be gone.");
+  expect(status.recent).toContain("The world crashed and restarted by itself without the last change to wobbly. Anything from the last few seconds before the crash may be gone.");
   expect(await call("logs", { mod: "wobbly" })).toContain("the world crashed within a minute of this reload, so it was undone.");
   await Bun.sleep(3000);
   expect((await fetch(`${base}/api/status`, { headers: { authorization: `Bearer ${player.key}` } })).ok).toBe(true);

@@ -54,8 +54,8 @@
     <svg class="logo" id="logo"></svg>
     <div class="items">
       <button class="item" data-to="saved">Worlds</button>
-      <button class="item" data-to="join">Join game</button>
-      <button class="item" id="go-new">Host game</button>
+      <button class="item" data-to="join">Join world</button>
+      <button class="item" id="go-new">Host world</button>
       <button class="item" id="go-update" hidden>Update<span class="value" id="update-version"></span></button>
       <button class="item" id="quit">Quit</button>
     </div>
@@ -77,7 +77,7 @@
   </section>
 
   <section id="join" class="screen" data-nav hidden>
-    <h1>Join game</h1>
+    <h1>Join world</h1>
     <label class="item entry"><input type="text" id="join-link" placeholder="Code or invite link" autocomplete="off" spellcheck="false"></label>
   </section>
 
@@ -88,7 +88,7 @@
       <button class="item" id="retry">Retry</button>
       <button class="item" id="copy-details" hidden>Copy details</button>
       <button class="item" data-to="saved">Worlds</button>
-      <button class="item" data-to="join">Join game</button>
+      <button class="item" data-to="join">Join world</button>
     </div>
   </section>
 
@@ -167,7 +167,7 @@
   $("go-new").onclick = () => open("local:new");
   $("go-browse").onclick = () => open("local:browse");
 
-  // ---------- saved games: the ones this computer hosts and the ones joined, most recent first ----------
+  // ---------- saved worlds: the ones this computer hosts and the ones joined, most recent first ----------
   let selected = null;
   async function refresh() {
     const s = await shell.state();
@@ -226,7 +226,7 @@
   });
   $("copy-details").onclick = () => navigator.clipboard.writeText($("copy-details").dataset.log).then(() => ($("copy-details").textContent = "Copied"));
   shell.on("down", ({ url, name, why, cause, log }) => {
-    const world = name ?? "The game";
+    const world = name ?? "The world";
     $("down-title").textContent = why === "server" ? "Couldn't start" : "Can't reach";
     $("down-text").textContent = { offline: "You're offline. Check your internet, then retry.", closed: `${world} is closed. Ask the host to open it, then retry.`, silent: `${world} isn't answering. Ask the host if it's running, then retry.`, server: cause ?? "Your game server didn't answer in time. Retry, or restart your computer if it keeps happening." }[why];
     $("copy-details").dataset.log = log?.join("\n") ?? "";

@@ -30,8 +30,8 @@
     <p id="waiting" class="status" hidden>Waiting for the host</p>
     <div class="items">
       <button class="item" id="go-worlds" data-to="worlds">Worlds</button>
-      <button class="item" id="go-join" data-to="join">Join game</button>
-      <button class="item" id="go-create" data-to="create">Host game</button>
+      <button class="item" id="go-join" data-to="join">Join world</button>
+      <button class="item" id="go-create" data-to="create">Host world</button>
       <button class="item" id="go-app" data-to="app" hidden>Desktop app</button>
     </div>
   </section>
@@ -54,7 +54,7 @@
   </section>
 
   <section id="join" class="screen" data-nav hidden>
-    <h1>Join game</h1>
+    <h1>Join world</h1>
     <label class="item entry"><input type="text" id="join-link" placeholder="Code or invite link" autocomplete="off" spellcheck="false"></label>
   </section>
 
@@ -79,7 +79,7 @@
   </section>
 
   <section id="create" class="screen" data-nav hidden>
-    <h1>Host game</h1>
+    <h1>Host world</h1>
     <label class="field"><span>Name</span><input type="text" id="create-name" placeholder="Random" maxlength="40" autocomplete="off" spellcheck="false"></label>
     <div class="field"><span>House rules</span><div class="pick rules" id="create-rules" data-options="open:Open,additive:Additive"></div></div>
     <div class="field"><span>Start with</span><div class="pick" id="create-start" data-options="blank:Blank,basics:3D field,hills:3D hills"></div></div>
@@ -124,7 +124,7 @@
   backdrop($("backdrop"));
   logo($("logo"));
 
-  /** The desktop app links straight to a screen: #world=<id> for a saved game, #screen=create for a new one. */
+  /** The desktop app links straight to a screen: #world=<id> for a saved world, #screen=create for a new one. */
   const jump = new URLSearchParams(location.hash.slice(1));
   const hashKey = jump.get("key");
   if (hashKey) {
@@ -323,7 +323,7 @@
   }
   joinEntry($("join-link"));
   const joinGame = () => attempt(async () => location.assign(await joinLink($("join-link").value, state.relay)));
-  /** Only reads the clipboard where the browser already allows it, so opening Join game never prompts. */
+  /** Only reads the clipboard where the browser already allows it, so opening Join world never prompts. */
   $("go-join").addEventListener("click", async () => {
     const allowed = await navigator.permissions?.query({ name: "clipboard-read" }).then((p) => p.state === "granted", () => false);
     const copied = allowed ? (await navigator.clipboard.readText().catch(() => "")).trim() : "";

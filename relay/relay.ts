@@ -37,7 +37,7 @@ function join(code: string, req: Request, ip: string) {
   const headers = { "access-control-allow-origin": "*" };
   if (tooMany(ip)) return Response.json({ error: "Too many tries. Wait a minute." }, { status: 429, headers });
   const room = Object.keys(claims).find((r) => claims[r]!.code === code.replace(/[^a-z0-9]/gi, "").toUpperCase());
-  if (!room) return Response.json({ error: "No game with that code" }, { status: 404, headers });
+  if (!room) return Response.json({ error: "No world with that code" }, { status: 404, headers });
   const origin = `${req.headers.get("x-forwarded-proto") ?? new URL(req.url).protocol.slice(0, -1)}://${req.headers.get("host")}`;
   const invite = claims[room]!.invite;
   return Response.json({ url: `${origin}/r/${room}/${invite ? `#invite=${invite}` : ""}` }, { headers });
@@ -50,7 +50,7 @@ h1{margin:0;font:800 clamp(40px,7vw,72px)/1 Archivo,system-ui,sans-serif;font-st
 label{display:flex;align-items:center;gap:20px}label::before{content:"";width:12px;height:12px;flex:none;background:#ffb547}
 input{all:unset;width:100%;font:800 clamp(40px,8vw,64px)/1.1 Archivo,system-ui,sans-serif;font-stretch:125%;letter-spacing:.2em;text-transform:uppercase;caret-color:#ffb547}input::placeholder{color:#3a3b3e}
 p{margin:0;min-height:1.4em;color:#ffb547}</style>
-<h1>Join game</h1><label><input id="code" placeholder="K7F-M2Q" autocomplete="off" spellcheck="false" autofocus></label><p id="error"></p>
+<h1>Join world</h1><label><input id="code" placeholder="K7F-M2Q" autocomplete="off" spellcheck="false" autofocus></label><p id="error"></p>
 <script>const input=document.getElementById("code"),error=document.getElementById("error");
 input.oninput=()=>{const c=input.value.replace(/[^a-z0-9]/gi,"").toUpperCase().slice(0,6);input.value=c.length>3?c.slice(0,3)+"-"+c.slice(3):c;error.textContent="";if(c.length===6)go(c)};
 async function go(c){const res=await fetch("/join/"+c);const body=await res.json();if(res.ok)location.assign(body.url);else error.textContent=body.error}</script></html>`;
@@ -139,7 +139,7 @@ Bun.serve<Data>({
     const target = route(url, req.headers.get("cookie"));
     if (!target) return text("Nothing here. Open the link your host shared.", 404);
     const host = hosts.get(target.room);
-    if (!host?.ws) return text("This world is offline right now. Ask the host to open their game.", 503);
+    if (!host?.ws) return text("This world is offline right now. Ask the host to open their world.", 503);
 
     if (req.headers.get("upgrade") === "websocket") {
       const data: PlayerData = { kind: "player", room: target.room, id: nextId++, path: target.path, headers: forwarded(req.headers) };
