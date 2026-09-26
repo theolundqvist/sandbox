@@ -10,8 +10,11 @@
 <style>
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  html, body { margin: 0; height: 100%; background: #101113; color: var(--text); font: 15px/1.45 var(--display); overflow: hidden; }
+  html, body { margin: 0; height: 100%; background: #101113; color: var(--text); font: 15px/1.45 system-ui, sans-serif; overflow: hidden; }
   #title .logo { margin-bottom: 64px; }
+  /* Long lists scroll above the key hints, never under them. */
+  .front { bottom: 96px; padding-bottom: 0; }
+  @media (max-width: 760px), (pointer: coarse) { .front { bottom: 0; padding-bottom: 48px; } }
   .status { color: var(--dim); font: 700 14px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; }
   .copy-row b { flex: 1; min-width: 0; font: 700 18px/1.2 var(--display); overflow: hidden; text-overflow: ellipsis; }
   .dot { width: 8px; height: 8px; background: #55524c; flex: none; } .dot.on { background: var(--ok); }

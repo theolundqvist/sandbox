@@ -1,5 +1,7 @@
 /* The front end shared by the main menu, the join screen and the in-game menu: big type, one amber block for focus, flat panels. */
-:root { --text: #f3f1ec; --dim: #8f8c86; --faint: rgba(243,241,236,.5); --line: rgba(255,255,255,.12); --accent: #ffb547; --ok: #7fe0a0; --err: #ff6b5b; --shade: rgba(7,8,10,.58); --pane: rgba(9,10,12,.9); --display: "SF Pro Display", "Segoe UI", Inter, "Helvetica Neue", Arial, system-ui, sans-serif; }
+:root { --text: #f3f1ec; --dim: #8f8c86; --faint: rgba(243,241,236,.5); --line: rgba(255,255,255,.12); --accent: #ffb547; --ok: #7fe0a0; --err: #ff6b5b; --shade: rgba(7,8,10,.58); --pane: rgba(9,10,12,.9); --display: "Archivo Expanded", "Helvetica Neue", Arial, system-ui, sans-serif; }
+
+@font-face { font-family: "Archivo Expanded"; src: url(/fonts/archivo-expanded.woff2) format("woff2"); font-weight: 600 900; font-display: swap; }
 
 .backdrop { position: fixed; inset: 0; background: #101113 center / cover no-repeat; overflow: hidden; }
 .backdrop video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 1.2s ease; }
@@ -17,13 +19,19 @@
 .items { display: flex; flex-direction: column; align-items: flex-start; }
 .item { position: relative; display: flex; align-items: baseline; gap: 20px; width: 100%; margin: 0; padding: 8px 0 8px 32px; background: none; border: 0; border-radius: 0; color: var(--faint); font: 800 34px/1.1 var(--display); letter-spacing: .03em; text-transform: uppercase; text-align: left; cursor: pointer; outline: none; white-space: nowrap; }
 .item::before { content: ""; position: absolute; left: 0; top: 50%; width: 14px; height: 14px; translate: 0 -50%; background: var(--accent); scale: 0; transition: scale .12s ease-out; }
-.item:hover, .item:focus-visible, .item:focus, .item.active { color: var(--text); background: none; }
-.item:focus::before, .item:hover::before, .item.active::before { scale: 1; }
+.item:hover { background: none; color: var(--faint); }
+.item:focus-visible, .item:focus, .item.active { color: var(--text); background: none; }
+.item:focus::before, .item.active::before { scale: 1; }
 .item:disabled { opacity: .3; pointer-events: none; }
 .item .value { color: var(--dim); font-size: 16px; font-weight: 700; letter-spacing: .12em; overflow: hidden; text-overflow: ellipsis; }
 .item .value.live { color: var(--ok); }
-.item.small { font-size: 22px; padding-top: 6px; padding-bottom: 6px; }
-.item.danger:hover, .item.danger:focus { color: var(--err); }
+/* A text entry that is itself a menu entry: what is typed is the entry. */
+.item.entry { cursor: text; }
+.item.entry:focus-within { color: var(--text); }
+.item.entry:focus-within::before { scale: 1; }
+.item.entry input { all: unset; width: 100%; font: inherit; letter-spacing: inherit; text-transform: uppercase; caret-color: var(--accent); }
+.item.entry input::placeholder { color: var(--faint); opacity: 1; }
+.item.danger:focus { color: var(--err); }
 .gap { height: 24px; flex: none; }
 
 /* A setting: its name on the left, its value on the right, changed with the arrows. */
@@ -41,7 +49,7 @@
 .pick[aria-disabled=true] { opacity: .35; pointer-events: none; }
 
 .copy-row { display: flex; align-items: center; gap: 16px; width: 100%; min-height: 56px; border-bottom: 1px solid var(--line); }
-.copy-row > span { width: 110px; flex: none; color: var(--dim); font: 700 12px/1.2 var(--display); letter-spacing: .14em; text-transform: uppercase; }
+.copy-row > span { width: 150px; flex: none; color: var(--dim); font: 700 12px/1.2 var(--display); letter-spacing: .14em; text-transform: uppercase; }
 .copy-row code { flex: 1; min-width: 0; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d9d6cf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .copy-row .pick { margin-left: auto; font-size: 14px; }
 .copy-row .pick output { min-width: 96px; }
@@ -69,4 +77,4 @@
   .hints { display: none; }
   .corner { right: 16px; bottom: 12px; }
 }
-@media (prefers-reduced-motion: reduce) { .backdrop video { display: none; } }
+@media (prefers-reduced-motion: reduce) { .backdrop video { display: none; } .item::before, .field::before { transition: none; } }

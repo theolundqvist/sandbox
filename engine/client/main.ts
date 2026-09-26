@@ -74,13 +74,17 @@ async function start() {
   $("join-name-field").hidden = left;
   if (!left && !hashParams.get("invite")) $("join-error").textContent = "Ask the host for an invite link.";
   offerApp(hashParams.get("invite") ? `${origin}/#invite=${hashParams.get("invite")}` : "");
-  $<HTMLInputElement>("join-name").value = localStorage.getItem("sandbox-name") ?? "";
-  (left ? $("join-main").querySelector<HTMLElement>(".item")! : $("join-name")).focus();
+  const name = $<HTMLInputElement>("join-name");
+  name.value = localStorage.getItem("sandbox-name") ?? "";
+  const named = () => ($<HTMLButtonElement>("join-go").disabled = !left && !name.value.trim());
+  name.oninput = named;
+  named();
+  (left ? $("join-go") : name).focus();
   await new Promise<void>((resolve) => {
     $("join-form").onsubmit = async (e) => {
       e.preventDefault();
       try {
-        await join(left ? { key } : { invite: hashParams.get("invite"), name: $<HTMLInputElement>("join-name").value });
+        await join(left ? { key } : { invite: hashParams.get("invite"), name: name.value });
         $("join").hidden = true;
         resolve();
       } catch (err: any) {
@@ -586,7 +590,7 @@ function menuPage(title: string) {
   let button = [...$("rail").querySelectorAll<HTMLElement>("[data-tab]")].find((b) => b.textContent!.trim().toLowerCase() === wanted.trim().toLowerCase());
   if (!button) {
     const id = `page-${++pageSeq}`;
-    button = Object.assign(document.createElement("button"), { className: "item small", textContent: wanted.trim() });
+    button = Object.assign(document.createElement("button"), { className: "item", textContent: wanted.trim() });
     const section = document.createElement("section");
     button.dataset.tab = section.dataset.tab = id;
     section.hidden = true;
@@ -1497,7 +1501,7 @@ addEventListener("keydown", (e: KeyboardEvent) => {
   }
   if (!menu.hidden) return menuKey(e);
   // In a game that locks the mouse, Esc arrives as the lock's loss (below); a free cursor may be a mod's own window, which Esc closes first.
-  if (e.code === "Escape" && !screen.lockPointer && inputFree()) return openMenu();
+  if (e.code === "Escape" && inputFree()) return openMenu();
   if (e.code === "KeyT" && !typing() && menu.hidden) return startTalking();
   if (e.code === "KeyE" && !e.repeat && !typing() && menu.hidden && !panel) runAction();
   if (typing() || panel || !menu.hidden) return;
@@ -1842,6 +1846,9 @@ async function refreshMenu() {
   );
   $("gm-state").textContent = { working: "Running", listening: "Running", offline: "" }[status.gameMaster.state as Builder["state"]];
   $("menu-players").replaceChildren(...status.online.map((p: string) => Object.assign(document.createElement("li"), { textContent: p === me ? `${p} (you)` : p })));
+  // The rebuild keeps the keyboard on its vote button, or lands it on the first when the page just opened.
+  const voting = [...$("menu-mods").querySelectorAll("button")].indexOf(document.activeElement as HTMLButtonElement);
+  const landing = voting < 0 && document.activeElement === $("pages");
   $("menu-mods").replaceChildren(
     ...(status.mods.length
       ? status.mods.map((m: any) => {
@@ -1864,8 +1871,9 @@ async function refreshMenu() {
           }
           return li;
         })
-      : [Object.assign(document.createElement("li"), { textContent: "No mods yet. The world is empty." })]),
+      : [Object.assign(document.createElement("li"), { textContent: "No mods yet" })]),
   );
+  if (voting >= 0 || landing) $("menu-mods").querySelectorAll("button")[Math.max(voting, 0)]?.focus();
 }
 
 for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy]"))

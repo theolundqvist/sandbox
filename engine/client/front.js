@@ -113,3 +113,10 @@ addEventListener("keydown", (e) => {
   next.focus();
   next.scrollIntoView({ block: "nearest" });
 }, true);
+
+// The mouse moves the focus, so one entry is ever marked; not away from a name being typed.
+addEventListener("pointermove", (e) => {
+  if (e.pointerType !== "mouse") return;
+  const item = e.target.closest?.("[data-nav] button.item");
+  if (item && item !== document.activeElement && !document.activeElement?.matches("input[type=text], textarea")) item.focus({ preventScroll: true });
+});

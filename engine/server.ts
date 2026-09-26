@@ -1,6 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
+import { frontFile } from "./front";
 import { createMcp, GAME_MASTER, type Task } from "./mcp";
 import { ENGINE_KEYS, Mods } from "./mods";
 import { latencies, openRecord, route } from "./record";
@@ -399,6 +400,8 @@ const server = Bun.serve<Conn>({
 
     if (path === "/") return html("index.html");
     if (path === "/client.js") return new Response(clientJs, { headers: { "content-type": "text/javascript" } });
+    const front = await frontFile(path);
+    if (front) return front;
     if (path.startsWith("/vendor/three/")) {
       const file = Bun.file(join(ENGINE, "../node_modules/three", path.slice("/vendor/three/".length).replaceAll("..", "")));
       return (await file.exists()) ? new Response(file) : new Response("not found", { status: 404 });

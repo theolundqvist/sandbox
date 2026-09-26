@@ -144,21 +144,20 @@
 
   /* The game menu: the live game dimmed behind a rail of entries, and the open page in a pane beside it. */
   #menu { position: fixed; inset: 0; background: rgba(6,7,9,.55); z-index: 1001; }
-  #rail { position: absolute; top: 0; bottom: 0; left: 0; width: 400px; display: flex; flex-direction: column; padding: 72px 32px 40px 72px; }
+  #rail { position: absolute; top: 0; bottom: 0; left: 0; width: 400px; background: rgba(6,7,9,.5); display: flex; flex-direction: column; padding: 72px 32px 40px 72px; }
   #rail .screen-title { font-size: 44px; margin-bottom: 32px; flex: none; }
   #rail .item { font-size: 26px; padding-top: 6px; padding-bottom: 6px; padding-left: 28px; }
   #rail .item::before { width: 12px; height: 12px; }
-  #rail .item.small { font-size: 18px; letter-spacing: .06em; padding-top: 5px; padding-bottom: 5px; }
-  #mod-pages { flex: 1; min-height: 0; overflow-y: auto; flex-wrap: nowrap; margin: 20px 0; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.25) transparent; }
+  #mod-pages { flex: 1; min-height: 0; overflow-y: auto; flex-wrap: nowrap; margin: 16px 0; padding-top: 16px; border-top: 1px solid var(--line); scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.25) transparent; }
   #mod-pages:empty { visibility: hidden; }
   #leave { flex: none; margin-top: auto; }
   #pages { position: absolute; top: 0; bottom: 0; left: 400px; width: min(760px, calc(100vw - 440px)); padding: 72px 56px 40px; background: var(--pane); overflow-y: auto; }
   #pages .screen-title { font-size: 44px; margin-bottom: 28px; }
   #page-back { display: none; }
+  #pages:focus { outline: none; }
   body:has(#menu:not([hidden])) :is(#top, #feed, #hint, #builders, #chat, #empty) { visibility: hidden; }
   #gm-state { color: var(--ok); margin-left: 6px; }
   #menu .copy-row { max-width: 100%; }
-  #menu .copy-row > span { width: 132px; }
   #menu .gap { height: 32px; }
   .field .range { display: flex; align-items: center; gap: 12px; }
   .field input[type=range] { width: 180px; accent-color: var(--accent); }
@@ -280,9 +279,10 @@
   <form id="join-form" class="front">
     <div id="join-main" class="screen" data-nav>
       <h1 id="join-world"></h1>
-      <label class="field" id="join-name-field"><span>Name</span><input type="text" id="join-name" placeholder="Your name" maxlength="16" autocomplete="off" spellcheck="false"></label>
-      <div class="gap"></div>
-      <div class="items"><button class="item" type="submit">Join<span class="value" id="join-online"></span></button></div>
+      <div class="items">
+        <label class="item entry" id="join-name-field"><input type="text" id="join-name" placeholder="Your name" maxlength="16" autocomplete="off" spellcheck="false"></label>
+        <button class="item" type="submit" id="join-go">Join<span class="value" id="join-online"></span></button>
+      </div>
       <div id="join-error" class="error"></div>
     </div>
     <div id="join-app" class="screen" data-nav hidden>

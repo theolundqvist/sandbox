@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { ServerWebSocket, Subprocess } from "bun";
+import { frontFile } from "./front";
 import { latencies, openRecord, route, type Recorder } from "./record";
 import type { Config } from "./server";
 
@@ -265,7 +266,6 @@ async function menuApi(req: Request, action: string) {
 }
 
 const page = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });
-const CLIPS = join(ENGINE, "client/clips");
 
 Bun.serve<Pipe>({
   port: PORT,
@@ -274,14 +274,8 @@ Bun.serve<Pipe>({
     const url = new URL(req.url);
     if (url.pathname === "/menu") return page("menu.html");
     if (url.pathname.startsWith("/api/menu/")) return menuApi(req, url.pathname.slice("/api/menu/".length));
-    if (url.pathname === "/front.js" || url.pathname === "/front.css") return new Response(Bun.file(join(ENGINE, "client", url.pathname)));
-    // The menus' background: every clip dropped into engine/client/clips plays.
-    if (url.pathname === "/clips/") return Response.json(readdirSync(CLIPS).filter((f) => f.endsWith(".mp4")));
-    if (url.pathname.startsWith("/clips/")) {
-      const name = url.pathname.slice("/clips/".length);
-      const file = Bun.file(join(CLIPS, name));
-      return /^[\w-]+\.(mp4|jpg)$/.test(name) && (await file.exists()) ? new Response(file, { headers: { "cache-control": "max-age=86400" } }) : new Response("not found", { status: 404 });
-    }
+    const front = await frontFile(url.pathname);
+    if (front) return front;
     if (url.pathname.startsWith("/vendor/three/")) {
       const file = Bun.file(join(ENGINE, "../node_modules/three", url.pathname.slice("/vendor/three/".length).replaceAll("..", "")));
       return (await file.exists()) ? new Response(file) : new Response("not found", { status: 404 });
