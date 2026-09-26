@@ -22,6 +22,10 @@ let beat: Int32Array;
 let trial: string | null = null;
 let current: Loaded | null = null;
 let events: Event[] = [];
+/** Spectators get a player's stream, but no mod's join, leave or players list ever sees them. */
+const watchers = new Map<string, Player>();
+/** Set while checking what a spectator sees: a hook that throws on someone who isn't a player hides the thing instead of counting against its mod. */
+let spectating = false;
 
 const post = (msg: any) => self.postMessage(msg);
 
@@ -139,6 +143,7 @@ function guarded<T>(m: Loaded, label: string, fn: () => T): T | undefined {
   try {
     return fn();
   } catch (e: any) {
+    if (spectating) throw e;
     m.lastError = `${label}: ${e?.stack ?? e}`;
     fault(m, m.lastError, ++m.errors >= 10);
   } finally {
@@ -202,7 +207,14 @@ let tickCount = 0;
 
 function visible(p: Player, id: number, e: Entity) {
   if (Array.isArray(e.only) && !e.only.includes(p.id)) return false;
-  for (const m of seers) if (call(m, "see", p, id, e) === false) return false;
+  spectating = watchers.has(p.id);
+  try {
+    for (const m of seers) if (call(m, "see", p, id, e) === false) return false;
+  } catch {
+    return false;
+  } finally {
+    spectating = false;
+  }
   return true;
 }
 
@@ -242,7 +254,7 @@ function flush() {
   const outs: Record<string, string> = {};
   // Each player gets a full visibility pass every 5th tick, on a different tick from the others so the passes don't pile up.
   let i = 0;
-  for (const p of world.players.values()) {
+  for (const p of [...world.players.values(), ...watchers.values()]) {
     const out = stream(p, d, fullPass || (seers.length > 0 && (tickCount + i++) % 5 === 0));
     if (out.reset || Object.keys(out.set).length || Object.keys(out.unset).length || out.removed.length || out.events) outs[p.id] = JSON.stringify({ t: "tick", ...out });
   }
@@ -265,6 +277,7 @@ self.onmessage = async ({ data: msg }) => {
       world.nextId = msg.nextId;
       for (const [id, e] of Object.entries(msg.entities)) world.entities.set(Number(id), e as any);
       for (const p of msg.players as Player[]) world.players.set(p.id, p);
+      for (const id of msg.watchers as string[]) watchers.set(id, { id, name: id });
       trial = msg.trial ?? null;
       dbDir = msg.dbDir;
       world.delta();
@@ -310,6 +323,11 @@ self.onmessage = async ({ data: msg }) => {
       world.players.set(msg.player.id, msg.player);
       for (const m of ordered) call(m, "join", msg.player);
       return;
+    case "watch":
+      return void watchers.set(msg.id, { id: msg.id, name: msg.id });
+    case "unwatch":
+      watchers.delete(msg.id);
+      return void known.delete(msg.id);
     case "resync":
       return void resync.add(msg.id);
     case "see": {

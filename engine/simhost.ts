@@ -13,6 +13,7 @@ export class SimHost {
   nextId = 1;
   perf: { msPerTick: number; p50: number; p95: number; max: number; mods: Record<string, number> } | null = null;
   players = new Map<string, Player>();
+  watchers = new Set<string>();
   private worker!: Worker;
   private beat = new Int32Array(new SharedArrayBuffer(8));
   private applying = new Map<string, (error: string | null) => void>();
@@ -75,6 +76,7 @@ export class SimHost {
       entities: Object.fromEntries(this.entities),
       nextId: this.nextId,
       players: [...this.players.values()],
+      watchers: [...this.watchers],
       mods: this.mods(),
       dbDir: this.dbDir,
     });
@@ -104,6 +106,8 @@ export class SimHost {
   send(msg: any) {
     if (msg.t === "join") this.players.set(msg.player.id, msg.player);
     if (msg.t === "leave") this.players.delete(msg.id);
+    if (msg.t === "watch") this.watchers.add(msg.id);
+    if (msg.t === "unwatch") this.watchers.delete(msg.id);
     this.worker.postMessage(msg);
   }
 
@@ -145,6 +149,7 @@ export class SimHost {
         entities: Object.fromEntries(this.entities),
         nextId: this.nextId,
         players: [],
+        watchers: [],
         mods: [...this.mods().filter((m) => m.name !== mod.name), mod],
         trial: mod.name,
         dbDir: this.dbDir,

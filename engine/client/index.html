@@ -118,10 +118,12 @@
   #replay-chapters li span { color: var(--accent); flex-shrink: 0; }
   #replay-chapters li b { font-weight: 600; }
   body.replaying .hud-area > * { pointer-events: none; }
-  /* Mods' HUD, layers and whatever they add to the page stay hidden in a replay until H; a 2D world drawn in a layer instead of the 3D scene stays. */
+  /* Mods' HUD, layers and whatever they add to the page stay hidden in a replay until H and in the live view behind the join screen; a 2D world drawn in a layer instead of the 3D scene stays. */
   body.replaying:not(.replay-hud) > :not(canvas:first-child, #layers, #hud, #join, #howto, #palette, #menu),
   body.replaying:not(.replay-hud) .hud-area,
-  body.replaying:not(.replay-hud) > canvas:not([hidden]) ~ #layers { display: none !important; }
+  body.replaying:not(.replay-hud) > canvas:not([hidden]) ~ #layers,
+  body.spectating > :not(canvas:first-child, #layers, #hud, #join, #howto, #palette, #menu),
+  body.spectating > canvas:not([hidden]) ~ #layers { display: none !important; }
   body.replaying #interact, body.replaying #react, body.replaying #feed, body.replaying #hint, body.replaying #builders, body.replaying #top, body.replaying #chat, body.replaying #stick, body.replaying #jump, body.replaying #empty { display: none !important; }
   @media (max-width: 760px) {
     body.replaying { --deck: 112px; }
@@ -207,6 +209,9 @@
   .actions button { flex: 1; padding: 16px; }
   .error { color: var(--err); min-height: 1.4em; margin-top: 10px; }
   #join { position: fixed; inset: 0; z-index: 1003; }
+  /* The live game shows through once its first moment arrives. */
+  #join-backdrop { transition: background-color 1.2s ease; }
+  #join-backdrop.live { background-color: transparent; }
   #join .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
   code { display: block; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d9d6cf; word-break: break-all; }
   p code { display: inline; }

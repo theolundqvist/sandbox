@@ -16,7 +16,7 @@ const DB = join(DATA, "db");
 const PORT = Number(process.env.PORT ?? 7777);
 
 export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "hills" | "blank"; invite: string; hostKey: string };
-type Conn = { name: string; ua: string; at: number };
+type Conn = { name: string; ua: string; at: number; spectator?: true };
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 const readJson = <T>(file: string, fallback: T): T => (existsSync(join(DATA, file)) ? JSON.parse(readFileSync(join(DATA, file), "utf8")) : fallback);
@@ -114,6 +114,8 @@ function chat(from: string, text: string, how?: "spoken" | "claudes") {
   for (const wake of chatWaiters) wake();
 }
 const sockets = new Map<string, ServerWebSocket<Conn>>();
+/** Visitors with an invite watching the game live behind the join screen: no player, unseen and read-only. */
+const spectators = new Map<string, ServerWebSocket<Conn>>();
 
 /** Players' verdicts on the live version of each mod; more than half of those online voting undo reverts it. */
 const votes = new Map<string, { version: number; love: Set<string>; undo: Set<string> }>();
@@ -202,6 +204,7 @@ function feed(text: string, kind = "info") {
 const mods = new Mods(ROOT, BUILD, join(DATA, "mods.json"), {
   client: (name, url) => {
     broadcast({ t: "mod", name, url });
+    for (const ws of spectators.values()) ws.send(JSON.stringify({ t: "mod", name, url }));
     return sockets.size > 0;
   },
   feed,
@@ -211,7 +214,7 @@ const sim = new SimHost(DB, () => mods.list(), {
   tick: (outs, diff) => {
     store.track(diff);
     for (const [id, text] of Object.entries(outs)) {
-      sockets.get(id)?.send(text);
+      (sockets.get(id) ?? spectators.get(id))?.send(text);
       sent(id, text);
     }
   },
@@ -388,6 +391,7 @@ async function transcribe(audio: Blob) {
   return /\p{L}/u.test(text.replace(/\[[^\]]*\]|\([^)]*\)/g, "")) ? text.trim() : "";
 }
 
+const clientMods = () => [...mods.running].filter(([, m]) => m.build.client).map(([name, m]) => ({ name, url: m.build.client }));
 const html = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });
 const bearer = (req: Request) => req.headers.get("authorization")?.replace(/^Bearer /, "") ?? new URL(req.url).searchParams.get("key");
 
@@ -437,6 +441,7 @@ const server = Bun.serve<Conn>({
         case "invite":
           config.invite = token();
           writeJson("config.json", config);
+          for (const ws of spectators.values()) ws.close(4003, "The invite changed");
           return Response.json({ invite: config.invite });
         case "snapshots":
           return Response.json(store.snapshots());
@@ -513,6 +518,11 @@ const server = Bun.serve<Conn>({
     if (path === "/cli" || path.startsWith("/cli/")) return mcp.cli(req, nameByKey(bearer(req)) ?? null, path.slice(5) || "script", url.searchParams.get("url"), url.searchParams.get("name"));
 
     if (path === "/ws") {
+      const invite = url.searchParams.get("invite");
+      if (invite === config.invite || invite === config.hostKey) {
+        if (spectators.size >= 8) return new Response("too many spectators", { status: 503 });
+        return server.upgrade(req, { data: { name: `~${token()}`, ua: "", at: Date.now(), spectator: true } }) ? undefined : new Response("upgrade failed", { status: 400 });
+      }
       const name = nameByKey(url.searchParams.get("key"));
       if (!name) return new Response("unknown key", { status: 401 });
       return server.upgrade(req, { data: { name, ua: req.headers.get("user-agent") ?? "", at: Date.now() } }) ? undefined : new Response("upgrade failed", { status: 400 });
@@ -522,6 +532,12 @@ const server = Bun.serve<Conn>({
   websocket: {
     open(ws) {
       const { name } = ws.data;
+      if (ws.data.spectator) {
+        spectators.set(name, ws);
+        sim.send({ t: "watch", id: name });
+        ws.send(JSON.stringify({ t: "welcome", playerId: name, mods: clientMods() }));
+        return;
+      }
       const previous = sockets.get(name);
       sockets.set(name, ws);
       if (previous) previous.close(4000, "Opened in another tab");
@@ -536,7 +552,7 @@ const server = Bun.serve<Conn>({
           invite: config.invite,
           publicUrl,
           voice: !!process.env.ELEVENLABS_API_KEY,
-          mods: [...mods.running].filter(([, m]) => m.build.client).map(([name, m]) => ({ name, url: m.build.client })),
+          mods: clientMods(),
           feed: feedLog.slice(-8),
           claudes: Object.fromEntries([...claudes.keys()].map((name) => [name, builder(name)])),
           talk: chatLog.filter((c) => c.claudes).map(({ from, text }) => ({ from, text })),
@@ -546,6 +562,7 @@ const server = Bun.serve<Conn>({
       record.add("session", name, { event: previous ? "rejoin" : "join", ua: ws.data.ua.slice(0, 200) });
     },
     message(ws, raw) {
+      if (ws.data.spectator) return;
       const t = usage(ws.data.name);
       t.in++;
       t.inKB += raw.length / 1024;
@@ -567,6 +584,11 @@ const server = Bun.serve<Conn>({
       else if (msg.t === "act") record.add("action", ws.data.name, { what: String(msg.what).slice(0, 40), detail: String(msg.detail ?? "").slice(0, 120) });
     },
     close(ws) {
+      if (ws.data.spectator) {
+        spectators.delete(ws.data.name);
+        sim.send({ t: "unwatch", id: ws.data.name });
+        return;
+      }
       if (sockets.get(ws.data.name) !== ws) return;
       sockets.delete(ws.data.name);
       clientPerf.delete(ws.data.name);

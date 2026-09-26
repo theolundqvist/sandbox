@@ -1,7 +1,7 @@
 import { toCanvas } from "html-to-image";
 import * as THREE from "three";
 import type { ClientCtx, ClientHooks, ClientMod, Entity, ReplayShot } from "../api";
-import { clock, isAvatar, plan, type Activity, type Plan, type Tick as Moment, type Shot } from "./director";
+import { clock, extent, isAvatar, plan, position, type Activity, type Plan, type Tick as Moment, type Shot } from "./director";
 import { PhysicsIndex } from "../physics";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -55,7 +55,7 @@ function offerApp(link: string) {
   };
 }
 
-/** The join screen, over clips of games built in Sandbox. A player who left the world comes back to it and rejoins as themselves. */
+/** The join screen, over the game itself when the link holds an invite. A player who left the world comes back to it and rejoins as themselves. */
 async function start() {
   const left = hashParams.has("left") && !!key;
   if (key && !left) {
@@ -71,7 +71,8 @@ async function start() {
   $("join-online").textContent = info.online ? `${info.online} playing` : "";
   $("join").hidden = false;
   $("join-name-field").hidden = left;
-  if (!left && !hashParams.get("invite")) $("join-error").textContent = "Ask the host for an invite link.";
+  if (hashParams.get("invite")) spectate(hashParams.get("invite")!);
+  else if (!left) $("join-error").textContent = "Ask the host for an invite link.";
   offerApp(hashParams.get("invite") ? `${info.publicUrl ?? origin}/#invite=${hashParams.get("invite")}` : `${info.publicUrl ?? origin}/`);
   const name = $<HTMLInputElement>("join-name");
   name.value = localStorage.getItem("sandbox-name") ?? "";
@@ -109,7 +110,7 @@ camera.lookAt(0, 0, 0);
 const listener = new THREE.AudioListener();
 camera.add(listener);
 const audio = { context: listener.context, listener, output: listener.getInput() };
-for (const type of ["pointerdown", "keydown"]) addEventListener(type, () => audio.context.state === "suspended" && void audio.context.resume(), true);
+for (const type of ["pointerdown", "keydown"]) addEventListener(type, () => !spectator && audio.context.state === "suspended" && void audio.context.resume(), true);
 
 /** Every mod's shakes add up into one camera offset, applied for the draw only. */
 const shakes: { strength: number; seconds: number; left: number }[] = [];
@@ -654,6 +655,24 @@ function showAction() {
 $("interact").onclick = runAction;
 
 // ---------- network ----------
+/** Loads the server's live client builds and unloads the rest. Every mod downloads at once; they still start in order, and entities are rebuilt once for all of them. */
+async function loadLive(list: { name: string; url: string }[]) {
+  const wanted = new Map(list.map((m) => [m.name, m.url]));
+  live = wanted;
+  queue(() => Promise.allSettled([...wanted.values()].map((url) => import(url))));
+  const modMs: [string, number][] = [];
+  for (const name of mods.keys()) if (!wanted.has(name)) queue(() => loadMod(name, null, false));
+  for (const [name, url] of wanted)
+    queue(async () => {
+      const started = performance.now();
+      await loadMod(name, url, false);
+      modMs.push([name, Math.round(performance.now() - started)]);
+    });
+  await loading;
+  rebuildAll();
+  return modMs;
+}
+
 function connect() {
   const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/ws?key=${key}`);
   socket = ws;
@@ -681,20 +700,7 @@ function connect() {
         $("menu-talk").replaceChildren();
         for (const line of msg.talk) addTalk(line.from, line.text);
         leaveReplay();
-        const wanted = new Map<string, string>(msg.mods.map((m: any) => [m.name, m.url]));
-        live = wanted;
-        // Every mod downloads at once; they still start in order, and entities are rebuilt once for all of them.
-        queue(() => Promise.allSettled([...wanted.values()].map((url) => import(url))));
-        const modMs: [string, number][] = [];
-        for (const name of mods.keys()) if (!wanted.has(name)) queue(() => loadMod(name, null, false));
-        for (const [name, url] of wanted)
-          queue(async () => {
-            const started = performance.now();
-            await loadMod(name, url, false);
-            modMs.push([name, Math.round(performance.now() - started)]);
-          });
-        await loading;
-        rebuildAll();
+        const modMs = await loadLive(msg.mods);
         for (const f of msg.feed) addLine(f.text, f.kind);
         const modsMs = Math.round(performance.now() - welcomedAt);
         requestAnimationFrame(() =>
@@ -1338,6 +1344,86 @@ function film(dt: number, now: number) {
   scene.fog = shot.kind === "overview" ? null : r.fog;
 }
 
+// ---------- the live view behind the join screen ----------
+/** A visitor with an invite watches the game behind the join screen: the server streams what a fresh player would see and nobody in the game sees them. Nothing goes back, since `socket` stays unset; mods run silent, with their HUD hidden as in a replay. */
+let spectator: WebSocket | null = null;
+/** Where things appeared while watching. */
+const built: { at: number; pos: [number, number, number] }[] = [];
+const drift = { avatar: -1, pickedAt: -Infinity, goal: new THREE.Vector3(), goalDistance: 40, focus: new THREE.Vector3(), distance: 40, angle: Math.random() * Math.PI * 2, placed: false };
+
+function spectate(invite: string) {
+  const ws = (spectator = new WebSocket(`${location.origin.replace(/^http/, "ws")}/ws?invite=${encodeURIComponent(invite)}`));
+  let opened = false;
+  document.body.classList.add("spectating");
+  void audio.context.suspend();
+  // The sheet covers the left, so what the camera circles sits right of centre.
+  if (innerWidth > 900) camera.setViewOffset(innerWidth, innerHeight, -innerWidth * 0.18, 0, innerWidth, innerHeight);
+  ws.onmessage = ({ data }) => {
+    opened = true;
+    const msg = JSON.parse(data);
+    if (msg.t === "welcome") void loadLive(msg.mods);
+    else if (msg.t === "mod") {
+      if (msg.url) live.set(msg.name, msg.url);
+      else live.delete(msg.name);
+      queue(() => loadMod(msg.name, msg.url));
+    } else if (msg.t === "tick") {
+      if (!msg.reset)
+        for (const [id, e] of Object.entries<Entity>(msg.set)) {
+          const at = !entities.has(Number(id)) && !isAvatar(e) && position(e);
+          if (at) built.push({ at: performance.now(), pos: at });
+        }
+      built.splice(0, Math.max(0, built.length - 200));
+      applyTick(msg);
+      $("join-backdrop").classList.add("live");
+    }
+  };
+  ws.onclose = (e) => {
+    if (spectator !== ws) return;
+    $("join-backdrop").classList.remove("live");
+    // A dropped view comes back; a changed invite or a refused connection doesn't.
+    if (opened && e.code !== 4003) setTimeout(() => spectator === ws && spectate(invite), 3000);
+  };
+}
+
+/** Joining keeps the scene and camera where the view left them; mods start over as the player, whose own stream resets the entities. */
+function stopSpectating() {
+  const ws = spectator;
+  if (!ws) return;
+  spectator = null;
+  ws.onclose = ws.onmessage = null;
+  ws.close();
+  built.length = 0;
+  document.body.classList.remove("spectating");
+  camera.clearViewOffset();
+  renderer.setPixelRatio(screen.resolution ?? Math.min(devicePixelRatio, 2));
+  for (const name of mods.keys()) queue(() => loadMod(name, null, false));
+}
+
+/** Every 12 s the view turns to the next player, or with nobody around to what was built in the last minute, else the whole world, and slowly circles it. */
+function driftCamera(dt: number, now: number) {
+  if (now - drift.pickedAt > 12_000) {
+    drift.pickedAt = now;
+    const avatars = [...entities].filter(([, e]) => isAvatar(e) && position(e)).map(([id]) => id).sort((a, b) => a - b);
+    drift.avatar = avatars[(avatars.indexOf(drift.avatar) + 1) % avatars.length] ?? -1;
+    const recent = built.filter((b) => now - b.at < 60_000).map((b) => b.pos);
+    const placed = [...entities.values()].flatMap((e) => (isAvatar(e) || !position(e) ? [] : [position(e)!]));
+    const { target, radius } = extent(recent.length >= 3 ? recent : placed);
+    drift.goal.fromArray(target);
+    drift.goalDistance = drift.avatar >= 0 ? 20 : Math.min(160, Math.max(24, radius * (recent.length >= 3 ? 2.4 : 1.5)));
+  }
+  const at = drift.avatar >= 0 && position(entities.get(drift.avatar) ?? {});
+  if (at) drift.goal.fromArray(at);
+  // A new subject far off is a cut; a near one, or one on the move, is followed.
+  const k = drift.placed && drift.focus.distanceTo(drift.goal) < drift.distance * 4 ? 1 - Math.exp(-dt * 0.6) : 1;
+  drift.placed = true;
+  drift.focus.lerp(drift.goal, k);
+  drift.distance += (drift.goalDistance - drift.distance) * k;
+  drift.angle += dt * 0.06;
+  const { x, y, z } = drift.focus;
+  camera.position.set(x + Math.cos(drift.angle) * drift.distance, y + drift.distance * 0.55, z + Math.sin(drift.angle) * drift.distance);
+  camera.lookAt(drift.focus);
+}
+
 const banners: { mod: string; by: string; title: string; text: string; color: string }[] = [];
 /** Live banners wait while a timelapse plays. */
 function nextBanner() {
@@ -1377,11 +1463,11 @@ const typing = () => {
   const el = document.activeElement;
   return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || (el instanceof HTMLElement && el.isContentEditable);
 };
-const inputFree = () => !(replay || typing() || panel || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden);
+const inputFree = () => !(replay || spectator || typing() || panel || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden);
 
 /** When a mod asks for mouse-look, clicking the game locks the mouse; the cursor is free again while chat, the menu, a panel or an overlay is open. */
 function capture() {
-  if (!replay && screen.lockPointer && !document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !panel && !document.pointerLockElement) renderer.domElement.requestPointerLock()?.catch(() => {});
+  if (!replay && !spectator && screen.lockPointer && !document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !panel && !document.pointerLockElement) renderer.domElement.requestPointerLock()?.catch(() => {});
 }
 renderer.domElement.addEventListener("click", capture);
 /** Mods free the mouse for their own windows through exitPointerLock; a loss nobody asked for (Esc, switching windows) pauses into the menu. */
@@ -1473,7 +1559,7 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     e.stopImmediatePropagation();
     return closePanel();
   }
-  if (replay || e.repeat || e.metaKey || e.ctrlKey || held.has(e.code) || typing() || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden) return;
+  if (replay || spectator || e.repeat || e.metaKey || e.ctrlKey || held.has(e.code) || typing() || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden) return;
   if ((e.code === "Digit1" || e.code === "Digit2") && !$("react").hidden) return;
   const b = activeBindings().find((x) => x.code === e.code);
   if (!b) return;
@@ -1488,6 +1574,7 @@ addEventListener("keyup", (e: KeyboardEvent) => {
 }, true);
 
 addEventListener("keydown", (e: KeyboardEvent) => {
+  if (spectator) return;
   if ((e.metaKey || e.ctrlKey) && e.code === "KeyK") {
     e.preventDefault();
     return palette.hidden ? openPalette() : closePalette();
@@ -1907,6 +1994,9 @@ let welcomedAt = Infinity;
 let last = performance.now();
 renderer.setAnimationLoop(() => {
   const now = performance.now();
+  // The live view behind the join screen draws about 30 frames a second at no more than a pixel per CSS pixel, whatever mods ask for, for phones.
+  if (spectator && now - last < 32) return;
+  if (spectator && renderer.getPixelRatio() > 1) renderer.setPixelRatio(1);
   const dt = Math.min((now - last) / 1000, 0.1);
   stats.frames.push(now - last);
   last = now;
@@ -1922,6 +2012,7 @@ renderer.setAnimationLoop(() => {
   showAction();
   if (replay) advance(dt, now);
   if (replay) film(dt, now);
+  if (spectator && view === camera && screen.scene !== false) driftCamera(dt, now);
   shakeCamera(dt);
   const drawStart = performance.now();
   if (screen.scene !== false) draw(dt);
@@ -2049,5 +2140,6 @@ if (watching) {
   $("hud").hidden = false;
   $("howto-world").textContent = info.name;
   howto.hidden = false;
+  stopSpectating();
   connect();
 }

@@ -225,10 +225,10 @@ function busiest(changes: Change[]) {
   return best && best[1] > 8 ? { target: undefined, radius: 30, changes: best[0] } : null;
 }
 
-const position = (e: Entity) => (Array.isArray(e.pos) && e.pos.length >= 2 ? ([e.pos[0], e.pos[1], e.pos[2] ?? 0] as Vec) : undefined);
+export const position = (e: Entity) => (Array.isArray(e.pos) && e.pos.length >= 2 ? ([e.pos[0], e.pos[1], e.pos[2] ?? 0] as Vec) : undefined);
 
 /** Centre of the middle 90% of these points and the radius that frames them. */
-function extent(points: Vec[]) {
+export function extent(points: Vec[]) {
   if (!points.length) return { target: [0, 0, 0] as Vec, radius: 30 };
   const mid = (axis: number) => {
     const sorted = points.map((p) => p[axis]!).sort((a, b) => a - b);
