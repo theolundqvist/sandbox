@@ -29,23 +29,29 @@
     <svg class="logo" id="logo"></svg>
     <p id="waiting" class="status" hidden>Waiting for the host</p>
     <div class="items">
-      <button class="item" id="go-play">Play<span class="value" id="playing"></span></button>
-      <button class="item" id="go-invite" data-to="invite">Invite</button>
-      <button class="item" id="go-worlds" data-to="worlds">Worlds</button>
-      <button class="item" id="go-create" data-to="create">Create</button>
+      <button class="item" id="go-create" data-to="create">New game</button>
+      <button class="item" id="go-worlds" data-to="worlds">Saved games</button>
+      <button class="item" id="go-join" data-to="join">Join game</button>
       <button class="item" id="go-app" data-to="app" hidden>Desktop app</button>
     </div>
   </section>
 
   <section id="worlds" class="screen" data-nav hidden>
-    <h1>Worlds</h1>
+    <h1>Saved games</h1>
     <div class="items" id="world-list"></div>
+    <p id="no-worlds" class="status" hidden>No saved games yet</p>
+  </section>
+
+  <section id="join" class="screen" data-nav hidden>
+    <h1>Join game</h1>
+    <label class="item entry"><input type="text" id="join-link" placeholder="Paste an invite link" autocomplete="off" spellcheck="false"></label>
   </section>
 
   <section id="world" class="screen" data-nav hidden>
     <h1 id="world-name"></h1>
     <div class="items">
-      <button class="item" id="world-play"></button>
+      <button class="item" id="world-play">Play</button>
+      <button class="item" id="world-invite" data-to="invite">Invite</button>
       <button class="item" id="world-timelapse">Timelapse</button>
       <button class="item" id="world-rewind" data-to="rewind">Rewind</button>
       <button class="item" id="world-settings" data-to="configure">Settings</button>
@@ -61,7 +67,7 @@
   </section>
 
   <section id="create" class="screen" data-nav hidden>
-    <h1>New world</h1>
+    <h1>New game</h1>
     <label class="field"><span>Name</span><input type="text" id="create-name" placeholder="Untitled" maxlength="40" autocomplete="off" spellcheck="false"></label>
     <div class="field"><span>House rules</span><div class="pick rules" id="create-rules" data-options="open:Open,additive:Additive"></div></div>
     <div class="field"><span>Start with</span><div class="pick" id="create-start" data-options="blank:Blank,basics:3D field,hills:3D hills"></div></div>
@@ -104,7 +110,9 @@
   backdrop($("backdrop"));
   logo($("logo"));
 
-  const hashKey = new URLSearchParams(location.hash.slice(1)).get("key");
+  /** The desktop app links straight to a screen: #world=<id> for a saved game, #screen=create for a new one. */
+  const jump = new URLSearchParams(location.hash.slice(1));
+  const hashKey = jump.get("key");
   if (hashKey) {
     localStorage.setItem("sandbox-menu", hashKey);
     history.replaceState(null, "", "/menu");
@@ -159,6 +167,7 @@
       e.preventDefault();
       document.activeElement.blur();
       if (current()?.id === "create") $("create-go").focus();
+      if (current()?.id === "join") joinGame();
     }
   });
   for (const b of document.querySelectorAll("[data-to]")) b.onclick = () => show(b.dataset.to);
@@ -200,9 +209,8 @@
 
   function render(s) {
     const r = s.running;
-    $("go-play").hidden = $("go-invite").hidden = !r;
-    $("go-worlds").hidden = !s.worlds.length;
-    $("playing").textContent = r?.name ?? "";
+    offerApp(`${s.tunnel?.url ?? location.origin}/menu#key=${key}`);
+    $("no-worlds").hidden = !!s.worlds.length;
     rebuild($("world-list"), s.worlds.map((w) => {
       const b = el("button", { className: "item", textContent: w.name }, el("span", { className: r?.id === w.id ? "value live" : "value", textContent: r?.id === w.id ? "Live" : ago(w.played) }));
       b.dataset.key = w.id;
@@ -240,7 +248,14 @@
         return b;
       }));
     }
-    if (!stack.length) show("title");
+    if (!stack.length) {
+      show("title");
+      if (jump.get("world") && s.worlds.some((w) => w.id === jump.get("world"))) {
+        selected = jump.get("world");
+        renderWorld();
+        show("world");
+      } else if (jump.get("screen") === "create") show("create");
+    }
     else if (!$(current().id).querySelector(":focus")) enter();
   }
 
@@ -253,7 +268,7 @@
     }
     const live = state.running?.id === w.id;
     $("world-name").textContent = w.name;
-    $("world-play").textContent = live ? "Play" : "Host";
+    $("world-invite").hidden = !live;
     $("world-rewind").hidden = !live || !state.running.snapshots.length;
     $("world-stop").hidden = !live;
     $("world-settings").hidden = $("world-delete").hidden = live;
@@ -266,7 +281,11 @@
     if (state.running && state.running.id !== id && !(await ask(`Stop ${state.running.name}?`, "Stop and host"))) return;
     await attempt(async () => play(await api("host", { id })));
   }
-  $("go-play").onclick = () => play(state);
+  function joinGame() {
+    const link = $("join-link").value.trim();
+    if (/^https?:\/\/\S+$/.test(link)) location.assign(link);
+    else $("error").textContent = "Paste the invite link your host sent.";
+  }
   $("world-play").onclick = () => hostWorld(selected);
   /** The timelapse plays from the world's own server, so a world that isn't running is hosted first. */
   $("world-timelapse").onclick = async () => {
@@ -317,7 +336,6 @@
     if (location.pathname === "/menu") $("waiting").textContent = "Open the menu link from the host's terminal.";
     else setInterval(async () => (await fetch("/api/info")).ok && location.assign("/"), 2000);
   } else {
-    offerApp(`${location.origin}/menu#key=${key}`);
     api("state").catch(() => {
       localStorage.removeItem("sandbox-menu");
       location.reload();

@@ -1,7 +1,8 @@
 // A thin shell around the web client: one window, a trusted launch screen and title bar, and the game in a view with no extra powers.
-const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, session } = require("electron");
-const { readFileSync, writeFileSync } = require("node:fs");
-const { join } = require("node:path");
+const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, session } = require("electron");
+const { readdirSync, readFileSync, writeFileSync } = require("node:fs");
+const { join, normalize } = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 const mac = process.platform === "darwin";
 const BAR = 36;
@@ -20,12 +21,16 @@ app.on("second-instance", (_event, argv) => {
   if (link) play(link);
 });
 
+/** The game's own front end (fonts, clips, menu styles), shipped inside the app so the start screen works offline. */
+const FRONT = app.isPackaged ? join(process.resourcesPath, "client") : join(__dirname, "../engine/client");
+protocol.registerSchemesAsPrivileged([{ scheme: "sandbox", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
+
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
 const STATE = join(app.getPath("userData"), "state.json");
-/** @type {{ fullscreen?: boolean, recents: { url: string, name: string, at: number }[], mic: string[] }} */
-const state = { recents: [], mic: [] };
+/** @type {{ fullscreen?: boolean, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[] }} Joined games by shareable address; main menus opened, by host key. */
+const state = { recents: [], hosts: {}, mic: [] };
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
 } catch {}
@@ -84,7 +89,16 @@ function play(raw) {
   if (!/^https?:$/.test(url.protocol)) return "Paste the http:// or https:// link your host sent.";
   leave();
   const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
+  view.setBackgroundColor("#0b0b0c");
   game = { view, name: url.host };
+  const fail = (reason) => {
+    if (game?.view !== view) return;
+    console.log(`Couldn't reach ${url.href}: ${reason}`);
+    leave();
+    shell.webContents.send("down", { url: url.href, host: url.host });
+  };
+  // A host that drops packets never answers; don't leave a blank window for the minute Chromium waits.
+  const timer = setTimeout(() => fail("no answer"), 15000);
   const wc = view.webContents;
   // Lets the web client skip its "get the desktop app" offer.
   wc.setUserAgent(`${wc.getUserAgent()} SandboxDesktop`);
@@ -95,14 +109,17 @@ function play(raw) {
   wc.on("will-redirect", stayHome);
   wc.setWindowOpenHandler(() => ({ action: "deny" }));
   wc.on("before-input-event", keys);
-  wc.on("did-navigate", (_, to) => {
+  wc.on("did-navigate", (_, to, status) => {
+    clearTimeout(timer);
+    if (status >= 400) return fail(`HTTP ${status}`);
     const u = new URL(to);
-    if (u.pathname !== "/menu") void remember(worldBase(u));
+    const key = new URLSearchParams(u.hash.slice(1)).get("key");
+    if (u.pathname.endsWith("/menu")) {
+      if (key) hostSeen(key, worldBase(u));
+    } else void remember(worldBase(u));
   });
   wc.on("did-fail-load", (_, code, description, _url, mainFrame) => {
-    if (!mainFrame || code === -3 || game?.view !== view) return;
-    leave();
-    shell.webContents.send("error", `Couldn't reach ${url.host} (${description}). Is the world running?`);
+    if (mainFrame && code !== -3) fail(description);
   });
   win.contentView.addChildView(view);
   layout();
@@ -110,6 +127,48 @@ function play(raw) {
   void wc.loadURL(url.href);
   wc.focus();
   return null;
+}
+
+/** A main menu this app opened; a launcher keeps one host key, so its local and relay addresses count once. */
+function hostSeen(key, base) {
+  if (state.hosts[key] === base) return;
+  state.hosts[key] = base;
+  save();
+}
+
+const ask = (url, key, ms = 1500) => fetch(url, { headers: key ? { authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(ms) });
+
+/** The start screen's games: each known launcher's saved games, opened through its relay address when it shares, and the games joined. */
+async function games() {
+  const local = await ask(`${LOCAL}/api/local-key`, null, 800).then((r) => (r.ok ? r.json() : null), () => null);
+  if (local) hostSeen(local.key, LOCAL);
+  const menus = await Promise.all(
+    Object.entries(state.hosts).map(async ([key, base]) => {
+      const res = await ask(`${base}/api/menu/state`, key).catch(() => null);
+      if (res?.status === 401) {
+        delete state.hosts[key];
+        save();
+      }
+      return res?.ok ? { key, base, s: await res.json() } : null;
+    }),
+  );
+  const hosted = [];
+  const mine = new Set();
+  let newGame = null;
+  for (const m of menus) {
+    if (!m) continue;
+    const share = m.s.tunnel?.url ?? m.base;
+    mine.add(m.base).add(share);
+    if (m.base === LOCAL) newGame = `${share}/menu#key=${m.key}&screen=create`;
+    for (const w of m.s.worlds) hosted.push({ name: w.name, at: w.played, live: m.s.running?.id === w.id, url: `${share}/menu#key=${m.key}&world=${w.id}` });
+  }
+  const copied = (await clipboard.readText()).trim();
+  return {
+    hosted,
+    joined: state.recents.filter((r) => !mine.has(r.url)),
+    newGame,
+    copied: /^https?:\/\/\S+#(invite|key)=\S+$/.test(copied) ? copied : null,
+  };
 }
 
 function leave() {
@@ -150,7 +209,7 @@ function createWindow() {
   shell.webContents.on("will-navigate", (event) => event.preventDefault());
   shell.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.contentView.addChildView(shell);
-  void shell.webContents.loadFile(join(__dirname, "shell.html"));
+  void shell.webContents.loadURL("sandbox://app/shell.html");
   const link = linkIn(process.argv);
   if (link) shell.webContents.once("did-finish-load", () => play(link));
   layout();
@@ -191,16 +250,23 @@ app.whenReady().then(() => {
   });
 
   const fromShell = (event) => event.sender === shell.webContents;
-  ipcMain.handle("state", async (event) => {
-    if (!fromShell(event)) return null;
-    const local = await session.defaultSession.fetch(`${LOCAL}/menu`, { method: "HEAD", signal: AbortSignal.timeout(800) }).then((r) => r.ok, () => false);
-    const copied = (await clipboard.readText()).trim();
-    return { recents: state.recents, local: local ? `${LOCAL}/menu` : null, copied: /^\S+#(invite|key)=\S+$/.test(copied) ? copied : null };
-  });
+  ipcMain.handle("state", (event) => (fromShell(event) ? games() : null));
   ipcMain.handle("open", (event, url) => (fromShell(event) ? play(String(url)) : null));
+  ipcMain.handle("forget", (event, url) => {
+    if (!fromShell(event)) return;
+    state.recents = state.recents.filter((r) => r.url !== url);
+    save();
+  });
   ipcMain.on("leave", (event) => fromShell(event) && leave());
   ipcMain.on("quit", (event) => fromShell(event) && app.quit());
 
+  protocol.handle("sandbox", (req) => {
+    const path = decodeURIComponent(new URL(req.url).pathname);
+    if (path === "/shell.html") return net.fetch(pathToFileURL(join(__dirname, "shell.html")).href);
+    if (path === "/clips/") return Response.json(readdirSync(join(FRONT, "clips")).filter((f) => f.endsWith(".mp4")));
+    const file = normalize(join(FRONT, path));
+    return file.startsWith(FRONT) ? net.fetch(pathToFileURL(file).href) : new Response("not found", { status: 404 });
+  });
   createWindow();
 });
 

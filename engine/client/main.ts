@@ -72,7 +72,7 @@ async function start() {
   $("join").hidden = false;
   $("join-name-field").hidden = left;
   if (!left && !hashParams.get("invite")) $("join-error").textContent = "Ask the host for an invite link.";
-  offerApp(hashParams.get("invite") ? `${origin}/#invite=${hashParams.get("invite")}` : `${origin}/`);
+  offerApp(hashParams.get("invite") ? `${info.publicUrl ?? origin}/#invite=${hashParams.get("invite")}` : `${info.publicUrl ?? origin}/`);
   const name = $<HTMLInputElement>("join-name");
   name.value = localStorage.getItem("sandbox-name") ?? "";
   const named = () => ($<HTMLButtonElement>("join-go").disabled = !left && !name.value.trim());
@@ -2045,7 +2045,7 @@ if (watching) {
 } else {
   await start();
   $("app-row").hidden = !appWanted;
-  $("app-command").textContent = appCommand(`${origin}/#key=${key}`);
+  $("app-command").textContent = appCommand(`${publicUrl ?? info.publicUrl ?? origin}/#key=${key}`);
   $("hud").hidden = false;
   $("howto-world").textContent = info.name;
   howto.hidden = false;

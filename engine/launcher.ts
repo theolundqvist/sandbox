@@ -67,7 +67,7 @@ async function stop() {
 
 async function host(id: string) {
   if (running?.id === id) return;
-  if (!existsSync(join(WORLDS, id, "config.json"))) throw new Error("That world doesn't exist.");
+  if (!existsSync(join(WORLDS, id, "config.json"))) throw new Error("That game doesn't exist.");
   await stop();
   let reportPort!: (port: number) => void;
   const started = Date.now();
@@ -100,7 +100,7 @@ async function host(id: string) {
   });
   const port = await new Promise<number>((resolve, reject) => {
     reportPort = resolve;
-    proc.exited.then(() => reject(new Error("The world crashed while starting; the terminal shows why.")));
+    proc.exited.then(() => reject(new Error("The game crashed while starting; the terminal shows why.")));
   });
   running = { id, proc, port, record, recorded };
   state.hosting = id;
@@ -258,12 +258,12 @@ async function menuApi(req: Request, action: string) {
       state.hosting = null;
       saveState();
     } else if (action === "delete") {
-      if (running?.id === body.id) throw new Error("Stop the world before deleting it.");
-      if (!/^[a-z0-9-]+$/.test(body.id ?? "")) throw new Error("That world doesn't exist.");
+      if (running?.id === body.id) throw new Error("Stop the game before deleting it.");
+      if (!/^[a-z0-9-]+$/.test(body.id ?? "")) throw new Error("That game doesn't exist.");
       rmSync(join(WORLDS, body.id), { recursive: true, force: true });
     } else if (action === "configure") {
-      if (running?.id === body.id) throw new Error("Stop the world before changing it.");
-      if (!/^[a-z0-9-]+$/.test(body.id ?? "") || !existsSync(join(WORLDS, body.id, "config.json"))) throw new Error("That world doesn't exist.");
+      if (running?.id === body.id) throw new Error("Stop the game before changing it.");
+      if (!/^[a-z0-9-]+$/.test(body.id ?? "") || !existsSync(join(WORLDS, body.id, "config.json"))) throw new Error("That game doesn't exist.");
       const current = config(body.id);
       const name = String(body.name ?? current.name).trim().slice(0, 40) || current.name;
       writeFileSync(join(WORLDS, body.id, "config.json"), JSON.stringify({ ...current, name, rules: body.rules === "additive" ? "additive" : body.rules === "open" ? "open" : current.rules }, null, 2));

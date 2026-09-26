@@ -2,184 +2,218 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
 <title>Sandbox</title>
+<link rel="stylesheet" href="/front.css">
 <style>
-  :root {
-    --bg: #0b0b0c;
-    --ink: #e9e4d8;
-    --dim: #8a867d;
-    --rule: #26262a;
-    --accent: #ffb547;
-    --bad: #ff6b5b;
-    --bar: 36px;
-    font-family: "DIN Alternate", "DIN Condensed", "Bahnschrift", "Barlow Condensed", "Roboto Condensed", "Liberation Sans Narrow", "Arial Narrow", sans-serif;
-    color: var(--ink);
-    background: var(--bg);
-  }
-  * { box-sizing: border-box; margin: 0; }
+  * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  html, body { height: 100%; overflow: hidden; user-select: none; }
-  body { background: var(--bg); }
-  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+  html, body { margin: 0; height: 100%; background: #101113; color: var(--text); font: 15px/1.45 system-ui, sans-serif; overflow: hidden; user-select: none; }
+  #title .logo { margin-bottom: 64px; }
+  .front { top: 36px; bottom: 96px; padding-top: 60px; padding-bottom: 0; scrollbar-width: none; }
+  .status { margin: 0; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .16em; text-transform: uppercase; }
+  #down .lead { margin: -16px 0 32px; }
+  .item.entry input { text-transform: none; }
+  .hints span { white-space: nowrap; }
+  @media (max-width: 1000px), (max-height: 640px) {
+    .front { bottom: 64px; padding: 28px 48px 0; }
+    .screen > h1 { font-size: 40px; margin-bottom: 20px; }
+    #title .logo { height: 44px; margin-bottom: 32px; }
+    .item { font-size: 26px; }
+    .hints { left: 48px; bottom: 22px; }
+    #fullscreen-hint, #reload-hint { display: none; }
+  }
 
-  .drag { -webkit-app-region: drag; }
-  .drag button, .drag input { -webkit-app-region: no-drag; }
-
-  #top { height: var(--bar); display: flex; align-items: center; gap: 14px; padding: 0 16px; border-bottom: 1px solid var(--rule); }
+  /* The title bar: drags the window, and while in a game names it and offers the way out. */
+  #top { position: fixed; top: 0; left: 0; right: 0; height: 36px; display: flex; align-items: center; gap: 14px; padding: 0 16px; -webkit-app-region: drag; font: 700 12px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; color: var(--dim); }
+  #top button { -webkit-app-region: no-drag; }
   body.mac #top { padding-left: 84px; }
   body:not(.mac) #top { padding-right: 150px; }
-  .mark { width: 12px; height: 12px; background: var(--accent); flex: none; }
-  .word { font-size: 13px; letter-spacing: .28em; text-transform: uppercase; font-weight: 700; }
-  #world { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #world:not(:empty)::before { content: "/"; margin-right: 14px; color: var(--rule); }
-  .spacer { flex: 1; }
-  .hint { font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--dim); white-space: nowrap; }
-  kbd { font: inherit; font-size: 10px; letter-spacing: .08em; color: var(--ink); border: 1px solid #3a3a3f; padding: 1px 5px; margin-right: 6px; }
-  #leave { font-size: 12px; letter-spacing: .2em; text-transform: uppercase; padding: 0 12px; height: var(--bar); color: var(--ink); }
-  #leave:hover, #leave:focus-visible { background: var(--accent); color: var(--bg); outline: none; }
-  body:not(.playing) :is(#leave, #world, #bar-hint) { display: none; }
-  body.playing main, body.playing footer { display: none; }
-
-  main { position: absolute; inset: var(--bar) 0 56px 0; display: grid; grid-template-columns: minmax(420px, 1.1fr) 1fr; gap: 72px; padding: 0 72px; align-items: center; }
-  h1 { display: flex; align-items: center; gap: 18px; font-size: 76px; line-height: 1; letter-spacing: .06em; text-transform: uppercase; font-weight: 800; }
-  h1 .mark { width: 34px; height: 34px; }
-  .tag { margin: 14px 0 48px 52px; font-size: 13px; letter-spacing: .32em; text-transform: uppercase; color: var(--dim); }
-
-  nav { display: flex; flex-direction: column; }
-  .item { position: relative; display: flex; align-items: baseline; gap: 18px; padding: 12px 0 12px 52px; font-size: 26px; letter-spacing: .14em; text-transform: uppercase; font-weight: 700; color: var(--dim); outline: none; }
-  .item::before { content: ""; position: absolute; left: 0; top: 50%; width: 28px; height: 3px; background: var(--accent); transform: translateY(-50%) scaleX(0); transform-origin: left; transition: transform .12s ease-out; }
-  .item:focus, .item:focus-within, .item:hover { color: var(--ink); }
-  .item:focus::before, .item:focus-within::before, .item:hover::before { transform: translateY(-50%) scaleX(1); }
-  .item small { font-size: 13px; letter-spacing: .16em; color: var(--dim); font-weight: 400; }
-  .join { flex-direction: column; align-items: stretch; gap: 10px; }
-  .join::before { top: 27px; }
-  #invite { font: inherit; font-size: 15px; letter-spacing: .06em; text-transform: none; font-weight: 400; color: var(--ink); background: none; border: 0; border-bottom: 1px solid #3a3a3f; padding: 6px 0 8px; outline: none; width: 100%; user-select: text; }
-  #invite:focus { border-bottom-color: var(--accent); }
-  #invite::placeholder { color: #55534e; }
-  #error { font-size: 13px; letter-spacing: .08em; text-transform: none; font-weight: 400; color: var(--bad); min-height: 16px; }
-
-  aside { align-self: center; max-width: 560px; }
-  aside h2 { font-size: 12px; letter-spacing: .32em; text-transform: uppercase; color: var(--dim); font-weight: 400; padding-bottom: 12px; border-bottom: 1px solid var(--rule); }
-  .row { display: grid; grid-template-columns: 1fr auto; gap: 4px 24px; width: 100%; padding: 14px 12px; border-bottom: 1px solid var(--rule); outline: none; }
-  .row b { font-size: 19px; letter-spacing: .1em; text-transform: uppercase; }
-  .row span { font-size: 12px; letter-spacing: .12em; color: var(--dim); }
-  .row .when { grid-row: 1 / 3; grid-column: 2; align-self: center; text-transform: uppercase; }
-  .row:hover, .row:focus { background: var(--ink); color: var(--bg); }
-  .row:hover span, .row:focus span { color: #4a4843; }
-  .empty { padding: 16px 0; font-size: 14px; letter-spacing: .06em; color: #55534e; }
-
-  footer { position: absolute; left: 0; right: 0; bottom: 0; height: 56px; display: flex; align-items: center; gap: 32px; padding: 0 72px; border-top: 1px solid var(--rule); }
+  body.playing #top { background: #0b0b0c; border-bottom: 1px solid var(--line); }
+  #top .mark { width: 10px; height: 10px; background: var(--accent); flex: none; }
+  #world { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #top .spacer { flex: 1; }
+  #top kbd { font: inherit; font-size: 10px; border: 1px solid rgba(255,255,255,.35); padding: 2px 5px; margin-right: 6px; color: var(--text); }
+  #leave { height: 36px; padding: 0 12px; background: none; border: 0; color: var(--text); font: inherit; letter-spacing: inherit; text-transform: uppercase; cursor: pointer; outline: none; }
+  #leave:hover, #leave:focus-visible { background: var(--accent); color: #0b0b0c; }
+  body:not(.playing) :is(.mark, #world, #bar-hint, #leave) { display: none; }
+  body.playing :is(.backdrop, .front, .hints) { display: none; }
 </style>
 </head>
 <body>
-<div id="top" class="drag">
-  <span class="mark"></span><span class="word">Sandbox</span><span id="world"></span>
+<div id="backdrop" class="backdrop"></div>
+<div id="top">
+  <span class="mark"></span><span id="world"></span>
   <span class="spacer"></span>
-  <span class="hint" id="bar-hint"><kbd>F11</kbd>Full screen</span>
-  <button id="leave">Leave world</button>
+  <span id="bar-hint"><kbd>F11</kbd>Full screen</span>
+  <button id="leave">Leave game</button>
 </div>
 
-<main>
-  <section>
-    <h1><span class="mark"></span>Sandbox</h1>
-    <p class="tag">Live multiplayer game builder</p>
-    <nav id="nav">
-      <label class="item join">
-        <span>Join with invite</span>
-        <input id="invite" spellcheck="false" autocomplete="off" placeholder="Paste the link your host sent">
-        <span id="error"></span>
-      </label>
-      <button class="item" id="continue" hidden>Continue <small></small></button>
-      <button class="item" id="host" hidden>Host a world <small>On this computer</small></button>
+<main class="front">
+  <button class="back" id="back" hidden>Back<kbd>Esc</kbd></button>
+  <section id="title" class="screen" data-nav hidden>
+    <svg class="logo" id="logo"></svg>
+    <div class="items">
+      <button class="item" id="go-new" hidden>New game</button>
+      <button class="item" data-to="saved">Saved games</button>
+      <button class="item" data-to="join">Join game</button>
       <button class="item" id="quit">Quit</button>
-    </nav>
+    </div>
   </section>
-  <aside>
-    <h2>Recent worlds</h2>
-    <div id="recents"></div>
-  </aside>
+
+  <section id="saved" class="screen" data-nav hidden>
+    <h1>Saved games</h1>
+    <div class="items" id="games"></div>
+    <p id="no-games" class="status" hidden>Games you host or join show up here</p>
+  </section>
+
+  <section id="game" class="screen" data-nav hidden>
+    <h1 id="game-name"></h1>
+    <div class="items">
+      <button class="item" id="game-continue">Continue</button>
+      <button class="item danger" id="game-forget">Forget</button>
+    </div>
+  </section>
+
+  <section id="join" class="screen" data-nav hidden>
+    <h1>Join game</h1>
+    <label class="item entry"><input type="text" id="join-link" placeholder="Paste an invite link" autocomplete="off" spellcheck="false"></label>
+  </section>
+
+  <section id="down" class="screen" data-nav hidden>
+    <h1>Can't reach</h1>
+    <p class="lead" id="down-text"></p>
+    <div class="items">
+      <button class="item" id="retry">Retry</button>
+      <button class="item" data-to="saved">Saved games</button>
+      <button class="item" data-to="join">Join game</button>
+    </div>
+  </section>
+
+  <div id="error" class="error"></div>
 </main>
+<div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span><kbd>Esc</kbd>Back</span><span id="fullscreen-hint"><kbd>F11</kbd>Full screen</span><span id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span></div>
 
-<footer>
-  <span class="hint"><kbd>↑</kbd><kbd>↓</kbd>Select</span>
-  <span class="hint"><kbd>Enter</kbd>Open</span>
-  <span class="hint"><kbd>F11</kbd>Full screen</span>
-  <span class="hint" id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span>
-</footer>
-
-<script>
+<script type="module">
+  import { backdrop, logo } from "/front.js";
   const $ = (id) => document.getElementById(id);
-  const invite = $("invite");
-  document.body.classList.toggle("mac", shell.platform === "darwin");
+  backdrop($("backdrop"));
+  logo($("logo"));
   if (shell.platform === "darwin") {
-    $("bar-hint").innerHTML = "<kbd>Ctrl</kbd><kbd>⌘</kbd><kbd>F</kbd>Full screen";
+    document.body.classList.add("mac");
+    $("bar-hint").innerHTML = $("fullscreen-hint").innerHTML = "<kbd>Ctrl</kbd><kbd>⌘</kbd><kbd>F</kbd>Full screen";
     $("reload-hint").innerHTML = "<kbd>⌘</kbd><kbd>R</kbd>Reload";
   }
 
-  const ago = (at) => {
-    const m = Math.round((Date.now() - at) / 60000);
-    return m < 1 ? "Just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+  // ---------- screens: a stack, Esc goes back one ----------
+  const stack = [];
+  const current = () => stack.at(-1);
+  function show(id, { reset = false } = {}) {
+    if (reset) stack.length = 0;
+    const from = current();
+    if (from) from.focus = document.activeElement?.closest(".screen") === $(from.id) ? document.activeElement : null;
+    stack.push({ id });
+    enter();
+  }
+  function back() {
+    if (stack.length < 2) return;
+    stack.pop();
+    enter();
+  }
+  function enter() {
+    const { id, focus } = current();
+    for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== id;
+    $("error").textContent = "";
+    $("back").hidden = stack.length < 2;
+    const target = focus?.isConnected && focus.getClientRects().length ? focus : $(id).querySelector(".item:not([hidden]) input, .item:not([hidden])");
+    target?.focus();
+  }
+  addEventListener("keydown", (e) => {
+    const typing = document.activeElement?.matches("input[type=text]");
+    if (e.key === "Escape" || (e.key === "Backspace" && !typing)) {
+      e.preventDefault();
+      back();
+    }
+    if (e.key === "Enter" && typing) {
+      e.preventDefault();
+      join();
+    }
+  });
+  for (const b of document.querySelectorAll("[data-to]")) b.onclick = () => show(b.dataset.to);
+  $("back").onclick = back;
+
+  const ago = (ms) => {
+    const m = Math.round((Date.now() - ms) / 60000);
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+  };
+  const el = (tag, props, ...children) => {
+    const node = Object.assign(document.createElement(tag), props);
+    node.append(...children);
+    return node;
   };
 
   async function open(url) {
-    $("error").textContent = "";
     const error = await shell.open(url);
     if (error) $("error").textContent = error;
   }
 
+  // ---------- saved games: the ones this computer hosts and the ones joined, most recent first ----------
+  let selected = null;
   async function refresh() {
     const s = await shell.state();
-    if (s.copied && !invite.value) invite.value = s.copied;
-    const last = s.recents[0];
-    $("continue").hidden = !last;
-    if (last) {
-      $("continue").querySelector("small").textContent = last.name;
-      $("continue").onclick = () => open(last.url);
-    }
-    $("host").hidden = !s.local;
-    $("host").onclick = () => open(s.local);
-    $("recents").replaceChildren(
-      ...s.recents.map((r) => {
-        const row = document.createElement("button");
-        row.className = "row";
-        row.innerHTML = "<b></b><span class=when></span><span></span>";
-        row.children[0].textContent = r.name;
-        row.children[1].textContent = ago(r.at);
-        row.children[2].textContent = r.url.replace(/^https?:\/\//, "");
-        row.onclick = () => open(r.url);
-        return row;
+    const games = [
+      ...s.hosted.map((g) => ({ ...g, value: g.live ? "Live" : ago(g.at), go: () => open(g.url) })),
+      ...s.joined.map((g) => ({ ...g, value: ago(g.at), go: () => ((selected = g), ($("game-name").textContent = g.name), show("game")) })),
+    ].sort((a, b) => (b.live ? Infinity : b.at) - (a.live ? Infinity : a.at));
+    const focused = $("games").contains(document.activeElement) ? document.activeElement.dataset.key : null;
+    $("games").replaceChildren(
+      ...games.map((g) => {
+        const b = el("button", { className: "item", textContent: g.name, onclick: g.go }, el("span", { className: g.live ? "value live" : "value", textContent: g.value }));
+        b.dataset.key = g.url;
+        return b;
       }),
     );
-    if (!s.recents.length) $("recents").innerHTML = "<p class=empty>Worlds you join show up here.</p>";
+    if (focused) $("games").querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();
+    $("no-games").hidden = !!games.length;
+    $("go-new").hidden = !s.newGame;
+    $("go-new").onclick = () => open(s.newGame);
+    if (s.copied && !$("join-link").value) $("join-link").value = s.copied;
+    if (current()?.id === "title" && !document.activeElement?.closest("#title")) enter();
+  }
+  $("game-continue").onclick = () => open(selected.url);
+  $("game-forget").onclick = async () => {
+    await shell.forget(selected.url);
+    back();
+    refresh();
+  };
+
+  function join() {
+    const link = $("join-link").value.trim();
+    if (link) open(link);
   }
 
-  invite.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && invite.value.trim()) open(invite.value.trim());
-  });
   $("quit").onclick = () => shell.quit();
   $("leave").onclick = () => shell.leave();
-
-  addEventListener("keydown", (e) => {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    const items = [invite, ...document.querySelectorAll("nav button:not([hidden]), .row")];
-    const at = items.indexOf(document.activeElement);
-    items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
-    e.preventDefault();
-  });
-  addEventListener("focus", () => document.body.classList.contains("playing") || refresh());
+  $("retry").onclick = () => open($("retry").dataset.url);
 
   shell.on("mode", (mode) => {
     document.body.classList.toggle("playing", !!mode);
     $("world").textContent = mode?.name ?? "";
+    for (const v of document.querySelectorAll("video")) mode ? v.pause() : v.play().catch(() => {});
     if (!mode) {
+      show("title", { reset: true });
       refresh();
-      invite.focus();
     }
   });
-  shell.on("error", (text) => ($("error").textContent = text));
+  shell.on("down", ({ url, host }) => {
+    $("down-text").textContent = `${host} isn't answering. Is the game running?`;
+    $("retry").dataset.url = url;
+    show("title", { reset: true });
+    show("down");
+  });
+  addEventListener("focus", () => document.body.classList.contains("playing") || refresh());
+  show("title");
   refresh();
-  invite.focus();
 </script>
 </body>
 </html>

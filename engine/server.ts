@@ -494,7 +494,7 @@ const server = Bun.serve<Conn>({
       );
       return new Response(null, { status: 204 });
     }
-    if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size });
+    if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size, publicUrl });
     if (path === "/api/join" && req.method === "POST") {
       const body = await req.json();
       const known = nameByKey(body.key);
