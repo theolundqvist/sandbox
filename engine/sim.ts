@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { Entity, ModDb, Player, ServerHooks, ServerMod } from "./api";
+import type { Body, Entity, ModDb, Player, ServerHooks, ServerMod } from "./api";
 import { PhysicsIndex } from "./physics";
 import { GameWorld, modDb, type Diff, type Tick } from "./world";
 
@@ -105,6 +105,15 @@ world.physics = {
     return () => void (m.grounds.delete(g) && reorder());
   },
 };
+/** The mod that spawned each entity, so a wall nobody can see can be traced to its mod. */
+const creators = new Map<number, string>();
+let made: Record<number, string> = {};
+const spawn = world.spawn.bind(world);
+world.spawn = (e) => {
+  const id = spawn(e);
+  if (current) creators.set(id, (made[id] = current.name));
+  return id;
+};
 world.has = (name) => !!mods.get(name)?.mod.exports;
 world.use = (name) => {
   const target = mods.get(name);
@@ -164,15 +173,74 @@ function call(m: Loaded, hook: keyof ServerHooks, ...args: any[]): any {
     wrapped = true;
   }
   if (!base && !wrapped) return;
+  const watch = (hook === "tick" || hook === "message") && avatars.size > 0 && !trial;
+  const before = watch ? placeAvatars() : null;
   const started = performance.now();
   const result = next(...args);
   const ms = performance.now() - started;
+  if (before) checkMoves(m, hook, before, hook === "message" ? args : null);
   m.ms += ms;
   if (hook === "tick") {
     m.slowTicks = ms > 50 ? m.slowTicks + 1 : 0;
     if (m.slowTicks >= 100) fault(m, "every tick took over 50 ms for 5 s", true);
   }
   return result;
+}
+
+// ---------- player position corrections ----------
+type Vec = [number, number, number];
+/** Entities that stand for a player: `player: id` on the entity or on one of its components, by entity id. */
+let avatars = new Map<number, string>();
+/** Which mod, or the player's own game, last moved each avatar since the last tick went out. */
+const movedBy = new Map<number, string>();
+/** When each mod last corrected each entity, and how many corrections since then went unlisted. */
+const reported = new Map<string, { at: number; count: number }>();
+const SELF = "the player's own game";
+
+function findAvatars() {
+  avatars = new Map();
+  for (const [id, e] of world.entities.raw()) {
+    if (typeof e.player === "string" && world.players.has(e.player)) avatars.set(id, e.player);
+    else for (const k in e) if (typeof e[k]?.player === "string" && world.players.has(e[k].player)) avatars.set(id, e[k].player);
+  }
+}
+
+const vec = (v: unknown): Vec | null => (Array.isArray(v) && v.length >= 3 && v.slice(0, 3).every(Number.isFinite) ? [v[0], v[1], v[2]] : null);
+const apart = (a: Vec, b: Vec) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) > 0.01;
+
+function placeAvatars() {
+  const at = new Map<number, Vec | null>();
+  for (const id of avatars.keys()) at.set(id, vec(world.entities.peek(id)?.pos));
+  return at;
+}
+
+/** A hook that moves a player somewhere other than where their own game or another mod just put them corrected that player. */
+function checkMoves(m: Loaded, hook: string, before: Map<number, Vec | null>, args: any[] | null) {
+  const wanted = args ? (vec(args[1]?.p) ?? vec(args[1]?.pos)) : null;
+  for (const [id, from] of before) {
+    const to = vec(world.entities.peek(id)?.pos);
+    if (!from || !to || !apart(from, to)) continue;
+    const player = avatars.get(id)!;
+    const mine = args?.[0]?.id === player;
+    if (mine && wanted && !apart(wanted, to)) {
+      movedBy.set(id, SELF);
+      continue;
+    }
+    const earlier = movedBy.get(id);
+    movedBy.set(id, m.name);
+    if (mine && wanted) report(m, hook, id, player, from, to, wanted, SELF);
+    else if (earlier && earlier !== m.name) report(m, hook, id, player, from, to, null, earlier);
+  }
+}
+
+function report(m: Loaded, hook: string, id: number, player: string, from: Vec, to: Vec, wanted: Vec | null, overruled: string) {
+  const key = `${m.name} ${id}`;
+  const now = Date.now();
+  const last = reported.get(key);
+  if (last && now - last.at < 1000) return void last.count++;
+  reported.set(key, { at: now, count: 0 });
+  const r = (v: Vec) => v.map((n) => Math.round(n * 100) / 100);
+  post({ t: "correction", at: now, mod: m.name, hook, player, entity: id, overruled, from: r(from), to: r(to), wanted: wanted && r(wanted), repeats: last?.count ?? 0 });
 }
 
 function fault(m: Loaded, error: string, fatal: boolean) {
@@ -250,7 +318,10 @@ function flush() {
   const d = world.delta();
   for (const id in d.set) physics.update(+id, world.entities.peek(+id));
   for (const id in d.unset) physics.update(+id, world.entities.peek(+id));
-  for (const id of d.removed) physics.update(id, undefined);
+  for (const id of d.removed) {
+    physics.update(id, undefined);
+    creators.delete(id);
+  }
   const outs: Record<string, string> = {};
   // Each player gets a full visibility pass every 5th tick, on a different tick from the others so the passes don't pile up.
   let i = 0;
@@ -261,10 +332,14 @@ function flush() {
   fullPass = false;
   resync.clear();
   events = [];
-  if (Object.keys(d.set).length || Object.keys(d.unset).length || d.removed.length || Object.keys(outs).length) post({ t: "tick", diff: d, nextId: world.nextId, outs });
+  movedBy.clear();
+  for (const id in made) if (!world.entities.has(+id)) creators.delete(+id);
+  if (Object.keys(d.set).length || Object.keys(d.unset).length || d.removed.length || Object.keys(outs).length) post({ t: "tick", diff: d, nextId: world.nextId, outs, made });
+  made = {};
 }
 
 function tick(dt: number) {
+  if (tickCount % 20 === 0) findAvatars();
   for (const m of ordered) call(m, "tick", dt);
   tickCount++;
   Atomics.add(beat, 0, 1);
@@ -277,6 +352,7 @@ self.onmessage = async ({ data: msg }) => {
       world.nextId = msg.nextId;
       for (const [id, e] of Object.entries(msg.entities)) world.entities.set(Number(id), e as any);
       for (const p of msg.players as Player[]) world.players.set(p.id, p);
+      for (const [id, mod] of Object.entries(msg.creators ?? {})) creators.set(Number(id), mod as string);
       for (const id of msg.watchers as string[]) watchers.set(id, { id, name: id });
       trial = msg.trial ?? null;
       dbDir = msg.dbDir;
@@ -298,6 +374,7 @@ self.onmessage = async ({ data: msg }) => {
         tick(Math.min((now - last) / 1000, 0.25));
         last = now;
         flush();
+        for (const w of walks.splice(0)) post({ t: "answer", id: w.id, value: walk(w.from, w.to, w.body ?? {}) });
         times.push(performance.now() - now);
         if (times.length < 40) return;
         const ticks = times.length;
@@ -364,8 +441,10 @@ self.onmessage = async ({ data: msg }) => {
           slice = performance.now();
         }
       }
-      return post({ t: "seen", id: msg.id, ticks });
+      return post({ t: "answer", id: msg.id, value: ticks });
     }
+    case "walk":
+      return void walks.push(msg);
     case "leave": {
       const p = world.players.get(msg.id);
       if (!p) return;
@@ -382,6 +461,57 @@ self.onmessage = async ({ data: msg }) => {
     }
   }
 };
+
+// ---------- walk test ----------
+/** Walk tests wait for the next tick to go out, so they see every entity spawned before they were asked. */
+const walks: { id: number; from: Vec; to: Vec; body?: Body }[] = [];
+const WALK_SPEED = 4;
+const GRAVITY = 20;
+
+/** Walks a body in a straight line from one feet position toward another under the live physics, and names whatever stops it. */
+function walk(from: Vec, to: Vec, body: Body) {
+  const { radius = 0.35, height = 1.8, step = 0.45 } = body;
+  let pos: number[] = [...from];
+  let vel = [0, 0, 0];
+  const left = () => Math.hypot(to[0] - pos[0]!, to[2] - pos[2]!);
+  const total = left();
+  let best = total;
+  let lastGain = 0;
+  const dt = 0.05;
+  for (let t = 0; t < total / WALK_SPEED * 3 + 5; t += dt) {
+    const d = left();
+    if (d < 0.3) return { outcome: "reached", at: pos, seconds: +t.toFixed(1) };
+    const dir = [(to[0] - pos[0]!) / d, (to[2] - pos[2]!) / d];
+    const moved = physics.move(pos, [dir[0]! * WALK_SPEED, vel[1]! - GRAVITY * dt, dir[1]! * WALK_SPEED], dt, { radius, height, step });
+    [pos, vel] = [moved.pos, moved.vel];
+    if (pos[1]! < Math.min(from[1], to[1]) - 30) return { outcome: "fell", at: pos, walked: +(total - left()).toFixed(1), ground: physics.groundAt(pos[0]!, pos[2]!) };
+    if (left() < best - 0.05) [best, lastGain] = [left(), t];
+    if (t - lastGain > 1) return { outcome: "stopped", at: pos, walked: +(total - best).toFixed(1), short: +best.toFixed(1), by: blocker(pos, dir as [number, number], radius, height, step) };
+  }
+  return { outcome: "stopped", at: pos, walked: +(total - best).toFixed(1), short: +best.toFixed(1), by: null };
+}
+
+/** The solid box or terrain in the way just ahead of feet at pos, walking along dir. */
+function blocker(pos: number[], dir: [number, number], radius: number, height: number, step: number) {
+  const [x, y, z] = [pos[0]! + dir[0] * (radius + 0.3), pos[1]!, pos[2]! + dir[1] * (radius + 0.3)];
+  for (const b of physics.boxes(x, z, radius)) {
+    if (b.y + b.hy <= y + step || b.y - b.hy >= y + height) continue;
+    const e = world.entities.peek(b.id);
+    return {
+      entity: b.id,
+      box: { center: [b.x, b.y, b.z].map((n) => +n.toFixed(2)), size: [b.hx * 2, b.hy * 2, b.hz * 2].map((n) => +n.toFixed(2)) },
+      mesh: !!e?.mesh && e.mesh.opacity !== 0,
+      components: Object.keys(e ?? {}),
+      mod: creators.get(b.id) ?? null,
+    };
+  }
+  for (const m of ordered)
+    for (const g of m.grounds) {
+      const h = g(x, z, y);
+      if (typeof h === "number" && h > y + step) return { terrain: m.name, groundAt: +h.toFixed(2), rise: +(h - y).toFixed(2) };
+    }
+  return null;
+}
 
 /** Every live mod runs with the candidate swapped in, but only the candidate's errors fail the test. */
 function runTrial() {

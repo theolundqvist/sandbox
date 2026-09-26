@@ -37,6 +37,7 @@ async function tool(name: string, args: Record<string, unknown> = {}) {
 }
 
 const write = (path: string, content: string) => tool("write_file", { path, content });
+const serverMod = (hooks: string) => `import type { ServerMod } from "../../api";\nexport default ${hooks} satisfies ServerMod;`;
 
 test("a mod goes live at most once every 20 s, says when it may again, and a reload that leaves its client unchanged doesn't swap it in players' games", async () => {
   expect((await tool("reload", { mod: "basics" })).status).toBe(200);
@@ -84,4 +85,69 @@ test("Claudes' messages to each other arrive whole, and a chat line too long for
   const banner = await tool("reload", { mod: "basics", announce: { title: "Long", text: "w".repeat(161) } });
   expect(banner.status).toBe(422);
   expect(banner.text).toStartWith("announce.text is 161 characters");
+});
+
+test("a meshless wall or a mod's terrain that stops a walk is named with the mod that made it", async () => {
+  await write(
+    "mods/fence/server.ts",
+    serverMod(`{
+  load(world) {
+    world.spawn({ pos: [20, 2, 0], solid: { size: [1, 4, 20] } });
+    world.physics.ground((x) => (x < -20 ? 3 : null));
+  },
+}`),
+  );
+  expect((await tool("reload", { mod: "fence" })).text).toStartWith("fence v1 is live");
+  const walk = async (from: number[], to: number[]) => JSON.parse((await tool("walk_test", { from, to })).text);
+
+  const wall = await walk([10, 0, 0], [30, 0, 0]);
+  expect(wall.outcome).toBe("stopped");
+  expect(wall.at[0]).toBeCloseTo(19.15, 1);
+  expect(wall.by).toMatchObject({ mesh: false, mod: "fence", box: { center: [20, 2, 0], size: [1, 4, 20] } });
+
+  const cliff = await walk([-10, 0, 0], [-30, 0, 0]);
+  expect(cliff.outcome).toBe("stopped");
+  expect(cliff.by).toMatchObject({ terrain: "fence", rise: 3 });
+
+  expect((await walk([10, 0, 5], [10, 0, -5])).outcome).toBe("reached");
+}, 30_000);
+
+test("a mod that overrules where a player's game or another mod moved them shows up in corrections", async () => {
+  await write(
+    "mods/pen/server.ts",
+    serverMod(`{
+  message(world, player, msg) {
+    for (const [, e] of world.query("player")) if (e.player === player.id) e.pos = [Math.min(msg.p[0], 3), msg.p[1], msg.p[2]];
+  },
+}`),
+  );
+  await write(
+    "mods/leash/server.ts",
+    serverMod(`{
+  tick(world) {
+    for (const [, e] of world.query("player")) if (e.pos[2] > 2) e.pos = [e.pos[0], e.pos[1], 2];
+  },
+}`),
+  );
+  for (const mod of ["pen", "leash"]) expect((await tool("reload", { mod })).text).toStartWith(`${mod} v1 is live`);
+  const tell = (mod: string, msg: object) => player.send(JSON.stringify({ t: "m", mod, msg }));
+  const corrections = async (mod: string) => (await tool("corrections", { mod })).text.split("\n").filter((l) => l.startsWith("{")).map((l) => JSON.parse(l));
+
+  tell("basics", { x: 0, z: 1 });
+  await Bun.sleep(1500);
+  tell("basics", { x: 0, z: 0 });
+  expect((await corrections("leash"))[0]).toMatchObject({ player: "builder", hook: "tick", overruled: "basics", to: [expect.any(Number), expect.any(Number), 2] });
+
+  tell("pen", { p: [2, 0.8, 0] });
+  await Bun.sleep(200);
+  expect(await corrections("pen")).toEqual([]);
+  tell("pen", { p: [10, 0.8, 0] });
+  await Bun.sleep(200);
+  expect((await corrections("pen"))[0]).toMatchObject({ player: "builder", hook: "message", overruled: "the player's own game", wanted: [10, 0.8, 0], to: [3, 0.8, 0] });
+}, 30_000);
+
+test("a Claude can show colliders in its player's game", async () => {
+  expect((await tool("colliders", { on: true })).status).toBe(200);
+  await Bun.sleep(100);
+  expect(received.some((m) => m.t === "colliders" && m.on === true)).toBe(true);
 });

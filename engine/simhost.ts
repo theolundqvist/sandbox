@@ -3,6 +3,8 @@ import type { Diff, Tick } from "./world";
 
 
 export type RunningMod = { name: string; id: number; server: string | null };
+/** The server put a player somewhere other than where their own game or another mod had just moved them. */
+export type Correction = { at: number; mod: string; hook: string; player: string; entity: number; overruled: string; from: number[]; to: number[]; wanted: number[] | null; repeats: number };
 
 const HANG_MS = 2000;
 /** Starting a trial loads every server mod, which takes seconds on a busy machine; only its ticks count as hanging. */
@@ -14,6 +16,9 @@ export class SimHost {
   perf: { msPerTick: number; p50: number; p95: number; max: number; mods: Record<string, number> } | null = null;
   players = new Map<string, Player>();
   watchers = new Set<string>();
+  /** Which mod spawned each entity, kept across worker restarts. */
+  creators = new Map<number, string>();
+  corrections: Correction[] = [];
   private worker!: Worker;
   private beat = new Int32Array(new SharedArrayBuffer(8));
   private applying = new Map<string, (error: string | null) => void>();
@@ -58,16 +63,23 @@ export class SimHost {
           const e = this.entities.get(Number(id));
           if (e) for (const k of keys) delete e[k];
         }
-        for (const id of d.removed) this.entities.delete(id);
+        for (const [id, mod] of Object.entries(msg.made as Record<string, string>)) this.creators.set(Number(id), mod);
+        for (const id of d.removed) {
+          this.entities.delete(id);
+          this.creators.delete(id);
+        }
         this.nextId = msg.nextId;
         this.on.tick(msg.outs, d);
       } else if (msg.t === "log") this.on.log(msg.mod, msg.level, msg.text);
       else if (msg.t === "perf") this.perf = msg;
       else if (msg.t === "fault") this.on.fault(msg.mod, msg.error);
       else if (msg.t === "applied") this.applying.get(msg.name)?.(msg.error);
-      else if (msg.t === "seen") {
-        this.seeing.get(msg.id)?.(msg.ticks);
-        this.seeing.delete(msg.id);
+      else if (msg.t === "correction") {
+        const { t, ...c } = msg;
+        if (this.corrections.push(c) > 500) this.corrections.shift();
+      } else if (msg.t === "answer") {
+        this.asking.get(msg.id)?.(msg.value);
+        this.asking.delete(msg.id);
       }
     };
     this.worker.postMessage({
@@ -77,20 +89,30 @@ export class SimHost {
       nextId: this.nextId,
       players: [...this.players.values()],
       watchers: [...this.watchers],
+      creators: Object.fromEntries(this.creators),
       mods: this.mods(),
       dbDir: this.dbDir,
     });
   }
 
-  private seeing = new Map<number, (ticks: Tick[]) => void>();
-  private seeSeq = 0;
+  private asking = new Map<number, (value: any) => void>();
+  private askSeq = 0;
+  private ask<T>(msg: object) {
+    const id = ++this.askSeq;
+    return new Promise<T>((resolve) => {
+      this.asking.set(id, resolve);
+      this.worker.postMessage({ ...msg, id });
+    });
+  }
+
   /** Timelapse ticks cut down to what one player may see under the live mods' rules. */
   visibleTo(player: string, ticks: Tick[]) {
-    const id = ++this.seeSeq;
-    return new Promise<Tick[]>((resolve) => {
-      this.seeing.set(id, resolve);
-      this.worker.postMessage({ t: "see", id, player, ticks });
-    });
+    return this.ask<Tick[]>({ t: "see", player, ticks });
+  }
+
+  /** Walks a test body from one feet position toward another under the live physics; says whether it arrived and what stopped it. */
+  walk(from: number[], to: number[], body?: object) {
+    return this.ask<object>({ t: "walk", from, to, body });
   }
 
   resync(id: string) {

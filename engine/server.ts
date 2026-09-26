@@ -381,6 +381,7 @@ const mcp = createMcp({
       });
       ws.send(JSON.stringify({ t: "shot", id }));
     }),
+  sendToGame: (who, msg) => !!sockets.get(who)?.send(JSON.stringify(msg)),
 });
 
 /** The key the host added in the game, else one from the environment, which belongs to ElevenLabs' EU data-residency stack. */

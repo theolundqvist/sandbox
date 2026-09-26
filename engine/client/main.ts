@@ -310,6 +310,41 @@ function rebuildAll() {
   }
 }
 
+/** Wireframes of the solid boxes near the camera: red where nothing is drawn, so an invisible wall shows up. */
+let colliders: THREE.Group | null = null;
+let collidersAt = 0;
+const unitBox = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
+const drawnLine = new THREE.LineBasicMaterial({ color: "#5dff8a" });
+const hiddenLine = new THREE.LineBasicMaterial({ color: "#ff3b3b", depthTest: false });
+
+function showColliders(on: boolean) {
+  if (!on) colliders?.removeFromParent();
+  colliders = on ? new THREE.Group() : null;
+  if (colliders) scene.add(colliders);
+  collidersAt = 0;
+}
+
+function drawn(obj: THREE.Object3D | undefined) {
+  let seen = false;
+  obj?.traverseVisible((o: any) => void (seen ||= !!o.isMesh && o.material?.opacity !== 0 && o.material?.visible !== false));
+  return seen;
+}
+
+function updateColliders(now: number) {
+  if (!colliders || now - collidersAt < 250) return;
+  collidersAt = now;
+  colliders.clear();
+  const at = view.getWorldPosition(new THREE.Vector3());
+  for (const b of physics.boxes(at.x, at.z, 60)) {
+    const line = new THREE.LineSegments(unitBox, drawn(objects.get(b.id)) ? drawnLine : hiddenLine);
+    line.position.set(b.x, b.y, b.z);
+    line.rotation.y = b.yaw;
+    line.scale.set(b.hx * 2, b.hy * 2, b.hz * 2);
+    line.renderOrder = 20;
+    colliders.add(line);
+  }
+}
+
 type Tick = { reset?: true; set: Record<string, Entity>; unset: Record<string, string[]>; removed: number[]; events?: { from: string; name: string; data: any }[] };
 
 function applyTick({ reset, set, unset, removed, events }: Tick) {
@@ -752,6 +787,8 @@ function connect() {
         return !replay && queue(() => loadMod(msg.name, live.get(msg.name) ?? null));
       case "shot":
         return send({ t: "shot", id: msg.id, data: await screenshot() });
+      case "colliders":
+        return showColliders(msg.on);
       case "feed":
         addLine(msg.text, msg.kind);
         if (msg.kind === "error") toast(msg.text, msg.kind);
@@ -1826,6 +1863,7 @@ function menuCommands(): Command[] {
     }
   }
   for (const b of $("rail").querySelectorAll<HTMLElement>("button:not([data-tab])")) list.push({ label: textOf(b), where: "Menu", run: () => b.click() });
+  list.push({ label: colliders ? "Hide colliders" : "Show colliders", where: "Debug", run: () => showColliders(!colliders) });
   for (const b of activeBindings()) list.push({ label: b.label, where: `Key ${keyLabel(b.code)} · ${b.mod.name}`, run: () => (press(b, true), press(b, false)) });
   return list;
 }

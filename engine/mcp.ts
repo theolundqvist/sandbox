@@ -29,6 +29,8 @@ export type McpContext = {
   status(): object;
   perf(): object;
   screenshot(who: string): Promise<string>;
+  /** Sends a message to the player's open game; false if they don't have it open. */
+  sendToGame(who: string, msg: object): boolean;
   record: Recorder;
 };
 
@@ -127,6 +129,31 @@ const tools = [
     name: "perf",
     description: "Why is the game slow? Server cost per mod (ms per 50 ms tick) and, for every player's game, fps, slowest frames, ms per frame spent in each client mod and in drawing, draw calls, triangles, scene objects, network ping and download rate, memory and GPU. Games report every 2 seconds.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "corrections",
+    description:
+      "Invisible walls and snap-backs: every time a server mod put a player somewhere other than where their own game or another mod had just moved them (clamped to bounds, pushed back, teleported), with the mod and hook responsible, newest last. repeats counts further corrections of that player by that mod within the second before.",
+    inputSchema: { type: "object", properties: { player: { type: "string" }, mod: { type: "string" }, limit: { type: "number" } } },
+  },
+  {
+    name: "walk_test",
+    description:
+      "Can a player walk from A to B? Walks a test body in a straight line at 4 m/s with gravity through the live server physics, from one feet position toward another, and says whether it arrived, fell, or where it got stopped and by what: the solid entity (its box, whether it has a mesh, which mod spawned it) or a mod's terrain. Only solid entities and physics.ground terrain block it; a mod that moves players its own way is not simulated, so check corrections for those.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        from: { type: "array", items: { type: "number" }, description: "Feet position [x, y, z]." },
+        to: { type: "array", items: { type: "number" }, description: "Feet position [x, y, z], at most 500 m away." },
+        body: { type: "object", description: "radius, height and step of the walker; defaults 0.35, 1.8 and 0.45." },
+      },
+      required: ["from", "to"],
+    },
+  },
+  {
+    name: "colliders",
+    description: "Show or hide the solid boxes players collide with, as wireframes in your player's game: red for boxes nothing draws (invisible walls), green for drawn ones. Terrain from physics.ground is not shown.",
+    inputSchema: { type: "object", properties: { on: { type: "boolean" } }, required: ["on"] },
   },
   {
     name: "activity",
@@ -377,6 +404,19 @@ export function createMcp(ctx: McpContext) {
         return JSON.stringify(ctx.perf(), null, 2);
       case "activity":
         return JSON.stringify(ctx.record.activity(args), null, 1);
+      case "corrections": {
+        const found = ctx.sim.corrections.filter((c) => (!args.player || c.player === args.player) && (!args.mod || c.mod === args.mod)).slice(-(args.limit ?? 50));
+        return found.map((c) => JSON.stringify({ ...c, at: new Date(c.at).toISOString().slice(11, 19) })).join("\n") || "No player has been corrected since the world started.";
+      }
+      case "walk_test": {
+        const point = (v: unknown) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
+        if (!point(args.from) || !point(args.to)) throw new ToolError("from and to are feet positions like [x, y, z].");
+        if (Math.hypot(args.to[0] - args.from[0], args.to[2] - args.from[2]) > 500) throw new ToolError("from and to are over 500 m apart; test the walk in shorter legs.");
+        return JSON.stringify(await ctx.sim.walk(args.from, args.to, args.body));
+      }
+      case "colliders":
+        if (!ctx.sendToGame(who, { t: "colliders", on: !!args.on })) throw new ToolError(`${who} doesn't have the game open.`);
+        return args.on ? "Colliders are showing in your player's game: red boxes are ones nothing draws." : "Colliders are hidden.";
       case "query_world": {
         const components: string[] = args.components ?? [];
         const found = [...ctx.sim.entities].filter(([, e]) => components.every((c) => c in e));
