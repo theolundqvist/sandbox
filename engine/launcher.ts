@@ -484,7 +484,10 @@ Bun.serve<Pipe>({
       return server.upgrade(req, { data: { target: `ws://127.0.0.1:${running.port}${url.pathname}${url.search}`, queue: [] } }) ? undefined : new Response("upgrade failed", { status: 400 });
     // Pass compressed bodies through as they are: decompressing here would leave a gzip header on plain bytes.
     const started = performance.now();
-    const res = await fetch(`http://127.0.0.1:${running.port}${url.pathname}${url.search}`, { method: req.method, headers: req.headers, body: req.body, redirect: "manual", decompress: false });
+    // A world that dies mid-request is hosted again by itself; whoever asked, often a player's Claude in wait_for_chat, gets a plain answer rather than Bun's error page.
+    const res = await fetch(`http://127.0.0.1:${running.port}${url.pathname}${url.search}`, { method: req.method, headers: req.headers, body: req.body, redirect: "manual", decompress: false }).catch(
+      () => new Response("The game stopped before it answered. It starts again by itself: try again in a few seconds.\n", { status: 502, headers: { "content-type": "text/plain; charset=utf-8" } }),
+    );
     proxy.add(`${req.method} ${route(url.pathname)}`, performance.now() - started);
     return res;
   },

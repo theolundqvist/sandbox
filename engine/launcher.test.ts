@@ -256,7 +256,7 @@ test("the host pastes a speech key from any provider: recognised by its shape or
   for (const k of ["gsk_test_groq_key", "sk-proj-test_openai_key", "AIzaTest_gemini_key", "sk_test_elevenlabs_key", "plain-key-no-provider-shape"]) expect(printed).not.toContain(k);
 }, 60_000);
 
-test("a world that crashes is hosted again by itself, its players' games reconnect and hear why, and the crash is in world.log", async () => {
+test("a world that crashes is hosted again by itself, a Claude waiting on it is told to try again, its players' games reconnect and hear why, and the crash is in world.log", async () => {
   const port = LAUNCHER + 700;
   const data = join(dir, "crashy");
   const launcher = Bun.spawn(["bun", join(import.meta.dir, "launcher.ts")], { env: { ...env, PORT: String(port), SANDBOX_DATA: data, SANDBOX_NO_OPEN: "1" }, stdout: "ignore", stderr: "ignore" });
@@ -268,7 +268,14 @@ test("a world that crashes is hosted again by itself, its players' games reconne
   const player = await (await fetch(`${base}/api/join`, { method: "POST", body: JSON.stringify({ invite: s.running.invite, name: "stayer" }) })).json();
   const world = () => Number(readdirSync(`/proc/${launcher.pid}/task`).flatMap((t) => readFileSync(`/proc/${launcher.pid}/task/${t}/children`, "utf8").trim().split(" ")).find(Boolean));
   const first = world();
+  const form = new FormData();
+  form.append("seconds", "30");
+  const waiting = fetch(`${base}/cli/wait_for_chat`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: form });
+  await Bun.sleep(500);
   process.kill(first, "SIGABRT");
+  const dropped = await waiting;
+  expect(dropped.status).toBe(502);
+  expect(await dropped.text()).toBe("The game stopped before it answered. It starts again by itself: try again in a few seconds.\n");
 
   let welcome: any;
   for (let i = 0; i < 100 && !welcome; i++) {
