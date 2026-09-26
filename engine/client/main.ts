@@ -14,18 +14,20 @@ uiRoot.adoptedStyleSheets = [...document.styleSheets].map((sheet) => {
 });
 uiRoot.append(document.getElementById("menu")!);
 const SHOWN = { display: "block", visibility: "visible", opacity: "1" };
-/** Undoes whatever a mod does to #ui or to the page around it: puts it back in the page, drops its attributes, and keeps the page shown. */
+/** Undoes whatever a mod does to #ui or to the page around it: puts it back in the page, drops its attributes, and keeps the page shown and usable. */
 function keepUi() {
   if (ui.parentNode !== document.body) document.body.append(ui);
   for (const name of ui.getAttributeNames()) if (name !== "id" && name !== "class") ui.removeAttribute(name);
   if (ui.className !== document.body.className) ui.className = document.body.className;
-  for (const el of [document.documentElement, document.body])
+  for (const el of [document.documentElement, document.body]) {
+    el.inert = false;
     for (const [property, value] of Object.entries(SHOWN)) if (el.style.getPropertyValue(property) !== value || !el.style.getPropertyPriority(property)) el.style.setProperty(property, value, "important");
+  }
 }
 keepUi();
 const guard = new MutationObserver(keepUi);
-guard.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
-guard.observe(document.body, { childList: true, attributes: true, attributeFilter: ["style", "class"] });
+guard.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "inert"] });
+guard.observe(document.body, { childList: true, attributes: true, attributeFilter: ["style", "class", "inert"] });
 guard.observe(ui, { attributes: true });
 /** The engine's elements, held from the start, so one a mod removes only leaves the screen. */
 const byId = new Map([...document.querySelectorAll<HTMLElement>("[id]"), ...uiRoot.querySelectorAll<HTMLElement>("[id]")].map((el) => [el.id, el]));
@@ -1611,6 +1613,7 @@ function toast(text: string, kind = "info") {
   el.className = `toast ${kind}`;
   el.textContent = text;
   $("toasts").append(el);
+  toTop($("toasts"));
   setTimeout(() => el.remove(), 5000);
 }
 
@@ -1662,7 +1665,26 @@ function openChat() {
 function showMenu(shown: boolean) {
   menu.hidden = !shown;
   document.body.classList.toggle("menu-open", shown);
+  raiseMenu();
 }
+/** Shows a popover above everything in the top layer, where no z-index reaches. */
+function toTop(el: HTMLElement) {
+  if (!el.isConnected) return;
+  el.hidePopover();
+  el.showPopover();
+}
+/** The open menu is in the top layer with the palette and toasts above it. Whatever a mod puts there later goes back under them, and a mod's modal dialog, which would make the menu inert, closes. */
+function raiseMenu() {
+  if (menu.hidden) return;
+  for (const dialog of document.querySelectorAll<HTMLDialogElement>("dialog:modal")) dialog.close();
+  const was = focused();
+  toTop(menu);
+  if (!palette.hidden) toTop(palette);
+  if ($("toasts").childElementCount) toTop($("toasts"));
+  if (was instanceof HTMLElement) was.focus({ preventScroll: true });
+}
+addEventListener("toggle", (e) => e.target !== palette && e.target !== $("toasts") && (e.target as Element).matches(":popover-open, :modal") && raiseMenu(), true);
+addEventListener("fullscreenchange", raiseMenu, true);
 function closeMenu() {
   showMenu(false);
   showTab(null);
@@ -1936,6 +1958,7 @@ function openPalette() {
   releaseKeys();
   commands = menuCommands();
   palette.hidden = false;
+  toTop(palette);
   if (document.pointerLockElement) document.exitPointerLock();
   const input = $<HTMLInputElement>("palette-input");
   input.value = "";

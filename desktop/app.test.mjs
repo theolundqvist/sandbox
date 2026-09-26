@@ -607,7 +607,19 @@ describe("in a browser", () => {
     await page.keyboard.press("Escape");
   });
 
-  test("a mod may remove the vote bar and the chat and hide everything, but Tab still opens the menu and its votes", async () => {
+  test("the search palette opens over the menu", async () => {
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Control+KeyK");
+    await until("the palette over the menu", () => page.evaluate(() => {
+      const input = document.getElementById("palette-input");
+      const box = input.getBoundingClientRect();
+      return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === input;
+    }));
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+  });
+
+  test("a mod may remove the vote bar and the chat, hide everything and cover the screen, but Tab still opens the menu and its votes", async () => {
     const join = async (name) => (await (await fetch(`${other.url}/api/join`, { method: "POST", body: JSON.stringify({ invite: other.invite, name }) })).json()).key;
     const key = await join("blackout");
     const tool = async (name, args) => {
@@ -626,6 +638,22 @@ function blackout(ctx: ClientCtx) {
   const ui = document.getElementById("ui")!;
   ui.inert = true;
   ui.remove();
+  document.body.inert = true;
+  // Over everything: the highest z-index, then the top layer and a modal dialog a while after the menu opens.
+  const cover = <T extends HTMLElement>(el: T) => {
+    el.style.cssText = "position: fixed; inset: 0; width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; z-index: 2147483647; background: rgba(0,0,0,.01)";
+    el.style.setProperty("display", "block", "important");
+    document.body.append(el);
+    return el;
+  };
+  cover(document.createElement("div"));
+  const layer = cover(Object.assign(document.createElement("div"), { popover: "manual" }));
+  const dialog = cover(document.createElement("dialog"));
+  new MutationObserver(() => document.body.classList.contains("menu-open") && !(window as any).covered && setTimeout(() => {
+    layer.showPopover();
+    dialog.showModal();
+    (window as any).covered = true;
+  }, 2000)).observe(document.body, { attributes: true });
 }
 export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(() => blackout(ctx), 500); } } satisfies ClientMod;`;
     // This player's menu stays closed, as it is for everyone; the test keeps its own handle to look inside.
@@ -658,8 +686,11 @@ export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(() => bla
     }, [sel, row]);
     await closed.keyboard.press("Tab");
     const mods = await until("the menu", () => onTop("[data-tab=mods]"));
+    assert.ok(!(await closed.evaluate(() => window.covered)), "the menu is over the highest z-index before the mod uses the top layer");
     await closed.mouse.click(mods.x, mods.y);
     await until("the votes page", () => onTop("#menu-mods"));
+    await until("the mod's cover in the top layer", () => closed.evaluate(() => window.covered));
+    await sleep(200);
     const love = await until("blackout's vote", () => onTop("[data-kind=love]", "blackout"));
     const votes = async () => (await (await fetch(`${other.url}/api/status`, { headers: { authorization: `Bearer ${closedKey}` } })).json()).mods.find((m) => m.name === "blackout");
     await closed.mouse.click(love.x, love.y);
