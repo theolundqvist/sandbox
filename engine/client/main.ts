@@ -68,7 +68,7 @@ async function join(body: object) {
 
 /** The desktop app installs from GitHub and opens the link it's given. The app marks its user agent with SandboxDesktop. */
 const appCommand = (link: string) => `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '${link}'`;
-const appWanted = !navigator.userAgent.includes("SandboxDesktop") && !matchMedia("(pointer: coarse)").matches;
+const appWanted = !navigator.userAgent.includes("SandboxDesktop");
 
 /** On computers the join screen offers the app as the other way to play. */
 function offerApp(link: string) {
@@ -179,7 +179,6 @@ function applyScreen() {
   renderer.domElement.style.imageRendering = screen.pixelated ? "pixelated" : "";
   renderer.domElement.hidden = screen.scene === false;
   if (!screen.lockPointer && document.pointerLockElement) document.exitPointerLock();
-  showStick();
 }
 
 /** Perspective cameras take the window's shape; orthographic ones keep their height and centre and widen to it. */
@@ -1312,7 +1311,6 @@ function scrub(e: PointerEvent) {
 track.onpointerup = track.onpointercancel = (e) => {
   if (scrubbing && replay) seek(tickAt(e.clientX));
   scrubbing = null;
-  if (e.pointerType !== "mouse") $("replay-tip").hidden = true;
 };
 track.onpointerleave = () => !scrubbing && ($("replay-tip").hidden = true);
 
@@ -1630,7 +1628,7 @@ const inputFree = () => !(replay || spectator || typing() || panel || !menu.hidd
 
 /** When a mod asks for mouse-look, clicking the game locks the mouse; the cursor is free again while chat, the menu, a panel or an overlay is open. */
 function capture() {
-  if (!replay && !spectator && screen.lockPointer && !document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !panel && !document.pointerLockElement) renderer.domElement.requestPointerLock()?.catch(() => {});
+  if (!replay && !spectator && screen.lockPointer && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !panel && !document.pointerLockElement) renderer.domElement.requestPointerLock()?.catch(() => {});
 }
 renderer.domElement.addEventListener("click", capture);
 /** Mods free the mouse for their own windows through exitPointerLock; a loss nobody asked for (Esc, switching windows) pauses into the menu. */
@@ -1715,7 +1713,7 @@ function stopTalking(keep: boolean) {
   }, () => {});
 }
 function showMic() {
-  $("mic").textContent = !voiceAvailable ? (hosting ? "Turn on voice" : "Voice off") : talking ? "Talking" : matchMedia("(pointer: coarse)").matches ? "Hold to talk" : "Hold T to talk";
+  $("mic").textContent = !voiceAvailable ? (hosting ? "Turn on voice" : "Voice off") : talking ? "Talking" : "Hold T to talk";
   $("mic").dataset.state = !voiceAvailable ? (hosting ? "setup" : "none") : talking ? "on" : "off";
 }
 $("mic").onclick = () => {
@@ -1861,46 +1859,6 @@ $("claude").onclick = () => {
   openPage("claude");
 };
 
-function showStick() {
-  $("stick").hidden = $("jump").hidden = !(screen.stick && document.body.classList.contains("touch"));
-}
-// Touch screens drive the same key codes as a keyboard, so every mod that reads ctx.keys works on phones.
-function enableTouch() {
-  document.body.classList.add("touch");
-  showStick();
-  $("menu-button").textContent = "Menu";
-  $("hint").textContent = "Chat";
-  $("hint").onclick = openChat;
-  const stick = $("stick");
-  const knob = stick.firstElementChild as HTMLElement;
-  const steer = (e: PointerEvent) => {
-    const box = stick.getBoundingClientRect();
-    let x = (e.clientX - box.left - box.width / 2) / (box.width / 2);
-    let y = (e.clientY - box.top - box.height / 2) / (box.height / 2);
-    const len = Math.hypot(x, y);
-    if (len > 1) [x, y] = [x / len, y / len];
-    knob.style.translate = `${x * 40}px ${y * 40}px`;
-    for (const [code, on] of [["KeyW", y < -0.35], ["KeyS", y > 0.35], ["KeyA", x < -0.35], ["KeyD", x > 0.35]] as const) on ? keys.add(code) : keys.delete(code);
-  };
-  const release = () => {
-    knob.style.translate = "";
-    for (const code of ["KeyW", "KeyS", "KeyA", "KeyD"]) keys.delete(code);
-  };
-  stick.onpointerdown = (e) => {
-    stick.setPointerCapture(e.pointerId);
-    steer(e);
-  };
-  stick.onpointermove = (e) => stick.hasPointerCapture(e.pointerId) && steer(e);
-  stick.onpointerup = stick.onpointercancel = release;
-  const jump = $("jump");
-  jump.onpointerdown = (e) => {
-    jump.setPointerCapture(e.pointerId);
-    keys.add("Space");
-  };
-  jump.onpointerup = jump.onpointercancel = () => keys.delete("Space");
-}
-if (matchMedia("(pointer: coarse)").matches) enableTouch();
-else addEventListener("touchstart", enableTouch, { once: true });
 $("menu-close").onclick = closeMenu;
 /** Shows a page of the menu beside the rail, or with null only the rail. */
 function showTab(tab: string | null) {
@@ -2165,7 +2123,7 @@ let welcomedAt = Infinity;
 let last = performance.now();
 renderer.setAnimationLoop(() => {
   const now = performance.now();
-  // The live view behind the join screen draws about 30 frames a second at no more than a pixel per CSS pixel, whatever mods ask for, for phones.
+  // The live view behind the join screen draws about 30 frames a second at no more than a pixel per CSS pixel, whatever mods ask for.
   if (spectator && now - last < 32) return;
   if (spectator && renderer.getPixelRatio() > 1) renderer.setPixelRatio(1);
   const dt = Math.min((now - last) / 1000, 0.1);

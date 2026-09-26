@@ -38,12 +38,11 @@
 .item.danger:focus { color: var(--err); }
 .gap { height: 24px; flex: none; }
 
-/* Back, above a screen's title, for mouse and touch; Esc does the same. */
+/* Back, above a screen's title, for the mouse; Esc does the same. */
 .back { align-self: flex-start; display: flex; align-items: center; gap: 12px; margin: 0 0 24px; padding: 8px 0; background: none; border: 0; border-radius: 0; color: var(--dim); font: 700 14px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; cursor: pointer; outline: none; }
 .back:hover, .back:focus-visible { color: var(--text); background: none; }
 .back kbd { font: inherit; font-size: 11px; border: 1px solid rgba(255,255,255,.35); padding: 3px 6px; color: var(--text); }
 .lead { margin: -16px 0 32px; color: var(--text); font-size: 18px; }
-@media (pointer: coarse) { .back { padding: 14px 0; } .back kbd { display: none; } }
 
 /* A setting: its name on the left, its value on the right, changed with the arrows. */
 .field { display: flex; align-items: center; gap: 24px; width: 100%; min-height: 64px; padding: 0 0 0 32px; position: relative; border-bottom: 1px solid var(--line); }
@@ -73,7 +72,6 @@
 .hints { position: fixed; left: 96px; bottom: 36px; display: flex; gap: 28px; color: var(--dim); font: 700 12px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; pointer-events: none; }
 .hints kbd { font: inherit; display: inline-block; min-width: 24px; text-align: center; border: 1px solid rgba(255,255,255,.35); padding: 4px 6px; margin-right: 8px; color: var(--text); }
 
-@media (pointer: coarse) { .hints { display: none; } }
 @media (max-width: 760px) {
   .front { padding: 56px 16px 48px; }
   .logo { height: 44px; }

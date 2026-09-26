@@ -59,7 +59,6 @@
   #builders { position: fixed; top: 64px; left: 24px; display: grid; gap: 6px; color: var(--claude); pointer-events: none; }
   #builders div { animation: pulse 1.6s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .45; } }
-  body.touch #builders { top: auto; bottom: 180px; }
   #toasts { position: fixed; top: 72px; right: 24px; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
   .toast { padding: 10px 14px; background: var(--veil); border-left: 2px solid var(--dim); animation: in .25s ease-out; max-width: 360px; }
   .toast.ok { border-color: var(--ok); } .toast.error { border-color: var(--err); }
@@ -81,8 +80,7 @@
   #hud-left { left: 24px; top: 50%; translate: 0 -50%; flex-direction: column; align-items: flex-start; }
   #hud-right { right: 24px; bottom: 24px; flex-direction: column-reverse; align-items: flex-end; }
   #hud-bottom { left: 50%; bottom: 24px; translate: -50% 0; flex-direction: column-reverse; align-items: center; }
-  body.touch #hud-bottom { bottom: 190px; }
-  @media (max-width: 900px) { body:not(.touch) #hud-bottom { bottom: 72px; } }
+  @media (max-width: 900px) { #hud-bottom { bottom: 72px; } }
   #interact { display: flex; align-items: center; gap: 12px; padding: 10px 18px 10px 10px; background: var(--veil); border-left: 3px solid var(--accent); cursor: pointer; }
   #interact kbd { margin: 0; }
   #layers { position: fixed; inset: 0; isolation: isolate; pointer-events: none; }
@@ -105,7 +103,7 @@
   #replay-bar button:hover, #replay-bar button.on { background: var(--text); color: #0b0b0c; }
   #replay-play { min-width: 112px; }
   #replay-speed { min-width: 56px; }
-  #replay-track { position: relative; flex: 1; min-width: 0; height: 36px; cursor: pointer; touch-action: none; border-bottom: 1px solid var(--line); }
+  #replay-track { position: relative; flex: 1; min-width: 0; height: 36px; cursor: pointer; border-bottom: 1px solid var(--line); }
   #replay-track canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
   #replay-marks i { position: absolute; top: 0; width: 2px; height: 10px; translate: -1px 0; background: var(--c, var(--accent)); pointer-events: none; }
   #replay-head { position: absolute; top: -4px; bottom: -4px; width: 2px; translate: -1px 0; background: var(--text); pointer-events: none; }
@@ -129,7 +127,7 @@
   body.replaying:not(.replay-hud) > canvas:not([hidden]) ~ #layers,
   body.spectating > :not(canvas:first-child, #layers, #hud, #join, #howto, #palette, #ui),
   body.spectating > canvas:not([hidden]) ~ #layers { display: none !important; }
-  body.replaying #interact, body.replaying #react, body.replaying #feed, body.replaying #hint, body.replaying #builders, body.replaying #top, body.replaying #chat, body.replaying #stick, body.replaying #jump, body.replaying #empty { display: none !important; }
+  body.replaying #interact, body.replaying #react, body.replaying #feed, body.replaying #hint, body.replaying #builders, body.replaying #top, body.replaying #chat, body.replaying #empty { display: none !important; }
   @media (max-width: 760px) {
     body.replaying { --deck: 112px; }
     #replay-bar { padding: 10px 16px; flex-wrap: wrap; align-content: center; }
@@ -243,16 +241,8 @@
   .keys dt span { display: inline-block; min-width: 26px; text-align: center; border: 1px solid rgba(255,255,255,.35); padding: 4px 7px; margin-right: 4px; }
   .keys dd { margin: 0; color: var(--dim); }
   .mod-keys:empty { display: none; }
-  body.touch .desk, body:not(.touch) .touchonly, :host(.touch) .desk, :host(:not(.touch)) .touchonly { display: none; }
 
-  #top, #status, #chat, #hint, #builders, #react, #replay, #replay-caption, #replay-bar, #replay-feed, #replay-chapters, #stick, #jump, #announce { z-index: 1000; } .overlay { z-index: 1001; } #toasts { z-index: 1002; }
-  body.touch canvas { touch-action: none; }
-  body.touch #feed { top: 72px; bottom: auto; max-height: 24vh; width: calc(100vw - 130px); }
-  body.touch #chat { top: 72px; bottom: auto; }
-  body.touch #hint { bottom: auto; top: 72px; left: auto; right: 16px; color: var(--text); padding: 10px 14px; background: var(--glass); cursor: pointer; }
-  #stick { position: fixed; left: 28px; bottom: 28px; width: 128px; height: 128px; border-radius: 50%; border: 1px solid rgba(255,255,255,.3); background: rgba(8,9,11,.25); touch-action: none; }
-  #stick div { position: absolute; left: 40px; top: 40px; width: 48px; height: 48px; border-radius: 50%; background: rgba(255,255,255,.45); pointer-events: none; }
-  #jump { position: fixed; right: 28px; bottom: 40px; width: 88px; height: 88px; border-radius: 50%; touch-action: none; background: rgba(8,9,11,.25); border-color: rgba(255,255,255,.3); }
+  #top, #status, #chat, #hint, #builders, #react, #replay, #replay-caption, #replay-bar, #replay-feed, #replay-chapters, #announce { z-index: 1000; } .overlay { z-index: 1001; } #toasts { z-index: 1002; }
 </style>
 </head>
 <body>
@@ -264,7 +254,7 @@
     <div id="rules" class="caps"></div>
     <button id="claude"></button>
     <button id="mic" title="Hold T, or open the chat, and what you say is transcribed into it"></button>
-    <button id="menu-button">Menu<kbd class="desk">Tab</kbd></button>
+    <button id="menu-button">Menu<kbd>Tab</kbd></button>
   </div>
   <div id="status" class="caps">Connecting…</div>
   <div id="feed"></div>
@@ -277,21 +267,19 @@
   <div id="replay-feed" hidden></div>
   <div id="replay-chapters" hidden><p class="caps">Chapters</p><ul></ul></div>
   <div id="replay-bar" hidden>
-    <button id="replay-play">Pause<kbd class="desk">Space</kbd></button>
+    <button id="replay-play">Pause<kbd>Space</kbd></button>
     <button id="replay-speed" title="Playback speed (up and down arrows)">1×</button>
     <div id="replay-track"><canvas></canvas><div id="replay-marks"></div><i id="replay-head"></i><div id="replay-tip" class="caps" hidden></div></div>
-    <button id="replay-chapters-button">Chapters<kbd class="desk">C</kbd></button>
-    <button id="replay-free">Free camera<kbd class="desk">F</kbd></button>
-    <button id="replay-hud">HUD<kbd class="desk">H</kbd></button>
-    <button id="replay-leave">Leave<kbd class="desk">Esc</kbd></button>
+    <button id="replay-chapters-button">Chapters<kbd>C</kbd></button>
+    <button id="replay-free">Free camera<kbd>F</kbd></button>
+    <button id="replay-hud">HUD<kbd>H</kbd></button>
+    <button id="replay-leave">Leave<kbd>Esc</kbd></button>
   </div>
   <div id="hud-left" class="hud-area"></div>
   <div id="hud-right" class="hud-area"></div>
-  <div id="hud-bottom" class="hud-area"><div id="interact" hidden><kbd class="desk">E</kbd><span></span></div>
-  <div id="react" hidden><span id="react-mod" class="caps"></span><button data-kind="love"><kbd class="desk">1</kbd> Love it <span></span></button><button data-kind="undo"><kbd class="desk">2</kbd> Vote to undo <span></span></button></div></div>
+  <div id="hud-bottom" class="hud-area"><div id="interact" hidden><kbd>E</kbd><span></span></div>
+  <div id="react" hidden><span id="react-mod" class="caps"></span><button data-kind="love"><kbd>1</kbd> Love it <span></span></button><button data-kind="undo"><kbd>2</kbd> Vote to undo <span></span></button></div></div>
   <div id="announce" hidden><div class="caps"></div><b></b><p></p></div>
-  <div id="stick" hidden><div></div></div>
-  <button id="jump" hidden>Jump</button>
   <div id="empty" class="shadow" hidden><b>Nothing exists yet</b>Press Tab, connect your Claude, and ask it for the game you want to play.</div>
 </div>
 
@@ -320,17 +308,13 @@
 <div id="howto" class="overlay" hidden>
   <div class="sheet">
     <h1 id="howto-world"></h1>
-    <dl class="keys desk">
+    <dl class="keys">
       <dt><span>Enter</span></dt><dd>Chat</dd>
       <dt><span>T</span></dt><dd>Talk</dd>
       <dt><span>⌘</span><span>K</span></dt><dd>Search</dd>
       <dt><span>Tab</span><span>Esc</span></dt><dd>Menu</dd>
     </dl>
-    <dl class="keys touchonly">
-      <dt>Chat</dt><dd>Everyone and your Claude</dd>
-      <dt>Menu</dt><dd>Claude, invites, mods and settings</dd>
-    </dl>
-    <dl class="keys desk mod-keys"></dl>
+    <dl class="keys mod-keys"></dl>
     <div class="actions"><button id="howto-play" class="primary">Play</button></div>
   </div>
 </div>

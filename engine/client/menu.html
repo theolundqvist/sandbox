@@ -14,7 +14,7 @@
   #title .logo { margin-bottom: 64px; }
   /* Long lists scroll above the key hints, never under them. */
   .front { bottom: 96px; padding-bottom: 0; }
-  @media (max-width: 760px), (pointer: coarse) { .front { bottom: 0; padding-bottom: 48px; } }
+  @media (max-width: 760px) { .front { bottom: 0; padding-bottom: 48px; } }
   .status { color: var(--dim); font: 700 14px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; }
   .copy-row b { flex: 1; min-width: 0; font: 700 18px/1.2 var(--display); overflow: hidden; text-overflow: ellipsis; }
   .dot { width: 8px; height: 8px; background: #55524c; flex: none; } .dot.on { background: var(--ok); }
@@ -331,7 +331,7 @@
 
   /** The desktop app, a menu entry on computers. The app marks its user agent with SandboxDesktop. */
   function offerApp(link) {
-    if (navigator.userAgent.includes("SandboxDesktop") || matchMedia("(pointer: coarse)").matches) return;
+    if (navigator.userAgent.includes("SandboxDesktop")) return;
     $("app-install").textContent = `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '${link}'`;
     $("go-app").hidden = false;
   }
