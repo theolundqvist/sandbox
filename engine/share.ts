@@ -142,7 +142,8 @@ export async function importWorld(files: Map<string, Blob>, dir: string, fresh: 
     const mod = path.match(/^state\/db\/(.+)\.sql$/)?.[1];
     if (!mod) continue;
     const db = new Database(join(dir, "db", `${mod}.sqlite`), { create: true });
-    db.exec(await file.text());
+    const sql = await file.text();
+    db.transaction(() => db.exec(sql))();
     db.close();
   }
   const state = await files.get("state/entities.json")?.json();
