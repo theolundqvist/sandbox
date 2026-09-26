@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { _electron } from "playwright-core";
+import { _electron, chromium } from "playwright-core";
 
 const DESKTOP = import.meta.dirname;
 const ROOT = join(DESKTOP, "..");
@@ -370,5 +370,39 @@ describe("updates", () => {
     await game.locator("#join").waitFor({ state: "hidden" });
     assert.equal(state().reopen, undefined);
     assert.equal(await shown(shell, "#go-update"), false);
+  });
+});
+
+describe("in a browser", () => {
+  let browser, page;
+  before(async () => {
+    browser = await chromium.launch({ args: ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"] });
+    page = await browser.newPage();
+  });
+  after(() => browser?.close());
+
+  test("/menu through the relay, without the host's key, sends people to the host's terminal", async () => {
+    await page.goto(`${other.url}/menu`);
+    await until("the message", async () => (await page.textContent("#waiting")) === "Open the menu link from the host's terminal.");
+    assert.equal(await page.locator("#title .item:visible").count(), 0);
+  });
+
+  test("/menu on the host's own computer needs no key, and offers the desktop app", async () => {
+    await page.goto(`${other.base}/menu`);
+    await page.click("#go-app");
+    assert.match(await page.textContent("#app-install"), /desktop\/install \| bash -s -- '.+#key=/);
+  });
+
+  test("an invite link joins through the relay, and offers the app with the same link", async () => {
+    const link = `${other.url}/#invite=${other.invite}`;
+    await page.goto(link);
+    await until("the join screen", async () => (await page.textContent("#join-world")) === "Snow Race");
+    await page.click("#join-app-go");
+    assert.ok((await page.textContent("#app-install")).endsWith(`bash -s -- '${link}'`));
+    await page.keyboard.press("Escape");
+    await page.fill("#join-name", "Browser");
+    await page.click("#join-go");
+    await until("the game", () => page.evaluate(() => document.getElementById("join").hidden));
+    assert.ok(page.url().startsWith(other.url));
   });
 });
