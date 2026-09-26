@@ -108,7 +108,7 @@ export interface ClientCtx {
   has(mod: string): boolean;
   /** URL of a file added with add_asset: ctx.asset("dragon.glb") for this mod's, ctx.asset("other-mod/dragon.glb") for another's. */
   asset(name: string): string;
-  /** Your block in the game menu (Tab) tab with this title, which is created if no tab has it. Extend the engine's "Game", "Builders", "Mods" and "Help" tabs or another mod's tab by using its title. Removed when this mod reloads. */
+  /** Your block on the game menu's page with this title (Tab or Esc opens the menu), which is created if no page has it and listed on the menu under the engine's entries. Extend the engine's "Claude", "Invite", "Builders", "Mods" and "Settings" pages or another mod's page by using its title. "Resume", "Timelapse" and "Leave" are the engine's and throw. Removed when this mod reloads. */
   menuTab(title: string): HTMLElement;
   /** Your element in one of the engine's screen areas, where every mod's elements stack instead of overlapping: "left" (middle of the left edge), "right" (bottom right, growing up), "bottom" (bottom centre, growing up). Removed when this mod reloads. */
   hud(area: "left" | "right" | "bottom"): HTMLElement;
@@ -131,7 +131,7 @@ export interface ClientCtx {
   }): void;
   /** Offers an action on E. The engine shows one prompt for the nearest available action of any mod, and E (or tapping the prompt) runs only that one. `distance` returns how far the player is from it, or null while it is out of reach. Returns a function that withdraws it; reloading withdraws it too. */
   interact(action: { label: string | (() => string); distance(): number | null; run(): void }): () => void;
-  /** Binds a key (KeyboardEvent.code, e.g. "KeyM") labelled in Cmd+K and Help: run(true) on press, run(false) on release with `hold`, or { down, up }. Never fires while the player types, has the menu, Cmd+K, chat or another mod's panel open. The later of two mods declaring a key wins and both are warned. Tab, Enter, T and E are the engine's and throw; 1 and 2 go to votes while the vote bar shows. Returns a remover; reloading removes it too. */
+  /** Binds a key (KeyboardEvent.code, e.g. "KeyM") labelled in Cmd+K and Help: run(true) on press, run(false) on release with `hold`, or { down, up }. Never fires while the player types, has the menu, Cmd+K, chat or another mod's panel open. The later of two mods declaring a key wins and both are warned. Tab, Esc, Enter, T and E are the engine's and throw; 1 and 2 go to votes while the vote bar shows. Returns a remover; reloading removes it too. */
   key(code: string, label: string, run: ((down: boolean) => void) | { down?(): void; up?(): void }, opts?: { hold?: boolean }): () => void;
   /** Shows el as this mod's window (centred on the page when el is not in the document): frees the mouse, pauses other mods' keys and ctx.keys, closes on Esc and gives the mouse back when closed. Opening a panel closes the open one. */
   panel(el: HTMLElement, opts?: { onClose?(): void }): { close(): void };

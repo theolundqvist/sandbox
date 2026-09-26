@@ -39,35 +39,48 @@ function offerApp(link: string) {
   $("app-install").textContent = `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash${link && ` -s --${arg}`}`;
   $("app-clone").textContent = `git clone https://github.com/theolundqvist/sandbox && cd sandbox && bun desktop${arg}`;
   $("app-offer").hidden = false;
-  $("app-get").onclick = () => ($("app-later").hidden = !($("app-panel").hidden = !$("app-panel").hidden));
+  const showApp = (on: boolean) => {
+    $("join-app").hidden = !on;
+    $("join-main").hidden = on;
+    $(on ? "app-back" : "join-name").focus();
+  };
+  $("app-get").onclick = () => showApp(true);
+  $("app-back").onclick = () => showApp(false);
   $("app-later").onclick = $("app-dismiss").onclick = () => {
     $("app-offer").hidden = true;
+    showApp(false);
     try {
       localStorage.setItem(dismissed, "1");
     } catch {}
   };
 }
 
+/** The join screen, over clips of games built in Sandbox. A player who left the world comes back to it and rejoins as themselves. */
 async function start() {
-  if (key) {
+  const left = hashParams.has("left") && !!key;
+  if (key && !left) {
     try {
       return await join({ key });
     } catch {
       localStorage.removeItem(keyName);
+      key = null;
     }
   }
+  const front = await import(["/front.js"][0]!);
+  front.backdrop($("join-backdrop"));
   $("join-world").textContent = info.name;
-  $("join-online").textContent = info.online ? `${info.online} playing now` : "Nobody is here yet";
+  $("join-online").textContent = info.online ? `${info.online} playing` : "";
   $("join").hidden = false;
-  if (!hashParams.get("invite")) $("join-error").textContent = "Ask the host for an invite link to join.";
+  $("join-name-field").hidden = left;
+  if (!left && !hashParams.get("invite")) $("join-error").textContent = "Ask the host for an invite link.";
   offerApp(hashParams.get("invite") ? `${origin}/#invite=${hashParams.get("invite")}` : "");
   $<HTMLInputElement>("join-name").value = localStorage.getItem("sandbox-name") ?? "";
-  $("join-name").focus();
+  (left ? $("join-main").querySelector<HTMLElement>(".item")! : $("join-name")).focus();
   await new Promise<void>((resolve) => {
     $("join-form").onsubmit = async (e) => {
       e.preventDefault();
       try {
-        await join({ invite: hashParams.get("invite"), name: $<HTMLInputElement>("join-name").value });
+        await join(left ? { key } : { invite: hashParams.get("invite"), name: $<HTMLInputElement>("join-name").value });
         $("join").hidden = true;
         resolve();
       } catch (err: any) {
@@ -327,7 +340,7 @@ const warn = console.warn.bind(console);
 
 /** Keys mods declare with ctx.key: the engine dispatches them, so they never fire while the player types or has a window open. */
 type Binding = { mod: Loaded; code: string; label: string; down?: () => void; up?: () => void };
-const ENGINE_OWNED = ["Tab", "Enter", "KeyT", "KeyE"];
+const ENGINE_OWNED = ["Tab", "Escape", "Enter", "KeyT", "KeyE"];
 let bindings: Binding[] = [];
 const held = new Map<string, Binding>();
 const keyLabel = (code: string) => code.replace(/^(Key|Digit)/, "");
@@ -520,7 +533,7 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
     asset: (file) => `/assets/${file.includes("/") ? file : `${name}/${file}`}`,
     menuTab: (title) => {
       const block = document.createElement("div");
-      menuSection(title).append(block);
+      menuPage(title).append(block);
       loaded.owned.push(block);
       return block;
     },
@@ -557,29 +570,34 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
   if (rebuild && (mod.object || old?.mod.object)) rebuildAll();
 }
 
-/** The section of the menu tab with this title; mods share tabs by title, and a tab no mod fills any more goes away. */
-const CORE_TABS = ["game", "builders", "mods", "help"];
-let tabSeq = 0;
-function menuSection(title: string) {
-  let button = [...$("tabs").querySelectorAll<HTMLElement>("button")].find((b) => b.textContent!.trim().toLowerCase() === title.trim().toLowerCase());
+/** The menu page with this title: mods share pages by title, join the engine's by using its title, and a page no mod fills any more goes away. Resume, Timelapse and Leave are the engine's. */
+const CORE_PAGES = ["claude", "invite", "builders", "mods", "settings"];
+const PAGE_ALIASES: Record<string, string> = { help: "Settings", controls: "Settings" };
+const ENGINE_ENTRIES = ["resume", "timelapse", "leave"];
+let pageSeq = 0;
+function menuPage(title: string) {
+  const name = title.trim().toLowerCase();
+  if (ENGINE_ENTRIES.includes(name)) throw new Error(`${title} belongs to the engine's menu; pick another title`);
+  const wanted = PAGE_ALIASES[name] ?? title;
+  let button = [...$("rail").querySelectorAll<HTMLElement>("[data-tab]")].find((b) => b.textContent!.trim().toLowerCase() === wanted.trim().toLowerCase());
   if (!button) {
-    const id = `tab-${++tabSeq}`;
-    button = Object.assign(document.createElement("button"), { textContent: title });
+    const id = `page-${++pageSeq}`;
+    button = Object.assign(document.createElement("button"), { className: "item small", textContent: wanted.trim() });
     const section = document.createElement("section");
     button.dataset.tab = section.dataset.tab = id;
     section.hidden = true;
-    button.onclick = () => showTab(id);
-    $("tabs").insertBefore(button, $("tabs").querySelector("[data-tab=help]"));
-    $("menu").querySelector("section[data-tab=help]")!.before(section);
+    button.onclick = () => openPage(id);
+    $("mod-pages").append(button);
+    $("pages").append(section);
   }
-  return $("menu").querySelector<HTMLElement>(`section[data-tab="${button.dataset.tab}"]`)!;
+  return $("pages").querySelector<HTMLElement>(`section[data-tab="${button.dataset.tab}"]`)!;
 }
 function pruneTabs() {
-  for (const section of $("menu").querySelectorAll<HTMLElement>("section[data-tab]")) {
+  for (const section of $("pages").querySelectorAll<HTMLElement>("section[data-tab]")) {
     const tab = section.dataset.tab!;
-    if (CORE_TABS.includes(tab) || section.childElementCount) continue;
-    const button = $("tabs").querySelector<HTMLElement>(`[data-tab="${tab}"]`);
-    if (button?.classList.contains("active")) showTab("game");
+    if (CORE_PAGES.includes(tab) || section.childElementCount) continue;
+    const button = $("rail").querySelector<HTMLElement>(`[data-tab="${tab}"]`);
+    if (button?.classList.contains("active")) showTab(null);
     button?.remove();
     section.remove();
   }
@@ -719,6 +737,7 @@ function connect() {
   };
   ws.onclose = (e) => {
     $("status").hidden = false;
+    if (leaving) return;
     if (e.code === 4000) {
       $("status").textContent = "You opened the game in another tab.";
       return;
@@ -1317,6 +1336,18 @@ function capture() {
   if (!replay && screen.lockPointer && !document.body.classList.contains("touch") && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !panel && !document.pointerLockElement) renderer.domElement.requestPointerLock()?.catch(() => {});
 }
 renderer.domElement.addEventListener("click", capture);
+/** Mods free the mouse for their own windows through exitPointerLock; a loss nobody asked for (Esc, switching windows) pauses into the menu. */
+let unlockAsked = false;
+const exitPointerLock = Document.prototype.exitPointerLock;
+Document.prototype.exitPointerLock = function () {
+  unlockAsked = true;
+  return exitPointerLock.call(this);
+};
+document.addEventListener("pointerlockchange", () => {
+  const asked = unlockAsked;
+  unlockAsked = false;
+  if (!document.pointerLockElement && !asked && inputFree()) void openMenu();
+});
 // Coming back to the window takes mouse-look straight back where the page may lock without a click (the desktop app); browsers refuse quietly.
 addEventListener("focus", capture);
 // Right-click belongs to the game, so no browser menu except over text fields.
@@ -1332,6 +1363,7 @@ function openChat() {
 }
 function closeMenu() {
   menu.hidden = true;
+  showTab(null);
   capture();
 }
 function play() {
@@ -1389,7 +1421,10 @@ $("howto-play").onclick = play;
 
 // Capture phase, so mods' own listeners can't swallow declared keys.
 addEventListener("keydown", (e: KeyboardEvent) => {
-  if (e.code === "Escape" && panel && menu.hidden && chat.hidden && palette.hidden) return closePanel();
+  if (e.code === "Escape" && panel && menu.hidden && chat.hidden && palette.hidden) {
+    e.stopImmediatePropagation();
+    return closePanel();
+  }
   if (replay || e.repeat || e.metaKey || e.ctrlKey || held.has(e.code) || typing() || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden) return;
   if ((e.code === "Digit1" || e.code === "Digit2") && !$("react").hidden) return;
   const b = activeBindings().find((x) => x.code === e.code);
@@ -1423,16 +1458,17 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     e.preventDefault();
     return;
   }
-  // Only Tab opens the game menu, so Esc and every other key stay free for mods.
-  if (e.code === "Tab" && (!typing() || document.activeElement!.closest("#layers"))) {
+  if (e.code === "Tab" && (!typing() || document.activeElement!.closest("#layers") || menu.contains(document.activeElement))) {
     e.preventDefault();
     (document.activeElement as HTMLElement).blur();
     return menu.hidden ? openMenu() : closeMenu();
   }
-  if (e.code === "Escape" && !typing() && !menu.hidden) return closeMenu();
+  if (!menu.hidden) return menuKey(e);
+  // In a game that locks the mouse, Esc arrives as the lock's loss (below); a free cursor may be a mod's own window, which Esc closes first.
+  if (e.code === "Escape" && !screen.lockPointer && inputFree()) return openMenu();
   if (e.code === "KeyT" && !typing() && menu.hidden) return startTalking();
   if (e.code === "KeyE" && !e.repeat && !typing() && menu.hidden && !panel) runAction();
-  if (typing() || panel) return;
+  if (typing() || panel || !menu.hidden) return;
   keys.add(e.code);
   if (!e.repeat) pressed[e.code] = (pressed[e.code] ?? 0) + 1;
 });
@@ -1508,7 +1544,11 @@ function showClaude(state: keyof typeof claudeLabels) {
   $("claude").textContent = claudeLabels[state];
   $("claude").dataset.state = state;
 }
-$("claude").onclick = () => $("claude").dataset.state === "offline" && openMenu();
+$("claude").onclick = () => {
+  if ($("claude").dataset.state !== "offline") return;
+  void openMenu();
+  openPage("claude");
+};
 
 function showStick() {
   $("stick").hidden = $("jump").hidden = !(screen.stick && document.body.classList.contains("touch"));
@@ -1551,20 +1591,44 @@ function enableTouch() {
 if (matchMedia("(pointer: coarse)").matches) enableTouch();
 else addEventListener("touchstart", enableTouch, { once: true });
 $("menu-close").onclick = closeMenu;
-function showTab(tab: string) {
-  send({ t: "act", what: "tab", detail: $("tabs").querySelector(`[data-tab="${tab}"]`)?.textContent ?? tab });
-  for (const el of $("menu").querySelectorAll<HTMLElement>("[data-tab]")) {
-    if (el.tagName === "BUTTON") el.classList.toggle("active", el.dataset.tab === tab);
-    else el.hidden = el.dataset.tab !== tab;
-  }
+/** Shows a page of the menu beside the rail, or with null only the rail. */
+function showTab(tab: string | null) {
+  const button = tab ? $("rail").querySelector<HTMLElement>(`[data-tab="${tab}"]`) : null;
+  if (tab) send({ t: "act", what: "tab", detail: button?.textContent ?? tab });
+  for (const b of $("rail").querySelectorAll<HTMLElement>("[data-tab]")) b.classList.toggle("active", b.dataset.tab === tab);
+  for (const s of $("pages").querySelectorAll<HTMLElement>("section[data-tab]")) s.hidden = s.dataset.tab !== tab;
+  $("pages").hidden = !tab;
+  menu.classList.toggle("paging", !!tab);
+  $("page-title").textContent = button?.textContent ?? "";
   if (tab === "mods") refreshMenu();
 }
-for (const b of $("tabs").querySelectorAll<HTMLElement>("button")) b.onclick = () => showTab(b.dataset.tab!);
-$("tabs").addEventListener("wheel", (e) => {
-  if (!e.deltaY) return;
-  $("tabs").scrollLeft += e.deltaY;
-  e.preventDefault();
-}, { passive: false });
+/** Opens a page and moves the keyboard into it. */
+function openPage(tab: string) {
+  showTab(tab);
+  $("pages").scrollTop = 0;
+  const first = [...$("pages").querySelectorAll<HTMLElement>("section:not([hidden]) :is(button, input, select, textarea, a[href], [tabindex='0'])")].find((el) => el.getClientRects().length);
+  (first ?? $("pages")).focus({ preventScroll: true });
+}
+function closePage() {
+  const tab = $("rail").querySelector<HTMLElement>(".active");
+  showTab(null);
+  (tab ?? $("menu-close")).focus();
+}
+for (const b of $("rail").querySelectorAll<HTMLElement>("[data-tab]")) b.onclick = () => openPage(b.dataset.tab!);
+$("page-back").onclick = closePage;
+$("pages").tabIndex = -1;
+/** Esc goes back a level and then resumes; right opens the entry on the rail, left goes back to it. */
+function menuKey(e: KeyboardEvent) {
+  const inPage = $("pages").contains(document.activeElement);
+  const field = document.activeElement?.matches("input:not([type=range]), textarea, select, [contenteditable]");
+  if (e.code === "Escape") {
+    e.preventDefault();
+    if (performance.now() - menuOpenedAt < 300) return;
+    return $("pages").hidden ? closeMenu() : closePage();
+  }
+  if (e.code === "ArrowRight" && !inPage && (document.activeElement as HTMLElement | null)?.dataset.tab) return openPage((document.activeElement as HTMLElement).dataset.tab!);
+  if (e.code === "ArrowLeft" && inPage && !field && !document.activeElement?.matches("input[type=range]")) return closePage();
+}
 
 /** Cmd+K: every menu tab, and every button and setting inside one, searchable in one list. Buttons run straight away. */
 type Command = { label: string; where: string; run(): void };
@@ -1580,10 +1644,10 @@ function menuCommands(): Command[] {
     el?.scrollIntoView({ block: "center" });
     el?.focus();
   };
-  for (const b of $("tabs").querySelectorAll<HTMLElement>("button")) list.push({ label: textOf(b), where: "Menu", run: () => open(b.dataset.tab!) });
+  for (const b of $("rail").querySelectorAll<HTMLElement>("[data-tab]")) list.push({ label: textOf(b), where: "Menu", run: () => open(b.dataset.tab!) });
   for (const section of menu.querySelectorAll<HTMLElement>("section[data-tab]")) {
     const tab = section.dataset.tab!;
-    const title = textOf($("tabs").querySelector(`[data-tab="${CSS.escape(tab)}"]`));
+    const title = textOf($("rail").querySelector(`[data-tab="${CSS.escape(tab)}"]`));
     for (const el of section.querySelectorAll<HTMLElement>("button, input, select, textarea")) {
       const hiddenIn = el.parentElement?.closest("[hidden]");
       if ((el as HTMLButtonElement).disabled || el.hidden || (hiddenIn && hiddenIn !== section && section.contains(hiddenIn))) continue;
@@ -1594,7 +1658,7 @@ function menuCommands(): Command[] {
       list.push({ label: own, where: context, run: el.tagName === "BUTTON" ? () => el.click() : () => open(tab, el) });
     }
   }
-  for (const b of menu.querySelectorAll<HTMLElement>(".actions button")) if (!b.hidden) list.push({ label: textOf(b), where: "Menu", run: () => b.click() });
+  for (const b of $("rail").querySelectorAll<HTMLElement>("button:not([data-tab])")) list.push({ label: textOf(b), where: "Menu", run: () => b.click() });
   for (const b of activeBindings()) list.push({ label: b.label, where: `Key ${keyLabel(b.code)} · ${b.mod.name}`, run: () => (press(b, true), press(b, false)) });
   return list;
 }
@@ -1653,8 +1717,32 @@ $("palette-input").addEventListener("keydown", (e: KeyboardEvent) => {
 });
 palette.onclick = (e) => e.target === palette && closePalette();
 for (const keysList of $("howto").querySelectorAll(".keys")) $("help-keys").append(keysList.cloneNode(true));
-$("main-menu").hidden = !localStorage.getItem("sandbox-menu");
-$("main-menu").onclick = () => location.assign("/menu");
+/** Leaving closes this game: the host goes back to their main menu, anyone else to this world's join screen. */
+let leaving = false;
+$("leave").onclick = () => {
+  leaving = true;
+  socket?.close();
+  if (localStorage.getItem("sandbox-menu")) return location.assign("/menu");
+  history.replaceState(null, "", `${origin}/#left`);
+  location.reload();
+};
+
+/** Master volume, remembered on this device. */
+function setVolume(percent: number) {
+  const v = Math.max(0, Math.min(100, Math.round(percent)));
+  audio.output.gain.value = v / 100;
+  $<HTMLInputElement>("volume").value = $<HTMLInputElement>("volume-exact").value = String(v);
+  try {
+    localStorage.setItem("sandbox-volume", String(v));
+  } catch {}
+}
+let savedVolume = 100;
+try {
+  savedVolume = Number(localStorage.getItem("sandbox-volume") ?? 100);
+} catch {}
+setVolume(savedVolume);
+$("volume").oninput = () => setVolume(Number($<HTMLInputElement>("volume").value));
+$("volume-exact").onchange = () => setVolume(Number($<HTMLInputElement>("volume-exact").value));
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "sandbox";
 
@@ -1687,12 +1775,19 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-via]"))
   };
 }
 
+let menuOpenedAt = 0;
 async function openMenu() {
   send({ t: "act", what: "menu" });
   keys.clear();
   leaveReplay();
   releaseKeys();
+  const wasHidden = menu.hidden;
   menu.hidden = false;
+  menuOpenedAt = performance.now();
+  if (wasHidden) {
+    showTab(null);
+    $("menu-close").focus({ preventScroll: true });
+  }
   if (document.pointerLockElement) document.exitPointerLock();
   $("menu-world").textContent = world;
   $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;

@@ -245,6 +245,12 @@ async function menuApi(req: Request, action: string) {
       if (running?.id === body.id) throw new Error("Stop the world before deleting it.");
       if (!/^[a-z0-9-]+$/.test(body.id ?? "")) throw new Error("That world doesn't exist.");
       rmSync(join(WORLDS, body.id), { recursive: true, force: true });
+    } else if (action === "configure") {
+      if (running?.id === body.id) throw new Error("Stop the world before changing it.");
+      if (!/^[a-z0-9-]+$/.test(body.id ?? "") || !existsSync(join(WORLDS, body.id, "config.json"))) throw new Error("That world doesn't exist.");
+      const current = config(body.id);
+      const name = String(body.name ?? current.name).trim().slice(0, 40) || current.name;
+      writeFileSync(join(WORLDS, body.id, "config.json"), JSON.stringify({ ...current, name, rules: body.rules === "additive" ? "additive" : body.rules === "open" ? "open" : current.rules }, null, 2));
     } else if (action === "share") {
       share(!!body.on);
       state.sharing = !!body.on;
@@ -259,6 +265,7 @@ async function menuApi(req: Request, action: string) {
 }
 
 const page = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });
+const CLIPS = join(ENGINE, "client/clips");
 
 Bun.serve<Pipe>({
   port: PORT,
@@ -267,6 +274,14 @@ Bun.serve<Pipe>({
     const url = new URL(req.url);
     if (url.pathname === "/menu") return page("menu.html");
     if (url.pathname.startsWith("/api/menu/")) return menuApi(req, url.pathname.slice("/api/menu/".length));
+    if (url.pathname === "/front.js" || url.pathname === "/front.css") return new Response(Bun.file(join(ENGINE, "client", url.pathname)));
+    // The menus' background: every clip dropped into engine/client/clips plays.
+    if (url.pathname === "/clips/") return Response.json(readdirSync(CLIPS).filter((f) => f.endsWith(".mp4")));
+    if (url.pathname.startsWith("/clips/")) {
+      const name = url.pathname.slice("/clips/".length);
+      const file = Bun.file(join(CLIPS, name));
+      return /^[\w-]+\.(mp4|jpg)$/.test(name) && (await file.exists()) ? new Response(file, { headers: { "cache-control": "max-age=86400" } }) : new Response("not found", { status: 404 });
+    }
     if (url.pathname.startsWith("/vendor/three/")) {
       const file = Bun.file(join(ENGINE, "../node_modules/three", url.pathname.slice("/vendor/three/".length).replaceAll("..", "")));
       return (await file.exists()) ? new Response(file) : new Response("not found", { status: 404 });

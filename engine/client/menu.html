@@ -3,222 +3,104 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sandbox · Live multiplayer game builder</title>
+<title>Sandbox</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='6' y='6' width='20' height='20' fill='%23ffb547'/></svg>">
+<link rel="preload" as="image" href="/clips/poster.jpg">
+<link rel="stylesheet" href="/front.css">
 <style>
-  :root { --text: #f3f1ec; --dim: #8f8c86; --line: rgba(255,255,255,.1); --accent: #ffb547; --err: #ff6b5b; --ok: #7fe0a0; --veil: rgba(8,9,11,.84); }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  html, body { margin: 0; height: 100%; background: #16181b; color: var(--text); font: 15px/1.45 "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif; }
-  #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  main { position: fixed; top: 0; bottom: 0; left: 0; width: min(560px, 100%); background: var(--veil); backdrop-filter: blur(8px); border-right: 1px solid var(--line); overflow-y: auto; padding: 72px 56px 48px; display: flex; flex-direction: column; }
-  @media (max-width: 600px) { main { padding: 40px 16px 32px; border: 0; } }
-  .wordmark { margin: 0; font: 800 56px/1 "SF Pro Display", "Segoe UI", Inter, system-ui, sans-serif; letter-spacing: .14em; text-transform: uppercase; }
-  .tagline { margin: 14px 0 0; color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .24em; text-transform: uppercase; }
-  .lead { margin: 10px 0 0; color: var(--dim); max-width: 40ch; }
-  nav { display: flex; gap: 28px; margin: 48px 0 8px; border-bottom: 1px solid var(--line); }
-  nav button { background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 0 0 12px; color: var(--dim); font-family: inherit; font-weight: 700; font-size: 13px; line-height: 1; letter-spacing: .16em; text-transform: uppercase; cursor: pointer; }
-  nav button:hover { color: var(--text); }
-  nav button[aria-selected=true] { color: var(--text); border-color: var(--accent); }
-  h2 { margin: 28px 0 6px; color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; }
-  .row { display: flex; gap: 12px; align-items: center; min-height: 52px; border-bottom: 1px solid var(--line); }
-  .grow { flex: 1; min-width: 0; }
-  .meta { color: var(--dim); font-size: 13px; }
-  .note { color: var(--dim); font-size: 13px; margin: 10px 0 0; }
-  .btn, button.danger, button.quiet { font-family: inherit; font-weight: 700; font-size: 12px; line-height: 1; letter-spacing: .14em; text-transform: uppercase; color: var(--text); background: transparent; border: 1px solid rgba(255,255,255,.28); border-radius: 2px; padding: 11px 16px; cursor: pointer; white-space: nowrap; }
-  .btn:hover { background: var(--text); color: #0b0b0c; border-color: var(--text); }
-  .btn.primary { background: var(--text); color: #0b0b0c; border-color: var(--text); }
-  .btn.primary:hover { background: var(--accent); border-color: var(--accent); }
-  .btn.big { width: 100%; padding: 18px; font-size: 14px; margin-top: 28px; }
-  button.danger, button.quiet { border-color: transparent; padding: 11px 8px; color: var(--dim); }
-  button.danger:hover { color: var(--err); } button.quiet:hover { color: var(--text); }
-  button:disabled { opacity: .35; pointer-events: none; }
-  input[type=text] { width: 100%; background: none; border: 0; border-bottom: 1px solid rgba(255,255,255,.28); border-radius: 0; color: var(--text); font-family: inherit; font-weight: 600; font-size: 26px; line-height: 1.2; padding: 10px 0; outline: none; }
-  input[type=text]::placeholder { color: rgba(255,255,255,.25); }
-  input[type=text]:focus { border-color: var(--accent); }
-  .pick { display: flex; align-items: center; gap: 4px; }
-  .pick input { position: absolute; opacity: 0; pointer-events: none; }
-  .pick label { display: none; min-width: 150px; text-align: center; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; font-size: 13px; }
-  .pick input:checked + label { display: block; }
-  .pick button { background: none; border: 0; color: var(--dim); font-family: inherit; font-weight: 400; font-size: 22px; line-height: 1; padding: 4px 10px; cursor: pointer; }
-  .pick button:hover { color: var(--accent); }
-  .setting .row { border-bottom: 0; }
-  .setting { border-bottom: 1px solid var(--line); padding-bottom: 12px; }
-  .setting .label { font-weight: 600; }
-  .setting .desc { color: var(--dim); font-size: 13px; margin-top: -6px; }
-  .error { color: var(--err); min-height: 1.4em; margin-top: 12px; font-size: 13px; }
-  .world b { display: block; font-size: 17px; font-weight: 600; }
-  .live { color: var(--ok); font-weight: 700; }
-  code { display: block; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d9d6cf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .link span { width: 92px; flex: none; color: var(--dim); font-size: 13px; }
-  .switch { cursor: pointer; }
-  .switch input { position: absolute; opacity: 0; }
-  .switch .state { font-weight: 700; font-size: 12px; letter-spacing: .14em; color: var(--dim); }
-  .switch .state::after { content: "Off"; text-transform: uppercase; }
-  .switch:has(input:checked) .state { color: var(--accent); }
-  .switch:has(input:checked) .state::after { content: "On"; }
-  .dot { width: 7px; height: 7px; background: #55524c; flex: none; } .dot.on { background: var(--ok); }
-  select { font-family: inherit; font-weight: 600; font-size: 14px; line-height: 1; color: var(--text); background: transparent; border: 0; padding: 10px 0; outline: none; }
-  select option { background: #111; }
-  .title { font: 800 30px/1.1 "SF Pro Display", "Segoe UI", Inter, system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; margin: 28px 0 0; overflow-wrap: anywhere; }
-  .actions { display: flex; gap: 8px; margin-top: 18px; }
-  .actions .btn { flex: 1; padding: 16px; }
-  #app-offer { margin-top: 28px; }
-  #app-offer > p { margin: 0; }
-  .offer { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
-  #app-panel .row { padding: 10px 0; }
-  #app-panel code { white-space: normal; word-break: break-all; background: rgba(255,255,255,.05); padding: 10px 12px; }
-  #app-dismiss { margin-top: 12px; padding-left: 0; }
+  html, body { margin: 0; height: 100%; background: #101113; color: var(--text); font: 15px/1.45 var(--display); overflow: hidden; }
+  #title .logo { margin-bottom: 64px; }
+  .status { color: var(--dim); font: 700 14px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; }
+  .copy-row b { flex: 1; min-width: 0; font: 700 18px/1.2 var(--display); overflow: hidden; text-overflow: ellipsis; }
+  .dot { width: 8px; height: 8px; background: #55524c; flex: none; } .dot.on { background: var(--ok); }
+  #app .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
+  #app .items { margin-top: 32px; }
 </style>
 </head>
 <body>
-<canvas id="scene"></canvas>
-<main>
-  <header>
-    <h1 class="wordmark">Sandbox</h1>
-    <p class="tagline">Live multiplayer game builder</p>
-    <p class="lead">Start from nothing. Every player's Claude hot-reloads new rules, weapons and worlds while you play, together or against each other.</p>
-  </header>
-
-  <section id="app-offer" hidden>
-    <p class="meta">Plays better in the desktop app: real fullscreen and right-click.</p>
-    <div class="offer"><button id="app-get" class="btn">Get the app</button><button id="app-later" class="quiet">Not now</button></div>
-    <div id="app-panel" hidden>
-      <h2>Install and open this menu</h2>
-      <div class="row"><code id="app-install" class="grow"></code><button class="quiet" data-copy="app-install">Copy</button></div>
-      <h2>While the repo is private</h2>
-      <div class="row"><code id="app-clone" class="grow"></code><button class="quiet" data-copy="app-clone">Copy</button></div>
-      <p class="note">Mac and Linux. On Windows, run it in WSL.</p>
-      <button id="app-dismiss" class="quiet">Continue in browser</button>
+<div id="backdrop" class="backdrop"></div>
+<main class="front">
+  <section id="title" class="screen" data-nav hidden>
+    <svg class="logo" id="logo"></svg>
+    <p id="waiting" class="status" hidden>Waiting for the host</p>
+    <div class="items">
+      <button class="item" id="go-play">Play<span class="value" id="playing"></span></button>
+      <button class="item" id="go-invite" data-to="invite">Invite</button>
+      <button class="item" id="go-worlds" data-to="worlds">Worlds</button>
+      <button class="item" id="go-create" data-to="create">Create</button>
     </div>
   </section>
 
-  <section id="guest" hidden>
-    <p class="title">No game running</p>
-    <p class="note">The host starts a world from their main menu. This page joins it as soon as it's up.</p>
+  <section id="worlds" class="screen" data-nav hidden>
+    <h1>Worlds</h1>
+    <div class="items" id="world-list"></div>
   </section>
 
-  <nav id="tabs" hidden>
-    <button data-tab="hosting">Hosting</button>
-    <button data-tab="new">New world</button>
-    <button data-tab="saved">Worlds</button>
-  </nav>
+  <section id="world" class="screen" data-nav hidden>
+    <h1 id="world-name"></h1>
+    <div class="items">
+      <button class="item" id="world-play"></button>
+      <button class="item" id="world-rewind" data-to="rewind">Rewind</button>
+      <button class="item" id="world-settings" data-to="configure">Settings</button>
+      <button class="item" id="world-stop">Stop</button>
+      <button class="item danger" id="world-delete">Delete</button>
+    </div>
+  </section>
 
-  <section id="hosting" hidden>
-    <p class="title" id="hosting-name"></p>
-    <p class="meta"><span class="live">Live</span> · friends can join now</p>
-    <div class="actions"><button id="play" class="btn primary">Play</button><button id="stop" class="btn">Stop</button></div>
-    <h2>Invite</h2>
-    <div class="row link"><span>Same Wi-Fi</span><code id="link-lan" class="grow"></code><button class="quiet" data-copy="link-lan">Copy</button></div>
-    <label class="row switch"><input type="checkbox" id="share"><span class="grow">Share over the internet</span><span class="state"></span></label>
-    <div class="row link" id="public" hidden><span>Internet</span><code id="link-public" class="grow"></code><button class="quiet" data-copy="link-public">Copy</button></div>
-    <div id="share-error" class="error"></div>
-    <div class="row"><span class="meta grow">Anyone with an invite link can join and run code on this computer.</span><button id="new-invite" class="quiet">New link</button></div>
-    <h2>Players</h2>
+  <section id="configure" class="screen" data-nav hidden>
+    <h1>Settings</h1>
+    <label class="field"><span>Name</span><input type="text" id="configure-name" maxlength="40" autocomplete="off" spellcheck="false"></label>
+    <div class="field"><span>House rules</span><div class="pick rules" id="configure-rules" data-options="open:Open,additive:Additive"></div></div>
+  </section>
+
+  <section id="create" class="screen" data-nav hidden>
+    <h1>New world</h1>
+    <label class="field"><span>Name</span><input type="text" id="create-name" placeholder="Untitled" maxlength="40" autocomplete="off" spellcheck="false"></label>
+    <div class="field"><span>House rules</span><div class="pick rules" id="create-rules" data-options="open:Open,additive:Additive"></div></div>
+    <div class="field"><span>Start with</span><div class="pick" id="create-start" data-options="blank:Blank,basics:3D field,hills:3D hills"></div></div>
+    <div class="gap"></div>
+    <div class="items"><button class="item" id="create-go">Create</button></div>
+  </section>
+
+  <section id="invite" class="screen" data-nav hidden>
+    <h1>Invite</h1>
+    <div class="copy-row"><span>Wi-Fi</span><code id="link-lan"></code><button data-copy="link-lan">Copy</button><button id="new-invite" title="Old links stop working">New link</button></div>
+    <div class="copy-row" title="Anyone with the link can join and run code on this computer"><span>Internet</span><div class="pick" id="share" data-options="off:Off,on:On"></div></div>
+    <div class="copy-row" id="public" hidden><span>Link</span><code id="link-public"></code><button data-copy="link-public">Copy</button></div>
+    <div class="gap"></div>
     <div id="players"></div>
-    <h2>Rewind</h2>
-    <div class="row"><select id="snapshots" class="grow"></select><button id="rewind" class="quiet">Rewind</button></div>
-    <p class="note">Puts every entity back to how it was then. Mods and their databases stay as they are.</p>
-    <div id="host-error" class="error"></div>
   </section>
 
-  <section id="new" hidden>
-    <form id="new-form">
-      <h2>World name</h2>
-      <input type="text" id="name" placeholder="Untitled world" maxlength="40" autocomplete="off">
-      <h2>Settings</h2>
-      <div class="setting">
-        <div class="row"><span class="label grow">House rules</span><div class="pick">
-          <button type="button" data-step="-1">‹</button>
-          <input type="radio" name="rules" value="open" id="r-open" checked><label for="r-open" data-desc="Anyone's Claude can change or remove any mod.">Open</label>
-          <input type="radio" name="rules" value="additive" id="r-add"><label for="r-add" data-desc="You can only add. Answer an attack with a counter-mod.">Additive</label>
-          <button type="button" data-step="1">›</button>
-        </div></div>
-        <div class="desc"></div>
-      </div>
-      <div class="setting">
-        <div class="row"><span class="label grow">Start with</span><div class="pick">
-          <button type="button" data-step="-1">‹</button>
-          <input type="radio" name="start" value="blank" id="s-blank" checked><label for="s-blank" data-desc="An empty screen. Your Claudes build whatever game you describe: 2D, 3D, cards, text or anything else.">Blank</label>
-          <input type="radio" name="start" value="basics" id="s-field"><label for="s-field" data-desc="A 3D field with ground, sky and walking.">3D field</label>
-          <input type="radio" name="start" value="hills" id="s-hills"><label for="s-hills" data-desc="The 3D hills and trees from this menu, with walking and climbing.">3D hills</label>
-          <button type="button" data-step="1">›</button>
-        </div></div>
-        <div class="desc"></div>
-      </div>
-      <button class="btn primary big" type="submit">Create and host</button>
-      <div id="new-error" class="error"></div>
-    </form>
+  <section id="rewind" class="screen" data-nav hidden>
+    <h1>Rewind</h1>
+    <div class="items" id="snapshots"></div>
   </section>
 
-  <section id="saved" hidden>
-    <div id="worlds"></div>
-    <div id="worlds-error" class="error"></div>
+  <section id="ask" class="screen" data-nav hidden>
+    <h1 id="ask-title"></h1>
+    <div class="items"><button class="item danger" id="ask-yes"></button><button class="item" id="ask-no">Cancel</button></div>
   </section>
+
+  <section id="app" class="screen" data-nav hidden>
+    <h1>Desktop app</h1>
+    <div class="copy-row"><span>Install</span><code id="app-install"></code><button data-copy="app-install">Copy</button></div>
+    <div class="copy-row"><span>Source</span><code id="app-clone"></code><button data-copy="app-clone">Copy</button></div>
+    <p class="note">Mac and Linux. On Windows, in WSL.</p>
+    <div class="items"><button class="item" id="app-dismiss">Not now</button></div>
+  </section>
+
+  <div id="error" class="error"></div>
 </main>
+<div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span id="back-hint"><kbd>Esc</kbd>Back</span></div>
+<div class="corner" id="app-offer" hidden><button class="quiet" id="app-get">Desktop app</button><button class="quiet" id="app-later" title="Not now">✕</button></div>
 <script type="module">
-  import * as THREE from "/vendor/three/build/three.module.js";
-  const canvas = document.getElementById("scene");
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
-  const scene = new THREE.Scene();
-  const sky = new THREE.Color(0xb7cad6);
-  scene.background = sky;
-  scene.fog = new THREE.Fog(sky, 40, 150);
-  scene.add(new THREE.HemisphereLight(0xe8f1ff, 0x4a3b2a, 1.5));
-  const sun = new THREE.DirectionalLight(0xffd29a, 2.2);
-  sun.position.set(-40, 30, -20);
-  scene.add(sun);
-  const size = 90;
-  const blocks = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial(), size * size);
-  const m = new THREE.Matrix4(), c = new THREE.Color();
-  const palette = [0xc9a877, 0x8fa35c, 0x6f8a4a, 0x7d7468, 0xece6da].map((h) => new THREE.Color(h));
-  let i = 0;
-  for (let x = 0; x < size; x++)
-    for (let z = 0; z < size; z++) {
-      const px = x - size / 2, pz = z - size / 2;
-      const h = Math.max(1, Math.round(3 + 3 * Math.sin(px * 0.13) * Math.cos(pz * 0.11) + 2.5 * Math.sin((px + pz) * 0.07) + (Math.hypot(px - 12, pz + 6) < 5 ? 9 - Math.hypot(px - 12, pz + 6) : 0)));
-      m.makeScale(1, h, 1).setPosition(px, h / 2, pz);
-      blocks.setMatrixAt(i, m);
-      blocks.setColorAt(i++, c.copy(palette[Math.min(4, Math.floor(h / 2.6))]));
-    }
-  scene.add(blocks);
-  const trees = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial(), 900);
-  let n = 0;
-  const hash = (x, z) => ((Math.sin(x * 127.1 + z * 311.7) * 43758.5) % 1 + 1) % 1;
-  for (let j = 0; j < size * size && n < 880; j++) {
-    const x = (j % size) - size / 2, z = Math.floor(j / size) - size / 2;
-    blocks.getMatrixAt(j, m);
-    const h = new THREE.Vector3().setFromMatrixScale(m).y;
-    if (h < 3 || h > 7 || hash(x, z) > 0.06) continue;
-    const t = 2 + Math.floor(hash(z, x) * 3);
-    trees.setMatrixAt(n, m.makeScale(0.4, t, 0.4).setPosition(x, h + t / 2, z));
-    trees.setColorAt(n++, c.set(0x5a3f2a));
-    trees.setMatrixAt(n, m.makeScale(2, 2, 2).setPosition(x, h + t + 0.6, z));
-    trees.setColorAt(n++, c.set(hash(x + 1, z) > 0.5 ? 0x3f6b35 : 0x547d3a));
-  }
-  trees.count = n;
-  scene.add(trees);
-  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 400);
-  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  function resize() {
-    const w = innerWidth, h = innerHeight;
-    renderer.setSize(w, h, false);
-    camera.aspect = w / h;
-    camera.setViewOffset(w, h, w > 900 ? -Math.min(280, w * 0.18) : 0, 0, w, h);
-    camera.updateProjectionMatrix();
-  }
-  addEventListener("resize", resize);
-  resize();
-  renderer.setAnimationLoop((t) => {
-    const a = still ? 0.8 : 0.8 + t * 0.00003;
-    camera.position.set(Math.cos(a) * 44, 20, Math.sin(a) * 44);
-    camera.lookAt(Math.cos(a) * 4, 6, Math.sin(a) * 4);
-    renderer.render(scene, camera);
-  });
-</script>
-<script>
+  import { backdrop, logo, pick } from "/front.js";
   const $ = (id) => document.getElementById(id);
+  backdrop($("backdrop"));
+  logo($("logo"));
+
   const hashKey = new URLSearchParams(location.hash.slice(1)).get("key");
   if (hashKey) {
     localStorage.setItem("sandbox-menu", hashKey);
@@ -226,7 +108,7 @@
   }
   const key = localStorage.getItem("sandbox-menu");
   let state = null;
-  let tab = null;
+  let selected = null;
 
   async function api(action, body) {
     const res = await fetch(`/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) });
@@ -235,118 +117,171 @@
     render((state = data));
     return data;
   }
+  const attempt = (work) => work().catch((e) => ($("error").textContent = e.message));
 
+  // ---------- screens: a stack, Esc goes back one ----------
+  const stack = [];
+  const current = () => stack.at(-1);
+  function show(id, { replace = false } = {}) {
+    const from = current();
+    if (from) from.focus = document.activeElement?.closest(".screen") === $(from.id) ? document.activeElement : null;
+    if (replace) stack.pop();
+    stack.push({ id });
+    enter();
+  }
+  function back() {
+    if (stack.length < 2) return;
+    stack.pop();
+    enter();
+  }
+  function enter() {
+    const { id, focus } = current();
+    for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== id;
+    $("error").textContent = "";
+    $("back-hint").hidden = stack.length < 2;
+    const target = focus?.isConnected && !focus.disabled && focus.getClientRects().length ? focus : $(id).querySelector(".item:not([hidden]):not(:disabled), .field input, .pick, .copy-row button");
+    target?.focus();
+  }
+  addEventListener("keydown", (e) => {
+    const typing = document.activeElement?.matches("input[type=text]");
+    if (e.key === "Escape" || (e.key === "Backspace" && !typing)) {
+      e.preventDefault();
+      document.activeElement?.blur();
+      if (current()?.id === "ask") return answer(false);
+      back();
+    }
+    if (e.key === "Enter" && typing) {
+      e.preventDefault();
+      document.activeElement.blur();
+      if (current()?.id === "create") $("create-go").focus();
+    }
+  });
+  for (const b of document.querySelectorAll("[data-to]")) b.onclick = () => show(b.dataset.to);
+
+  /** A yes-or-no question as its own screen. */
+  let answer = () => {};
+  function ask(title, yes) {
+    $("ask-title").textContent = title;
+    $("ask-yes").textContent = yes;
+    show("ask");
+    return new Promise((resolve) => {
+      answer = (ok) => {
+        answer = () => {};
+        back();
+        resolve(ok);
+      };
+    });
+  }
+  $("ask-yes").onclick = () => answer(true);
+  $("ask-no").onclick = () => answer(false);
+
+  // ---------- state ----------
   const ago = (ms) => {
     const m = Math.round((Date.now() - ms) / 60000);
     return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
   };
-  const el = (tag, props) => Object.assign(document.createElement(tag), props);
-
-  function show(next) {
-    tab = next;
-    for (const b of document.querySelectorAll("#tabs button")) b.setAttribute("aria-selected", b.dataset.tab === tab);
-    for (const id of ["hosting", "new", "saved"]) $(id).hidden = id !== tab;
+  const el = (tag, props, ...children) => {
+    const node = Object.assign(document.createElement(tag), props);
+    node.append(...children);
+    return node;
+  };
+  /** Rebuilds a list without losing the control the player is on. */
+  function rebuild(list, children) {
+    const focused = list.contains(document.activeElement) ? document.activeElement.dataset.key : null;
+    list.replaceChildren(...children);
+    if (focused) list.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();
   }
-  for (const b of document.querySelectorAll("#tabs button")) b.onclick = () => show(b.dataset.tab);
 
   function render(s) {
     const r = s.running;
-    $("tabs").hidden = false;
-    document.querySelector("[data-tab=hosting]").hidden = !r;
-    document.querySelector("[data-tab=saved]").hidden = !s.worlds.length;
-    if (!tab || (tab === "hosting" && !r) || (tab === "saved" && !s.worlds.length)) show(r ? "hosting" : s.worlds.length ? "saved" : "new");
+    $("go-play").hidden = $("go-invite").hidden = !r;
+    $("go-worlds").hidden = !s.worlds.length;
+    $("playing").textContent = r?.name ?? "";
+    rebuild($("world-list"), s.worlds.map((w) => {
+      const b = el("button", { className: "item", textContent: w.name }, el("span", { className: r?.id === w.id ? "value live" : "value", textContent: r?.id === w.id ? "Live" : ago(w.played) }));
+      b.dataset.key = w.id;
+      b.onclick = () => {
+        selected = w.id;
+        renderWorld();
+        show("world");
+      };
+      return b;
+    }));
+    if (selected) renderWorld();
     if (r) {
-      $("hosting-name").textContent = r.name;
       $("link-lan").textContent = `${s.lan ?? location.origin}/#invite=${r.invite}`;
-      $("share").checked = !!s.tunnel;
-      if (s.tunnelError) $("share-error").textContent = s.tunnelError;
+      $("share").set(s.tunnel ? "on" : "off");
+      if (s.tunnelError) $("error").textContent = s.tunnelError;
       $("public").hidden = !s.tunnel;
-      $("link-public").textContent = s.tunnel?.url ? `${s.tunnel.url}/#invite=${r.invite}` : "Opening a tunnel…";
-      $("players").replaceChildren(...(r.players.length ? r.players.map((p) => {
-        const row = el("div", { className: "row" });
-        const remove = el("button", { className: "danger", textContent: "Remove" });
-        const link = el("button", { className: "quiet", textContent: "Copy link", title: "Their personal link, to get back in as themselves on a new address" });
+      $("link-public").textContent = s.tunnel?.url ? `${s.tunnel.url}/#invite=${r.invite}` : "Opening…";
+      rebuild($("players"), r.players.map((p) => {
+        const link = el("button", { textContent: "Copy link", title: "Their own link back in, from any address" });
+        link.dataset.key = `link-${p.name}`;
         link.onclick = async () => {
           await navigator.clipboard.writeText(`${s.tunnel?.url ?? s.lan ?? location.origin}/#key=${p.key}`);
           link.textContent = "Copied";
         };
-        remove.onclick = () => confirm(`Remove ${p.name}? Their game and their Claude lose access. Make a new invite link too if they shouldn't rejoin.`) && hostAction("remove", { name: p.name });
-        row.append(el("span", { className: p.online ? "dot on" : "dot" }), el("span", { className: "grow", textContent: p.name }), link, remove);
-        return row;
-      }) : [el("p", { className: "note", textContent: "Nobody has joined yet." })]));
-      const picked = $("snapshots").value;
-      $("snapshots").replaceChildren(...r.snapshots.map((at) => el("option", { value: at, textContent: `${new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (${ago(at)})` })));
-      if (picked) $("snapshots").value = picked;
-      $("rewind").disabled = !r.snapshots.length;
+        const remove = el("button", { className: "danger", textContent: "Remove" });
+        remove.dataset.key = `remove-${p.name}`;
+        remove.onclick = async () => (await ask(`Remove ${p.name}?`, "Remove")) && attempt(() => api("remove", { name: p.name }));
+        return el("div", { className: "copy-row" }, el("i", { className: p.online ? "dot on" : "dot" }), el("b", { textContent: p.name }), link, remove);
+      }));
+      rebuild($("snapshots"), r.snapshots.map((at) => {
+        const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const b = el("button", { className: "item", textContent: time }, el("span", { className: "value", textContent: ago(at) }));
+        b.dataset.key = String(at);
+        b.onclick = async () => (await ask(`Back to ${time}?`, "Rewind")) && attempt(() => api("rewind", { at }));
+        return b;
+      }));
     }
-    $("worlds").replaceChildren(...s.worlds.map((w) => {
-      const row = el("div", { className: "row world" });
-      const isLive = r?.id === w.id;
-      const mods = w.mods === 1 ? "1 mod" : `${w.mods} mods`;
-      const players = w.players === 1 ? "1 player" : `${w.players} players`;
-      const info = el("div", { className: "grow" });
-      const meta = el("div", { className: "meta", textContent: `${w.rules} · ${mods} · ${players}${isLive ? "" : ` · played ${ago(w.played)}`}` });
-      if (isLive) meta.prepend(el("span", { className: "live", textContent: "Live · " }));
-      info.append(el("b", { textContent: w.name }), meta);
-      const del = el("button", { className: "danger", textContent: "Delete", disabled: isLive, title: isLive ? "Stop it first" : "" });
-      del.onclick = () => confirm(`Delete ${w.name} forever? Its mods, database and history are removed.`) && api("delete", { id: w.id }).catch((e) => ($("worlds-error").textContent = e.message));
-      const play = el("button", { className: isLive ? "btn" : "btn primary", textContent: isLive ? "Play" : "Host" });
-      play.onclick = () => hostWorld(w.id);
-      row.append(info, del, play);
-      return row;
-    }));
+    if (!stack.length) show("title");
+    else if (!$(current().id).querySelector(":focus")) enter();
   }
 
-  async function hostWorld(id) {
-    if (state.running && state.running.id !== id && !confirm(`Stop ${state.running.name} for everyone playing it?`)) return;
-    try {
-      const s = await api("host", { id });
-      play(s);
-    } catch (e) {
-      $("worlds-error").textContent = e.message;
+  function renderWorld() {
+    const w = state.worlds.find((x) => x.id === selected);
+    if (!w) {
+      selected = null;
+      while (stack.length > 1 && ["world", "configure", "rewind"].includes(current().id)) stack.pop();
+      return enter();
     }
+    const live = state.running?.id === w.id;
+    $("world-name").textContent = w.name;
+    $("world-play").textContent = live ? "Play" : "Host";
+    $("world-rewind").hidden = !live || !state.running.snapshots.length;
+    $("world-stop").hidden = !live;
+    $("world-settings").hidden = $("world-delete").hidden = live;
+    if (document.activeElement !== $("configure-name")) $("configure-name").value = w.name;
+    $("configure-rules").set(w.rules);
   }
+
   const play = (s) => location.assign(`/#invite=${s.running.hostKey}`);
-
-  for (const pick of document.querySelectorAll(".pick")) {
-    const radios = [...pick.querySelectorAll("input")];
-    const desc = pick.closest(".setting").querySelector(".desc");
-    const sync = () => (desc.textContent = pick.querySelector("input:checked + label").dataset.desc);
-    for (const b of pick.querySelectorAll("button"))
-      b.onclick = () => {
-        const at = radios.findIndex((r) => r.checked);
-        radios[(at + Number(b.dataset.step) + radios.length) % radios.length].checked = true;
-        sync();
-      };
-    sync();
+  async function hostWorld(id) {
+    if (state.running && state.running.id !== id && !(await ask(`Stop ${state.running.name}?`, "Stop and host"))) return;
+    await attempt(async () => play(await api("host", { id })));
   }
+  $("go-play").onclick = () => play(state);
+  $("world-play").onclick = () => hostWorld(selected);
+  $("world-stop").onclick = async () => (await ask(`Stop ${state.running.name}?`, "Stop")) && attempt(() => api("stop", {}));
+  $("world-delete").onclick = async () => {
+    const w = state.worlds.find((x) => x.id === selected);
+    if (await ask(`Delete ${w.name}?`, "Delete")) await attempt(() => api("delete", { id: w.id }));
+  };
+  const configure = () => attempt(() => api("configure", { id: selected, name: $("configure-name").value, rules: $("configure-rules").dataset.value }));
+  pick($("configure-rules"), configure);
+  $("configure-name").onchange = configure;
 
-  const hostAction = (action, body) => api(action, body).catch((e) => ($("host-error").textContent = e.message));
-  $("new-invite").onclick = () => confirm("Make a new invite link? Old links stop working; people who already joined stay in.") && hostAction("invite", {});
-  $("rewind").onclick = () => {
-    const at = Number($("snapshots").value);
-    if (confirm(`Put the whole world back to ${new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} for everyone?`)) hostAction("rewind", { at });
+  const rulesTip = "Open: any Claude can change any mod. Additive: Claudes only add, and answer an attack with a counter-mod.";
+  for (const p of document.querySelectorAll(".pick.rules")) p.closest(".field").title = rulesTip;
+  pick($("create-rules"));
+  pick($("create-start"));
+  $("create-go").onclick = async () => {
+    if (state.running && !(await ask(`Stop ${state.running.name}?`, "Stop and create"))) return;
+    await attempt(async () => play(await api("create", { name: $("create-name").value, rules: $("create-rules").dataset.value, start: $("create-start").dataset.value })));
   };
-  $("play").onclick = () => play(state);
-  $("stop").onclick = () => confirm(`Stop ${state.running.name}? Everyone playing is sent back to the menu.`) && api("stop", {});
-  $("share").onchange = (e) => {
-    $("share-error").textContent = "";
-    api("share", { on: e.target.checked }).catch((err) => {
-      e.target.checked = false;
-      $("share-error").textContent = err.message;
-    });
-  };
-  $("name").onkeydown = (e) => e.key === "Enter" && (e.preventDefault(), e.target.blur());
-  $("new-form").onsubmit = async (e) => {
-    e.preventDefault();
-    if (state.running && !confirm(`Stop ${state.running.name} for everyone playing it?`)) return;
-    const form = new FormData(e.target);
-    try {
-      play(await api("create", { name: $("name").value, rules: form.get("rules"), start: form.get("start") }));
-    } catch (err) {
-      $("new-error").textContent = err.message;
-    }
-  };
+
+  $("new-invite").onclick = async () => (await ask("Make a new invite link?", "New link")) && attempt(() => api("invite", {}));
+  pick($("share"), (on) => attempt(() => api("share", { on: on === "on" })).then(() => state && $("share").set(state.tunnel ? "on" : "off")));
   for (const button of document.querySelectorAll("[data-copy]"))
     button.onclick = async () => {
       await navigator.clipboard.writeText($(button.dataset.copy).textContent);
@@ -354,6 +289,7 @@
       setTimeout(() => (button.textContent = "Copy"), 1500);
     };
 
+  /** The desktop app, offered quietly in the corner to browsers on computers until dismissed. The app marks its user agent with SandboxDesktop. */
   function offerApp(link) {
     const dismissed = "sandbox-app-offer";
     try {
@@ -363,9 +299,10 @@
     $("app-install").textContent = `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '${link}'`;
     $("app-clone").textContent = `git clone https://github.com/theolundqvist/sandbox && cd sandbox && bun desktop '${link}'`;
     $("app-offer").hidden = false;
-    $("app-get").onclick = () => ($("app-later").hidden = !($("app-panel").hidden = !$("app-panel").hidden));
+    $("app-get").onclick = () => current()?.id !== "app" && show("app");
     $("app-later").onclick = $("app-dismiss").onclick = () => {
       $("app-offer").hidden = true;
+      if (current()?.id === "app") back();
       try {
         localStorage.setItem(dismissed, "1");
       } catch {}
@@ -373,11 +310,13 @@
   }
 
   if (!key) {
-    $("guest").hidden = false;
+    for (const b of $("title").querySelectorAll(".item")) b.hidden = true;
+    $("waiting").hidden = false;
+    show("title");
     setInterval(async () => (await fetch("/api/info")).ok && location.assign("/"), 2000);
   } else {
     offerApp(`${location.origin}/menu#key=${key}`);
-    api("state").catch((e) => {
+    api("state").catch(() => {
       localStorage.removeItem("sandbox-menu");
       location.reload();
     });

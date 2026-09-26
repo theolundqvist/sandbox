@@ -1,0 +1,72 @@
+/* The front end shared by the main menu, the join screen and the in-game menu: big type, one amber block for focus, flat panels. */
+:root { --text: #f3f1ec; --dim: #8f8c86; --faint: rgba(243,241,236,.5); --line: rgba(255,255,255,.12); --accent: #ffb547; --ok: #7fe0a0; --err: #ff6b5b; --shade: rgba(7,8,10,.58); --pane: rgba(9,10,12,.9); --display: "SF Pro Display", "Segoe UI", Inter, "Helvetica Neue", Arial, system-ui, sans-serif; }
+
+.backdrop { position: fixed; inset: 0; background: #101113 center / cover no-repeat; overflow: hidden; }
+.backdrop video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 1.2s ease; }
+.backdrop video.on { opacity: 1; }
+.backdrop::after { content: ""; position: absolute; inset: 0; background: var(--shade); }
+
+.logo { display: block; height: 72px; width: auto; aspect-ratio: 41 / 5; align-self: flex-start; }
+.logo rect { fill: var(--text); }
+.logo rect.block { fill: var(--accent); }
+
+.front { position: fixed; inset: 0; display: flex; flex-direction: column; padding: 96px 96px 72px; overflow-y: auto; }
+.screen { display: flex; flex-direction: column; width: min(640px, 100%); }
+.screen > h1, .screen-title { margin: 0 0 40px; font: 800 64px/1 var(--display); letter-spacing: .02em; text-transform: uppercase; overflow-wrap: anywhere; }
+
+.items { display: flex; flex-direction: column; align-items: flex-start; }
+.item { position: relative; display: flex; align-items: baseline; gap: 20px; width: 100%; margin: 0; padding: 8px 0 8px 32px; background: none; border: 0; border-radius: 0; color: var(--faint); font: 800 34px/1.1 var(--display); letter-spacing: .03em; text-transform: uppercase; text-align: left; cursor: pointer; outline: none; white-space: nowrap; }
+.item::before { content: ""; position: absolute; left: 0; top: 50%; width: 14px; height: 14px; translate: 0 -50%; background: var(--accent); scale: 0; transition: scale .12s ease-out; }
+.item:hover, .item:focus-visible, .item:focus, .item.active { color: var(--text); background: none; }
+.item:focus::before, .item:hover::before, .item.active::before { scale: 1; }
+.item:disabled { opacity: .3; pointer-events: none; }
+.item .value { color: var(--dim); font-size: 16px; font-weight: 700; letter-spacing: .12em; overflow: hidden; text-overflow: ellipsis; }
+.item .value.live { color: var(--ok); }
+.item.small { font-size: 22px; padding-top: 6px; padding-bottom: 6px; }
+.item.danger:hover, .item.danger:focus { color: var(--err); }
+.gap { height: 24px; flex: none; }
+
+/* A setting: its name on the left, its value on the right, changed with the arrows. */
+.field { display: flex; align-items: center; gap: 24px; width: 100%; min-height: 64px; padding: 0 0 0 32px; position: relative; border-bottom: 1px solid var(--line); }
+.field::before { content: ""; position: absolute; left: 0; top: 50%; width: 14px; height: 14px; translate: 0 -50%; background: var(--accent); scale: 0; transition: scale .12s ease-out; }
+.field:focus-within::before { scale: 1; }
+.field > span:first-child { flex: 1; min-width: 0; font: 700 20px/1.2 var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.field:focus-within > span:first-child { color: var(--text); }
+.field input[type=text] { width: 60%; background: none; border: 0; border-radius: 0; color: var(--text); font: 700 24px/1.2 var(--display); padding: 12px 0; text-align: right; outline: none; }
+.field input[type=text]::placeholder { color: rgba(255,255,255,.3); }
+.pick { display: flex; align-items: center; gap: 4px; outline: none; font: 800 18px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; }
+.pick output { min-width: 140px; text-align: center; }
+.pick i { font-style: normal; color: var(--dim); padding: 8px 10px; cursor: pointer; user-select: none; }
+.pick i:hover { color: var(--accent); }
+.pick[aria-disabled=true] { opacity: .35; pointer-events: none; }
+
+.copy-row { display: flex; align-items: center; gap: 16px; width: 100%; min-height: 56px; border-bottom: 1px solid var(--line); }
+.copy-row > span { width: 110px; flex: none; color: var(--dim); font: 700 12px/1.2 var(--display); letter-spacing: .14em; text-transform: uppercase; }
+.copy-row code { flex: 1; min-width: 0; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d9d6cf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.copy-row .pick { margin-left: auto; font-size: 14px; }
+.copy-row .pick output { min-width: 96px; }
+.copy-row button, .quiet { flex: none; background: none; border: 0; padding: 10px 4px; color: var(--dim); font: 700 12px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; cursor: pointer; outline: none; }
+.copy-row button:hover, .copy-row button:focus, .quiet:hover, .quiet:focus { color: var(--text); background: none; }
+.copy-row button.danger:hover, .copy-row button.danger:focus { color: var(--err); }
+
+.error { color: var(--err); min-height: 1.4em; margin-top: 16px; font: 600 14px/1.4 var(--display); }
+.hints { position: fixed; left: 96px; bottom: 36px; display: flex; gap: 28px; color: var(--dim); font: 700 12px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; pointer-events: none; }
+.hints kbd { font: inherit; display: inline-block; min-width: 24px; text-align: center; border: 1px solid rgba(255,255,255,.35); padding: 4px 6px; margin-right: 8px; color: var(--text); }
+.corner { position: fixed; right: 72px; bottom: 28px; display: flex; gap: 4px; align-items: center; }
+
+@media (pointer: coarse) { .hints { display: none; } }
+@media (max-width: 760px) {
+  .front { padding: 56px 16px 48px; }
+  .logo { height: 44px; }
+  .screen > h1, .screen-title { font-size: 40px; margin-bottom: 28px; }
+  .item { font-size: 26px; padding-left: 26px; }
+  .item .value { font-size: 12px; }
+  .field { padding-left: 26px; gap: 12px; }
+  .field > span:first-child { font-size: 15px; }
+  .field input[type=text] { font-size: 18px; }
+  .pick output { min-width: 96px; font-size: 14px; }
+  .copy-row > span { width: 72px; }
+  .hints { display: none; }
+  .corner { right: 16px; bottom: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { .backdrop video { display: none; } }
