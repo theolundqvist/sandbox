@@ -890,7 +890,7 @@ const picker = mountPicker(uiRoot, {
     const art = gameList.find((g) => g.id === id)?.art;
     const m = art ? mods.get(art) : undefined;
     const paint = m?.mod.paintCard;
-    return m && paint ? (canvas, t) => void guarded(m, "paintCard", () => paint.call(m.mod, canvas, t)) : null;
+    return m && paint ? (canvas, t) => void guarded(m, "paintCard", () => paint.call(m.mod, canvas, t, id)) : null;
   },
 });
 function openPicker() {

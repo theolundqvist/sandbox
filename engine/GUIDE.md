@@ -108,7 +108,7 @@ A mod joins a game with `game: "<id>"` on the default export of its `server.ts` 
 - `player.game` is the game a player is in (`null` in the hub), `world.enter(player, "primal")` moves one there (`null` back to the hub), and `world.playersInGame()` gives the players in your mod's game. On the client, `ctx.game` is the local player's game. Players come back to where they left a game, or to its `spawn`.
 - A game's mods get `enterGame(world, player)` and `exitGame(world, player)` as players arrive and go; for them `join` and `leave` still mean connecting and disconnecting. Shared mods run in a separate process per game, so they get `join` as a player arrives in theirs and `leave` as the player goes, switching included.
 - `query_world` and `walk_test` look at the game your player is in; pass `game` for another one, or `game=` (empty) for the hub. Timelapse and rewind cover only the hub, not the games.
-- `art: "primal-art"` names a client mod whose default export has `paintCard(canvas, t)`, which paints the card (`t` in seconds, for animation). Leave the art mod shared, since every player's picker shows every card; without one the card is painted from `color` and `accent`.
+- `art: "primal-art"` names a client mod whose default export has `paintCard(canvas, t, game)`, which paints the card (`t` in seconds, for animation; `game` is the card's id, so one art mod can paint several games). Leave the art mod shared, since every player's picker shows every card; without one the card is painted from `color` and `accent`.
 - Games cannot reach each other's mods: `world.use` finds only shared mods and your own game's. Data that crosses games, like a wallet, goes in a shared mod's `world.db`.
 
 ```ts

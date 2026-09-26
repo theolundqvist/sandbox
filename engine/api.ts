@@ -18,7 +18,7 @@ export type Game = {
   /** Picker order, then title. */
   order?: number;
   spawn?: [number, number, number];
-  /** A client mod whose default export has paintCard(canvas, t). */
+  /** A client mod whose default export has paintCard(canvas, t, game). */
   art?: string;
   createdBy: string;
   createdAt: number;
@@ -214,8 +214,8 @@ export interface ClientMod extends ClientHooks {
   /** As ServerMod's game. */
   game?: string;
   order?: number;
-  /** Paints a game's card in the games picker, for the game whose `art` names this mod; t is seconds since the card showed. */
-  paintCard?(canvas: HTMLCanvasElement, t: number): void;
+  /** Paints a game's card in the games picker, for each game whose `art` names this mod, so one art mod can paint several; t is seconds since the card showed. */
+  paintCard?(canvas: HTMLCanvasElement, t: number, game: string): void;
   wrap?: Record<string, ClientWrapped>;
   /** Called as ctx.use("<this mod>").fn(...args); they receive (ctx, ...args). */
   exports?: Record<string, (ctx: ClientCtx, ...args: any[]) => any>;
