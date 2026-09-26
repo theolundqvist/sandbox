@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { basename, join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { frontFile } from "./front";
-import { createMcp, GAME_MASTER, type Task } from "./mcp";
+import { createMcp, type Task } from "./mcp";
 import { ENGINE_KEYS, hasGit, Mods } from "./mods";
 import { latencies, openRecord, route } from "./record";
 import { SimHost } from "./simhost";
@@ -158,11 +158,6 @@ function setTask(name: string, task: Task) {
 
 /** What each mod is, from the last banner its builder gave it. */
 const about = readJson<Record<string, { title: string; text: string; color: string }>>("about.json", {});
-if (!Object.values(keys).includes(GAME_MASTER)) {
-  keys[token() + token()] = GAME_MASTER;
-  writeJson("keys.json", keys);
-}
-const gameMasterKey = Object.keys(keys).find((k) => keys[k] === GAME_MASTER)!;
 setInterval(() => {
   for (const [name, c] of claudes) if (c.state === "working" && Date.now() - c.at > 120_000) presence(name, "offline");
 }, 15_000);
@@ -441,7 +436,7 @@ const server = Bun.serve<Conn>({
       const body = req.method === "POST" ? await req.json() : {};
       switch (path.slice("/api/host/".length)) {
         case "players":
-          return Response.json([...new Set(Object.values(keys))].filter((name) => name !== GAME_MASTER).map((name) => ({ name, online: sockets.has(name), key: Object.keys(keys).find((k) => keys[k] === name) })));
+          return Response.json([...new Set(Object.values(keys))].map((name) => ({ name, online: sockets.has(name), key: Object.keys(keys).find((k) => keys[k] === name) })));
         case "remove": {
           for (const [key, name] of Object.entries(keys)) if (name === body.name) delete keys[key];
           writeJson("keys.json", keys);
@@ -500,7 +495,7 @@ const server = Bun.serve<Conn>({
         return Response.json({ error: "The timelapse couldn't be built." }, { status: 500 });
       }
     }
-    if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json({ ...status(), gameMaster: { key: gameMasterKey, ...builder(GAME_MASTER) } }) : new Response(null, { status: 401 });
+    if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json(status()) : new Response(null, { status: 401 });
     if (path === "/api/voice" && req.method === "POST") {
       const who = nameByKey(bearer(req));
       if (!who) return new Response(null, { status: 401 });

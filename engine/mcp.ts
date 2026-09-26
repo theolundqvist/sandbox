@@ -5,10 +5,8 @@ import { hasGit, type Mods } from "./mods";
 import { brief, type Recorder } from "./record";
 import type { SimHost } from "./simhost";
 
-/** The shared Claude that runs events, challenges and bosses for the whole world. */
-export const GAME_MASTER = "gamemaster";
 export type Task = { title: string; status: string; percent?: number; state: "working" | "done" | "blocked"; at: number };
-const speaker = (who: string) => (who === GAME_MASTER ? "Game master" : `${who}'s Claude`);
+const speaker = (who: string) => `${who}'s Claude`;
 
 export type McpContext = {
   root: string;
@@ -41,7 +39,7 @@ const hash = (text: string) => new Bun.CryptoHasher("sha256").update(text).diges
 const tools = [
   {
     name: "status",
-    description: "World name, rules, who is online, running mods with authors and versions, and recent activity. Start here.",
+    description: "World name, rules, who is online, running mods with authors, versions and who uses them, which mods hold each key and menu tab, and recent activity. Start here, and check it again before building anything that touches a system that exists.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -97,7 +95,7 @@ const tools = [
   {
     name: "reload",
     description:
-      "Put a mod live for every player without disconnecting anyone: typechecks it, builds it, test-runs it against a copy of the live world, then hot-swaps server and client code. If any step fails nothing changes and you get the error. Pass announce to introduce what changed to every player with an on-screen banner; new mods get a banner with their name if you leave it out, updates without it only show in the feed.",
+      "Put a mod live for every player without disconnecting anyone: typechecks it, builds it, test-runs it against a copy of the live world, then hot-swaps server and client code. If any step fails nothing changes and you get the error. Each mod goes live at most once every 20 s, so batch edits into one reload and read logs rather than reloading to look. Pass announce only for a new thing to play, once it works; fixes and tweaks go without it and show in the feed. New mods get a banner with their name if you leave it out.",
     inputSchema: {
       type: "object",
       properties: {
@@ -122,7 +120,7 @@ const tools = [
   },
   {
     name: "logs",
-    description: "Recent console output and errors from server mods and from every player's game (their client mods' console.log/warn/error and crashes). Filter by mod, or by player to see one game, e.g. your own player's.",
+    description: "Recent console output and errors from server mods and from every player's game (their client mods' console.log/warn/error and crashes). Filter by mod, or by player to see one game, e.g. your own player's. Check it after every reload, before you say anything works.",
     inputSchema: { type: "object", properties: { mod: { type: "string" }, player: { type: "string" }, limit: { type: "number" } } },
   },
   {
@@ -192,7 +190,7 @@ const tools = [
   },
   {
     name: "screenshot",
-    description: "See exactly what your player sees right now: the scene, mod layers and HTML overlays (they must have the game open). Use it to check your visuals and UI.",
+    description: "See exactly what your player sees right now: the scene, mod layers and HTML overlays (they must have the game open). Look before you say something is there.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -204,7 +202,7 @@ const tools = [
   {
     name: "wait_for_chat",
     description:
-      "Wait until your player says something in the in-game chat, or someone mentions your player's name, or another Claude's message to claudes names your player, claudes or everyone, then return all chat since your last call. Call it whenever you have nothing else to do: players ask their Claudes for things in chat. New chat is also appended to every other tool result.",
+      "Wait until your player says something in the in-game chat, or someone mentions your player's name, or another Claude's message to claudes names your player, claudes or everyone, then return all chat since your last call. Call it whenever you have nothing else to do, for the whole session: players ask their Claudes for things in chat. New chat is also appended to every other tool result.",
     inputSchema: { type: "object", properties: { seconds: { type: "number", description: "How long to wait, default 60, max 240." } } },
   },
   {
@@ -225,7 +223,7 @@ const tools = [
   {
     name: "say",
     description:
-      "Post a short message (at most 400 characters) in the in-game chat, shown as your player's Claude: what you just built, or an answer to someone. To coordinate with other Claudes (API contracts, hashes, who builds what), pass to: \"claudes\" instead, with no length limit: players don't see it in chat, other Claudes get it with their chat and it wakes their wait_for_chat when it names their player, claudes or everyone.",
+      "Post a short message (at most 400 characters) in the in-game chat, shown as your player's Claude: one or two lines on what is there now that you have seen it work, or an answer to someone. To coordinate with other Claudes (who owns what, the exact export you need, who builds what), pass to: \"claudes\" instead, with no length limit: players don't see it in chat, other Claudes get it with their chat and it wakes their wait_for_chat when it names their player, claudes or everyone.",
     inputSchema: {
       type: "object",
       properties: { text: { type: "string" }, to: { type: "string", enum: ["claudes"], description: "claudes: only other Claudes read it (and players who open the Builders tab)." } },
@@ -234,10 +232,11 @@ const tools = [
   },
 ];
 
-export const instructions = `This is a live multiplayer game that the players build together while playing. Every player's Claude edits the same shared file tree on the game server.
-Workflow: call status, read GUIDE.md and api.ts, then write or edit files under mods/<your-mod>/ and call reload to put them live for everyone. Nothing you write affects the game until reload succeeds.
-Other Claudes are editing at the same time: always re-read a file right before changing it, and keep each feature in its own mod folder.
-Mods can hide entities per player, send one-off events, call each other's exports, fetch any HTTP or MCP API asynchronously, load models or sounds added with add_asset, and import npm packages added with add_package. Use screenshot to see what your player sees, and wait_for_chat between builds to hear what players want; GUIDE.md shows how.`;
+export const instructions = `This is a live multiplayer game that the players build together while playing. Every player's Claude edits the same shared file tree on the game server, and anything you reload goes live for everyone at once.
+Workflow: call status, read GUIDE.md and the mods that touch what you are about to build, then write or edit files under mods/<your-mod>/ and call reload. Nothing is live until reload succeeds, and each mod goes live at most once every 20 s, so batch your edits.
+One game, not a pile of mods: every shared system (movement, ground and sky, lighting, economy, shop, inventory, progression, map, HUD, each key) has one owner mod. Extend it through its exports or wrap, or ask its owner with say to "claudes"; never build a second one. Hook new things into what players already earn, press and see.
+Before you tell anyone something works, see it work: logs for your player stay clean, screenshot shows it, the input reaches the server. Then one line of say. announce only a new thing to play, once it works.
+Other Claudes edit at the same time: re-read a file right before changing it. Between builds call wait_for_chat; players ask for things in the in-game chat, which is also appended to every tool result.`;
 
 class ToolError extends Error {}
 
@@ -470,10 +469,10 @@ export function createMcp(ctx: McpContext) {
       }
       case "wait_for_chat": {
         const until = Date.now() + Math.min(Number(args.seconds) || 60, 240) * 1000;
-        const called = who === GAME_MASTER ? /\b(gm|game ?master)\b/i : { test: (text: string) => text.toLowerCase().includes(who) };
-        const forMe = () => unseenChat(who).some((c) => c.from === who || called.test(c.text) || (c.claudes && /\b(claudes|everyone)\b/i.test(c.text)));
+        const called = (text: string) => text.toLowerCase().includes(who);
+        const forMe = () => unseenChat(who).some((c) => c.from === who || called(c.text) || (c.claudes && /\b(claudes|everyone)\b/i.test(c.text)));
         while (!forMe() && Date.now() < until) await Promise.race([ctx.nextChat(), Bun.sleep(until - Date.now())]);
-        return forMe() ? "New chat:" : who === GAME_MASTER ? "Nobody called for the game master. Check how play feels and tune one small thing if it needs it." : `Nothing for you from ${who} yet.`;
+        return forMe() ? "New chat:" : `Nothing for you from ${who} yet.`;
       }
       case "say": {
         if (args.to !== undefined && args.to !== "claudes") throw new ToolError(`to can only be "claudes"; leave it out to talk in the players' chat.`);
