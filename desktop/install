@@ -8,6 +8,13 @@ bin="$HOME/.local/bin"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# When the app updates itself it runs this and waits for the download, then quits on this line.
+handoff() {
+  [ -n "${SANDBOX_APP_PID:-}" ] || return 0
+  echo "Quit Sandbox to continue."
+  while kill -0 "$SANDBOX_APP_PID" 2>/dev/null; do sleep 0.5; done
+}
+
 fetch() {
   echo "Downloading $1"
   curl -fL --progress-bar -o "$tmp/$1" "$release/$1"
@@ -21,6 +28,7 @@ case "$(uname -s)" in
     ditto -x -k "$tmp/Sandbox-mac-$arch.zip" "$tmp"
     # Unsigned: a download from curl carries no quarantine, but strip it in case, so Gatekeeper doesn't block the first launch.
     xattr -dr com.apple.quarantine "$tmp/Sandbox.app" 2>/dev/null || true
+    handoff
     apps=/Applications
     [ -w "$apps" ] || apps="$HOME/Applications"
     mkdir -p "$apps"
@@ -39,6 +47,7 @@ case "$(uname -s)" in
     chmod +x "$tmp/Sandbox-linux-x86_64.AppImage"
     (cd "$tmp" && ./Sandbox-linux-x86_64.AppImage --appimage-extract >/dev/null)
     app="$HOME/.local/share/sandbox"
+    handoff
     if pgrep -f "$app/sandbox" >/dev/null; then
       echo "Quit Sandbox to continue."
       while pgrep -f "$app/sandbox" >/dev/null; do sleep 0.5; done

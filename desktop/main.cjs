@@ -1,7 +1,7 @@
 // A thin shell around the web client: one window, a trusted launch screen and title bar, and the game in a view with no extra powers.
 const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, session } = require("electron");
 const { spawn } = require("node:child_process");
-const { existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } = require("node:fs");
+const { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } = require("node:fs");
 const { createServer } = require("node:net");
 const { join, normalize } = require("node:path");
 const { pathToFileURL } = require("node:url");
@@ -9,6 +9,8 @@ const { pathToFileURL } = require("node:url");
 const mac = process.platform === "darwin";
 const BAR = 36;
 const RELAY = process.env.SANDBOX_RELAY ?? "https://sandbox-relay.lundqvistliss.com";
+const RELEASES = process.env.SANDBOX_UPDATES ?? "https://api.github.com/repos/theolundqvist/sandbox/releases/latest";
+const INSTALLER = process.env.SANDBOX_INSTALLER ?? "https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install";
 const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"]);
 
 /** An invite or personal link passed on the command line, e.g. `sandbox http://host:7777/#invite=…`. */
@@ -37,7 +39,7 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
 const STATE = join(app.getPath("userData"), "state.json");
-/** @type {{ fullscreen?: boolean, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], port?: number }} Joined games by shareable address; main menus opened, by host key; the port this app hosts on. */
+/** @type {{ fullscreen?: boolean, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], port?: number, reopen?: { hosting: boolean, url: string | null } }} Joined games by shareable address; main menus opened, by host key; the port this app hosts on; what to bring back after an update restarts the app. */
 const state = { recents: [], hosts: {}, mic: [] };
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
@@ -199,6 +201,15 @@ async function hostGame(target) {
   return play(`${share}/menu#key=${key}&${target === "new" ? "screen=create" : `world=${target}`}`);
 }
 
+/** Starts this app's server again after a restart: the launcher brings back the world it hosted and shares it again, under the same code. */
+async function resumeHosting() {
+  const { base, key } = await startServer();
+  for (const until = Date.now() + 10000; Date.now() < until; await new Promise((r) => setTimeout(r, 250))) {
+    const s = await ask(`${base}/api/menu/state`, key).then((r) => r.json(), () => null);
+    if (s?.running && (!s.tunnel || s.tunnel.code)) return;
+  }
+}
+
 async function stopServer() {
   const current = server;
   if (!current) return;
@@ -214,9 +225,10 @@ async function guests() {
   if (!server) return null;
   const s = await ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null);
   if (!s?.running) return null;
-  const online = s.running.players.filter((p) => p.online).length;
   const here = game && [server.base, s.tunnel?.url].includes(worldBase(new URL(game.view.webContents.getURL() || "about:blank")));
-  return { name: s.running.name, count: online - (here ? 1 : 0) };
+  // The host's own player, when they have joined the game open here; the game keeps its key in the page.
+  const me = here && (await game.view.webContents.executeJavaScript(`localStorage.getItem(${JSON.stringify(`sandbox-key:${s.running.id}`)})`).catch(() => null));
+  return { name: s.running.name, count: s.running.players.filter((p) => p.online && p.key !== me).length };
 }
 
 /** The games this app hosts, read from its data folder so they show without starting the server. */
@@ -385,7 +397,16 @@ app.whenReady().then(() => {
     return file.startsWith(FRONT) ? net.fetch(pathToFileURL(file).href) : new Response("not found", { status: 404 });
   });
   createWindow();
-  if (app.isPackaged) void checkUpdate();
+  if (app.isPackaged || process.env.SANDBOX_UPDATES) void checkUpdate();
+  const { reopen } = state;
+  if (reopen) {
+    delete state.reopen;
+    save();
+    shell.webContents.once("did-finish-load", async () => {
+      if (reopen.hosting) await resumeHosting().catch((e) => console.log(e.message));
+      if (reopen.url) play(reopen.url);
+    });
+  }
 });
 
 /** The newest release when it is newer than this app, polled like PR Cockpit: every 5 minutes, backing off while GitHub rate-limits. */
@@ -397,7 +418,7 @@ const newer = (a, b) => {
   return false;
 };
 async function checkUpdate() {
-  const res = await net.fetch("https://api.github.com/repos/theolundqvist/sandbox/releases/latest", { headers: { accept: "application/vnd.github+json" } }).catch(() => null);
+  const res = await net.fetch(RELEASES, { headers: { accept: "application/vnd.github+json" } }).catch(() => null);
   checkEvery = res?.status === 403 || res?.status === 429 ? Math.min(checkEvery * 2, 6 * 60 * 60 * 1000) : 5 * 60 * 1000;
   const release = res?.ok ? await res.json().catch(() => null) : null;
   if (release?.tag_name) {
@@ -412,22 +433,44 @@ async function checkUpdate() {
   setTimeout(checkUpdate, checkEvery);
 }
 
-/** Updates the way the installer does, since Squirrel won't update an unsigned Mac app: this app quits, and the installer swaps in the release and opens it again. */
+/** Updates the way the installer does, since Squirrel won't update an unsigned Mac app: the installer downloads the release, this app quits, and the installer swaps it in and opens it again. Says why when the download fails, and stays open. */
 let installing = false;
 async function install() {
-  if (!update || installing) return;
+  if (!update || installing) return null;
   const hosting = await guests();
   if (game || hosting?.count) {
     const detail = hosting?.count ? `${hosting.count === 1 ? "1 player is" : `${hosting.count} players are`} in ${hosting.name}. Updating ends the game for them.` : `You're in ${game.name}. Sandbox restarts to update.`;
     const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Update", "Not now"], defaultId: 0, cancelId: 1, message: `Update to Sandbox ${update}?`, detail });
-    if (response !== 0) return;
+    if (response !== 0) return null;
   }
   installing = true;
-  const log = openSync(join(app.getPath("userData"), "update.log"), "a");
-  spawn("bash", ["-c", "curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash"], { detached: true, stdio: ["ignore", log, log] }).unref();
+  const path = join(app.getPath("userData"), "update.log");
+  const log = openSync(path, "a");
+  const from = statSync(path).size;
+  const child = spawn("bash", ["-c", `curl -fsSL '${INSTALLER}' | bash`], { detached: true, stdio: ["ignore", log, log], env: { ...process.env, SANDBOX_APP_PID: String(process.pid) } });
+  child.unref();
+  closeSync(log);
+  const exited = new Promise((resolve) => child.once("exit", () => resolve(false)));
+  const said = () => {
+    const fd = openSync(path, "r");
+    const buf = Buffer.alloc(statSync(path).size - from);
+    readSync(fd, buf, 0, buf.length, from);
+    closeSync(fd);
+    return buf.toString();
+  };
+  let ready = false;
+  while (!ready && (await Promise.race([exited, new Promise((r) => setTimeout(() => r(true), 250))]))) ready = said().includes("Quit Sandbox to continue.");
+  if (!ready) {
+    installing = false;
+    console.log(`The update failed: ${said().trim().split("\n").at(-1) ?? ""}`);
+    return "The update didn't download. Check your connection.";
+  }
+  state.reopen = { hosting: !!hosting, url: game?.view.webContents.getURL() || null };
   quitting = true;
   await stopServer();
+  save();
   app.quit();
+  return null;
 }
 
 /** Asks first when that leaves a game: the host's own, or friends still in the game this app hosts. Then stops the server. */

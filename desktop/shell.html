@@ -89,7 +89,7 @@
     </div>
   </section>
 
-  <p id="busy" class="status" hidden>Starting your server…</p>
+  <p id="busy" class="status" hidden></p>
   <div id="error" class="error"></div>
 </main>
 <div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span><kbd>Esc</kbd>Back</span><span id="fullscreen-hint"><kbd>F11</kbd>Full screen</span><span id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span></div>
@@ -152,13 +152,15 @@
     return node;
   };
 
-  async function open(url) {
+  async function busy(text, work) {
     $("error").textContent = "";
-    $("busy").hidden = !url.startsWith("local:");
-    const error = await shell.open(url);
+    $("busy").textContent = text;
+    $("busy").hidden = !text;
+    const error = await work();
     $("busy").hidden = true;
     if (error) $("error").textContent = error;
   }
+  const open = (url) => busy(url.startsWith("local:") ? "Starting your server…" : "", () => shell.open(url));
   $("go-new").onclick = () => open("local:new");
 
   // ---------- saved games: the ones this computer hosts and the ones joined, most recent first ----------
@@ -199,7 +201,7 @@
   }
 
   $("quit").onclick = () => shell.quit();
-  $("go-update").onclick = () => shell.update();
+  $("go-update").onclick = () => busy("Downloading…", shell.update);
   shell.on("update", (version) => {
     $("go-update").hidden = !version;
     $("update-version").textContent = version ?? "";
