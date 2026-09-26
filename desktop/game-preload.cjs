@@ -1,7 +1,18 @@
 // Loaded into the game: only whether an update is out, and a way to ask the app to install it.
 const { contextBridge, ipcRenderer } = require("electron");
 
+// The app says so as the page loads, before the game has set up its menu, so the last word is kept for it.
+let version = null;
+const listeners = [];
+ipcRenderer.on("update", (_, v) => {
+  version = v;
+  for (const fn of listeners) fn(v);
+});
+
 contextBridge.exposeInMainWorld("sandboxDesktop", {
   update: () => ipcRenderer.invoke("update"),
-  onUpdate: (fn) => ipcRenderer.on("update", (_, version) => fn(version)),
+  onUpdate: (fn) => {
+    listeners.push(fn);
+    fn(version);
+  },
 });
