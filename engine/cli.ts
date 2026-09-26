@@ -41,7 +41,8 @@ const SAY_MAX = 400;
 const hash = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex").slice(0, 12);
 
 const GAME_PARAM = { type: "string", description: "Which game's simulation: a game id, or empty (game=) for the world's own hub. Default: the game your player is in." };
-const GAME_CARD = {
+/** One entry per field a Claude sets, checked against the Game type so a new field can't be left out. */
+const GAME_CARD: Record<Exclude<keyof GameCard, "id">, object> = {
   title: { type: "string", description: "At most 40 characters." },
   tagline: { type: "string", description: "One line under the title, at most 160 characters." },
   color: { type: "string", description: "The card's base CSS colour, e.g. #1d6b4f." },
@@ -51,7 +52,7 @@ const GAME_CARD = {
   spawn: { type: "array", items: { type: "number" }, description: "Where a player first appears in the game, [x, y, z]; afterwards they come back where they left it." },
   art: { type: "string", description: "A client mod whose default export has paintCard(canvas, t) to paint the card; t is seconds." },
 };
-const CARD_FIELDS = ["title", "tagline", "color", "accent", "status", "order", "spawn", "art"] as const;
+const CARD_FIELDS = Object.keys(GAME_CARD) as (keyof typeof GAME_CARD)[];
 
 const tools = [
   {

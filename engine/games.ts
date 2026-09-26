@@ -10,6 +10,10 @@ const MOD_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** The card fields a Claude sets with create_game and edit_game. */
 export type GameCard = Omit<Game, "createdBy" | "createdAt">;
 
+/** Every field of a game in games.json, kept in step with the Game type: a field added there fails the typecheck until it is listed here. */
+const FIELDS: Record<keyof Game, true> = { id: true, title: true, tagline: true, color: true, accent: true, status: true, order: true, spawn: true, art: true, createdBy: true, createdAt: true };
+export const GAME_FIELDS = Object.keys(FIELDS) as (keyof Game)[];
+
 /** Why these card fields can't be saved, or null; `partial` checks only the fields given, as edit_game does. */
 export function cardError(card: Partial<GameCard>, partial: boolean): string | null {
   const given = (key: keyof GameCard) => !partial || card[key] !== undefined;

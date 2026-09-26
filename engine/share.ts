@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { Entity } from "./api";
+import { GAME_FIELDS } from "./games";
 import { hasGit } from "./mods";
 import type { Config } from "./server";
 import { seedStore } from "./world";
@@ -61,7 +62,7 @@ function dumpDb(path: string, mentions: (v: unknown) => boolean) {
 }
 
 /** A game's card as it travels: only its own fields, credited to whoever publishes or installs it, since createdBy names a player. Its title and tagline go as written, like mod code: dropping a card would strand the mods that name its game. */
-const CARD = ["id", "title", "tagline", "color", "accent", "status", "order", "spawn", "art", "createdAt"];
+const CARD = GAME_FIELDS.filter((k) => k !== "createdBy");
 function cards(games: Record<string, Record<string, unknown>>, by: string) {
   const valid = Object.entries(games).filter(([id, g]) => MOD_NAME.test(id) && g?.id === id);
   return Object.fromEntries(valid.map(([id, g]) => [id, { ...Object.fromEntries(CARD.filter((k) => g[k] !== undefined).map((k) => [k, g[k]])), createdBy: by }]));
