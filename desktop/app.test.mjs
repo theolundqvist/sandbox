@@ -566,6 +566,12 @@ describe("in a browser", () => {
     await page.addInitScript(OPEN_UI);
   });
   after(() => browser?.close());
+  const join = async (name) => (await (await fetch(`${other.url}/api/join`, { method: "POST", body: JSON.stringify({ invite: other.invite, name }) })).json()).key;
+  const tool = async (key, name, args) => {
+    const form = new FormData();
+    for (const [k, v] of Object.entries(args)) form.append(k, typeof v === "string" ? v : JSON.stringify(v));
+    return (await fetch(`${other.url}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form })).text();
+  };
 
   test("/menu through the relay, without the host's key, tells people it is the host's", async () => {
     await page.goto(`${other.url}/menu`);
@@ -616,17 +622,47 @@ describe("in a browser", () => {
       return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === input;
     }));
     await page.keyboard.press("Escape");
+    // Esc right after opening doesn't close the menu.
+    await sleep(300);
     await page.keyboard.press("Escape");
+    await until("the menu to close", () => page.locator("#menu").isHidden());
+  });
+
+  test("a mod opens the menu at its page, and closes only the menu it opened", async () => {
+    const key = await join("traveller");
+    const content = `import type { ClientMod } from "../../api";
+let menu: { close(): void } | undefined;
+export default {
+  init(ctx) {
+    const go = Object.assign(document.createElement("button"), { id: "travel-go", textContent: "Go" });
+    go.onclick = () => menu?.close();
+    const here = Object.assign(document.createElement("button"), { id: "travel-here", textContent: "Here" });
+    here.onclick = () => void (menu = ctx.openMenu("Travel"));
+    ctx.menuTab("Travel").append(go, here);
+    ctx.key("KeyM", "Travel", { down: () => void (menu = ctx.openMenu("Travel")) });
+  },
+} satisfies ClientMod;`;
+    await tool(key, "write_file", { path: "mods/travel/client.ts", content });
+    assert.match(await tool(key, "reload", { mod: "travel", announce: { title: "Travel", text: "Waystones" } }), /^travel v1 is live/);
+    await until("the mod", () => page.locator("#travel-go").count());
+    await page.keyboard.press("KeyM");
+    await until("the Travel page", async () => (await page.locator("#travel-go").isVisible()) && (await page.textContent("#page-title")) === "Travel");
+    await page.click("#travel-go");
+    await until("the menu to close", () => page.locator("#menu").isHidden());
+    await page.keyboard.press("Tab");
+    await page.click("#rail [data-tab] >> text=Travel");
+    await page.click("#travel-go");
+    await page.click("#travel-here");
+    await page.click("#travel-go");
+    await sleep(500);
+    assert.ok(await page.locator("#menu").isVisible(), "the menu the player opened stays open");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    await until("the menu to close", () => page.locator("#menu").isHidden());
   });
 
   test("a mod may remove the vote bar and the chat, hide everything and cover the screen, but Tab still opens the menu and its votes", async () => {
-    const join = async (name) => (await (await fetch(`${other.url}/api/join`, { method: "POST", body: JSON.stringify({ invite: other.invite, name }) })).json()).key;
     const key = await join("blackout");
-    const tool = async (name, args) => {
-      const form = new FormData();
-      for (const [k, v] of Object.entries(args)) form.append(k, typeof v === "string" ? v : JSON.stringify(v));
-      return (await fetch(`${other.url}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form })).text();
-    };
     const content = `import type { ClientCtx, ClientMod } from "../../api";
 function blackout(ctx: ClientCtx) {
   document.getElementById("react")!.remove();
@@ -671,8 +707,8 @@ export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(() => bla
     const closedKey = await join("closed");
     await closed.goto(`${other.url}/#key=${closedKey}`);
     await closed.click("#howto-play");
-    await tool("write_file", { path: "mods/blackout/client.ts", content });
-    assert.match(await tool("reload", { mod: "blackout", announce: { title: "Blackout", text: "Lights out" } }), /^blackout v1 is live/);
+    await tool(key, "write_file", { path: "mods/blackout/client.ts", content });
+    assert.match(await tool(key, "reload", { mod: "blackout", announce: { title: "Blackout", text: "Lights out" } }), /^blackout v1 is live/);
     const removed = () => closed.evaluate(() => !document.getElementById("react") && !document.getElementById("chat"));
     await until("the mod's attack", removed);
     await sleep(1000);

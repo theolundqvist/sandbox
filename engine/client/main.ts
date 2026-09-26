@@ -661,6 +661,14 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
       loaded.owned.push(block);
       return block;
     },
+    openMenu: (title) => {
+      if (replay || spectator) return { close() {} };
+      const opened = menu.hidden;
+      void openMenu();
+      if (title) openPage(menuPage(title));
+      const at = menuOpenedAt;
+      return { close: () => opened && !menu.hidden && menuOpenedAt === at && closeMenu() };
+    },
     layer: () => {
       const el = document.createElement("div");
       $("layers").append(el);

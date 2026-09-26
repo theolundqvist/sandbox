@@ -110,6 +110,8 @@ export interface ClientCtx {
   asset(name: string): string;
   /** Your block on the game menu's page with this title (Tab or Esc opens the menu), which is created if no page has it and listed on the menu under the engine's entries. Extend the engine's "Claude", "Invite", "Builders", "Mods" and "Settings" pages or another mod's page by using its title. "Resume", "Timelapse" and "Leave" are the engine's and throw. Your block stays in the page, where your CSS reaches it; the menu around it is the engine's and out of reach. Removed when this mod reloads. */
   menuTab(title: string): HTMLElement;
+  /** Opens the game menu, at the page with this title (as in menuTab) when given, e.g. from an interact action. close() closes it only while it is still the menu this call opened: never one the player opened or reopened. */
+  openMenu(title?: string): { close(): void };
   /** Your element in one of the engine's screen areas, where every mod's elements stack instead of overlapping: "left" (middle of the left edge), "right" (bottom right, growing up), "bottom" (bottom centre, growing up). Removed when this mod reloads. */
   hud(area: "left" | "right" | "bottom"): HTMLElement;
   /** A full-screen element above the scene and below the engine's menu, chat and HUD, for a game drawn on your own canvas or in HTML. It takes the clicks the scene would get; set `pointer-events: none` to pass them through. Removed when this mod reloads. */
