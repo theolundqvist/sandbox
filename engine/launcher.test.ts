@@ -455,7 +455,9 @@ export default {
   const status = answer(await tool(again, "status"));
   expect(status.mods.find((m: any) => m.name === "note")).toMatchObject({ author: "alice", version: 1 });
   expect(JSON.parse(readFileSync(join(worldDir(copy.id), "owners.json"), "utf8")).note).toBe("alice");
-  expect(await tool(again, "query_world", { components: ["note"] })).toContain('"note":"kept"');
+  // Her seat is in the arena, so the hub's entities are asked for by name; the arena runs from its imported save.
+  expect(await tool(again, "query_world", { components: ["note"], game: "" })).toContain('"note":"kept"');
+  expect(await tool(again, "query_world", { components: ["pillar"] })).toContain('"pillar":"north"');
   expect(await tool(again, "history", { mod: "note" })).toContain("note v1");
   // Its load hook ran once more, on top of the rows it brought along.
   expect(answer(await tool(again, "query_db", { mod: "note", sql: "select count(*) n from loads" }))).toEqual([{ n: loads + 1 }]);
