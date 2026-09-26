@@ -9,5 +9,6 @@ contextBridge.exposeInMainWorld("shell", {
   leave: () => ipcRenderer.send("leave"),
   quit: () => ipcRenderer.send("quit"),
   update: () => ipcRenderer.invoke("update"),
-  on: (channel, fn) => ["mode", "down", "update"].includes(channel) && ipcRenderer.on(channel, (_, value) => fn(value)),
+  ready: () => ipcRenderer.invoke("ready"),
+  on: (channel, fn) => ["mode", "down", "update", "starting"].includes(channel) && ipcRenderer.on(channel, (_, value) => fn(value)),
 });

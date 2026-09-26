@@ -36,6 +36,7 @@
   #leave:hover, #leave:focus-visible { background: var(--accent); color: #0b0b0c; }
   body:not(.playing) :is(#world, #bar-hint, #leave) { display: none; }
   body.playing :is(.backdrop, .front, .hints) { display: none; }
+  body.starting :is(#title .items, .hints) { visibility: hidden; }
 </style>
 </head>
 <body>
@@ -225,8 +226,16 @@
     show("down");
   });
   addEventListener("focus", () => document.body.classList.contains("playing") || refresh());
+  shell.on("starting", (text) => {
+    $("busy").textContent = text ?? "";
+    $("busy").hidden = !text;
+  });
+  document.body.classList.add("starting");
   show("title");
   refresh();
+  await shell.ready();
+  document.body.classList.remove("starting");
+  enter();
 </script>
 </body>
 </html>

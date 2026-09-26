@@ -41,7 +41,7 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
 const STATE = join(app.getPath("userData"), "state.json");
-/** @type {{ fullscreen?: boolean, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], port?: number, reopen?: { hosting: boolean, url: string | null } }} Joined games by shareable address; main menus opened, by host key; the port this app hosts on; what to bring back after an update restarts the app. */
+/** @type {{ fullscreen?: boolean, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string }} Joined games by shareable address; main menus opened, by host key; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed. */
 const state = { recents: [], hosts: {}, mic: [] };
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
@@ -392,6 +392,7 @@ app.whenReady().then(() => {
   ipcMain.on("leave", (event) => fromShell(event) && leave());
   ipcMain.handle("update", (event) => (fromShell(event) || event.sender === game?.view.webContents) && install());
   ipcMain.on("quit", (event) => fromShell(event) && app.quit());
+  ipcMain.handle("ready", (event) => fromShell(event) && ready);
 
   protocol.handle("sandbox", (req) => {
     const path = decodeURIComponent(new URL(req.url).pathname);
@@ -402,7 +403,6 @@ app.whenReady().then(() => {
     return file.startsWith(FRONT) ? net.fetch(pathToFileURL(file).href) : new Response("not found", { status: 404 });
   });
   createWindow();
-  if (app.isPackaged || process.env.SANDBOX_UPDATES) void checkUpdate();
   const { reopen } = state;
   if (reopen) {
     delete state.reopen;
@@ -412,11 +412,32 @@ app.whenReady().then(() => {
       if (reopen.url) play(reopen.url);
     });
   }
+  if (UPDATES && reopen) void checkUpdate().then(pollUpdates);
+  else if (UPDATES) ready = updateFirst().then(pollUpdates);
 });
+
+const UPDATES = app.isPackaged || !!process.env.SANDBOX_UPDATES;
+/** The start screen shows its menu once this settles. */
+let ready = Promise.resolve();
+const startScreen = (text) => shell.webContents.send("starting", text);
+
+/** Before the menu shows, installs a newer release and opens again; offline, failing, or when the last install didn't bring it, the app opens as it is and offers Update. */
+async function updateFirst() {
+  const slow = setTimeout(() => startScreen("Checking for updates…"), 400);
+  await Promise.race([checkUpdate(), new Promise((r) => setTimeout(r, 3000))]);
+  clearTimeout(slow);
+  if (update && state.updatedTo !== update) {
+    startScreen(`Updating to ${update}…`);
+    if (!(await install())) return new Promise(() => {});
+    console.log("Opening without the update");
+  }
+  startScreen(null);
+}
 
 /** The newest release when it is newer than this app, polled like PR Cockpit: every 5 minutes, backing off while GitHub rate-limits. */
 let update = null;
-let checkEvery = 5 * 60 * 1000;
+const EVERY = Number(process.env.SANDBOX_UPDATE_EVERY ?? 5 * 60 * 1000);
+let checkEvery = EVERY;
 const newer = (a, b) => {
   const [x, y] = [a, b].map((v) => v.split(".").map(Number));
   for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
@@ -424,7 +445,7 @@ const newer = (a, b) => {
 };
 async function checkUpdate() {
   const res = await net.fetch(RELEASES, { headers: { accept: "application/vnd.github+json" } }).catch(() => null);
-  checkEvery = res?.status === 403 || res?.status === 429 ? Math.min(checkEvery * 2, 6 * 60 * 60 * 1000) : 5 * 60 * 1000;
+  checkEvery = res?.status === 403 || res?.status === 429 ? Math.min(checkEvery * 2, 6 * 60 * 60 * 1000) : EVERY;
   const release = res?.ok ? await res.json().catch(() => null) : null;
   if (release?.tag_name) {
     const version = release.tag_name.replace(/^v/, "");
@@ -435,7 +456,9 @@ async function checkUpdate() {
       game?.view.webContents.send("update", update);
     }
   }
-  setTimeout(checkUpdate, checkEvery);
+}
+function pollUpdates() {
+  setTimeout(() => checkUpdate().then(pollUpdates), checkEvery);
 }
 
 /** Updates the way the installer does, since Squirrel won't update an unsigned Mac app: the installer downloads the release, this app quits, and the installer swaps it in and opens it again. Says why when the download fails, and stays open. */
@@ -471,6 +494,7 @@ async function install() {
     return "The update didn't download. Check your connection.";
   }
   state.reopen = { hosting: !!hosting, url: game?.view.webContents.getURL() || null };
+  state.updatedTo = update;
   quitting = true;
   await stopServer();
   save();

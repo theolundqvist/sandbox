@@ -41,6 +41,7 @@ const releases = { latest: VERSION, installer: null };
 const RELEASES = port();
 const github = createServer((req, res) => {
   if (req.url === "/latest") return res.end(JSON.stringify({ tag_name: `v${releases.latest}` }));
+  if (req.url === "/hang") return;
   if (req.url === "/install" && releases.installer) return res.end(releases.installer);
   if (req.url === "/v1/speech-to-text") {
     res.statusCode = req.headers["xi-api-key"] === VOICE_KEY ? 400 : 401;
@@ -86,11 +87,12 @@ async function launch(name, env = {}) {
   const app = await _electron.launch({
     executablePath: ELECTRON,
     args: [DESKTOP, "--no-sandbox", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
-    env: { ...ownEnv, SANDBOX_ELEVENLABS: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, ...env },
+    env: { ...ownEnv, SANDBOX_ELEVENLABS: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_UPDATE_EVERY: "500", ...env },
   });
   const shell = await until("the start screen", async () => app.windows().find((w) => w.url().startsWith("sandbox://app/shell.html")));
   await shell.locator("#title").waitFor();
-  return { app, shell, state: () => JSON.parse(readFileSync(join(dir, name, "Sandbox", "state.json"), "utf8")) };
+  const saved = join(dir, name, "Sandbox", "state.json");
+  return { app, shell, state: () => (existsSync(saved) ? JSON.parse(readFileSync(saved, "utf8")) : {}) };
 }
 
 const gamePage = (app) => until("the game view", async () => app.windows().find((w) => /^https?:/.test(w.url())));
@@ -333,34 +335,101 @@ describe("the relay down", () => {
   });
 });
 
+/** The real installer's handshake: download, say so, wait for the app to quit, then install; this one writes down the app it waited for. */
+const installer = (marker) => `echo "Downloading Sandbox"; sleep 1; echo "Quit Sandbox to continue."; while kill -0 "$SANDBOX_APP_PID" 2>/dev/null; do sleep 0.2; done; echo "$SANDBOX_APP_PID" > '${marker}'`;
+const menuShown = (shell) => shell.locator("#title .items").isVisible();
+
+describe("starting up", () => {
+  after(() => {
+    releases.latest = VERSION;
+    releases.installer = null;
+  });
+
+  test("offline, the menu shows and offers no update", async () => {
+    const { app, shell } = await launch("offline", { SANDBOX_UPDATES: "http://127.0.0.1:1/latest" });
+    await until("the menu", () => menuShown(shell));
+    assert.equal(await shown(shell, "#go-update"), false);
+    await close(app);
+  });
+
+  test("a release server that never answers holds the menu back 3 seconds at most", async () => {
+    const started = Date.now();
+    const { app, shell } = await launch("hang", { SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/hang` });
+    assert.equal(await menuShown(shell), false);
+    await until("the menu", () => menuShown(shell));
+    assert.ok(Date.now() - started < 6000);
+    await close(app);
+  });
+
+  test("a download that fails at start opens the menu, offering Update", async () => {
+    releases.latest = "9.9.9";
+    const { app, shell, state } = await launch("start-fails");
+    await until("the menu", () => menuShown(shell));
+    assert.equal(await shown(shell, "#go-update"), true);
+    assert.equal(await shown(shell, "#busy"), false);
+    assert.equal(state().updatedTo, undefined);
+    await close(app);
+  });
+
+  test("a newer release installs before the menu shows, then the installer opens the new version", async () => {
+    const marker = join(dir, "installed-at-start");
+    releases.installer = installer(marker);
+    const { app, shell, state } = await launch("start-updates");
+    const pid = app.process().pid;
+    const closed = new Promise((r) => app.once("close", r));
+    await until("the progress", async () => (await shell.textContent("#busy")) === "Updating to 9.9.9…");
+    assert.equal(await menuShown(shell), false);
+    await closed;
+    await until("the installer", async () => existsSync(marker) && readFileSync(marker, "utf8").trim() === String(pid));
+    assert.equal(state().updatedTo, "9.9.9");
+  });
+
+  test("when that install didn't bring the new version, the app opens as it is and offers Update", async () => {
+    const ran = join(dir, "installed-again");
+    releases.installer = `touch '${ran}'`;
+    for (const _ of [1, 2]) {
+      const { app, shell } = await launch("start-updates");
+      await until("the menu", () => menuShown(shell));
+      assert.equal(await shown(shell, "#go-update"), true);
+      await close(app);
+    }
+    assert.equal(existsSync(ran), false);
+  });
+});
+
 describe("updates", () => {
   let app, shell, state, game, code;
   before(async () => {
-    releases.latest = "9.9.9";
+    releases.latest = VERSION;
     ({ app, shell, state } = await launch("update"));
   });
   after(() => close(app));
 
-  test("a newer release shows Update with its version", async () => {
-    await shell.locator("#go-update").waitFor();
-    assert.equal(await shell.textContent("#go-update"), "Update9.9.9");
-  });
-
-  test("the game menu offers it too", async () => {
+  test("a release that comes out while hosting with friends shows Update on the title and in the game, and restarts nothing", async () => {
     await shell.click("text=Host game");
     game = await gamePage(app);
     await game.fill("#create-name", "Update Test");
     await game.click("#create-go");
     await joinAs(game, "host");
-    assert.equal(await game.evaluate(() => document.getElementById("menu-update").hidden), false);
-  });
-
-  test("a failed download says so and keeps the app and the game open", async () => {
     const own = state().port;
     const key = JSON.parse(readFileSync(join(dir, "update", "Sandbox", "data", "launcher.json"), "utf8")).hostKey;
     const s = await menu(`http://127.0.0.1:${own}`, key, "state");
     code = s.tunnel.code;
     await guest(`http://127.0.0.1:${own}`, s.running.invite, "friend");
+    const pid = app.process().pid;
+    await answer(app, 0);
+    releases.latest = "9.9.9";
+    await until("Update in the game", () => game.evaluate(() => !document.getElementById("menu-update").hidden));
+    assert.equal(await shell.textContent("#go-update"), "Update9.9.9");
+    await sleep(1500);
+    assert.deepEqual(await asked(app), []);
+    assert.equal(app.process().pid, pid);
+    assert.equal(await portAnswers(own), true);
+    assert.match(game.url(), new RegExp(`^${relayUrl}/r/`));
+  });
+
+  test("a failed download says so and keeps the app and the game open", async () => {
+    const own = state().port;
     releases.installer = null;
     await answer(app, 0);
     await game.evaluate(() => document.getElementById("menu-update").click());
@@ -373,8 +442,7 @@ describe("updates", () => {
 
   test("an update downloads before the app quits, then the installer takes over", async () => {
     const marker = join(dir, "installed");
-    // The real installer's handshake: download, say so, wait for the app to quit, then install.
-    releases.installer = `echo "Downloading Sandbox"; sleep 1; echo "Quit Sandbox to continue."; while kill -0 "$SANDBOX_APP_PID" 2>/dev/null; do sleep 0.2; done; echo "$SANDBOX_APP_PID" > '${marker}'`;
+    releases.installer = installer(marker);
     const own = state().port;
     const pid = app.process().pid;
     await answer(app, 0);
