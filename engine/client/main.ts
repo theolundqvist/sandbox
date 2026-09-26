@@ -1413,7 +1413,7 @@ function driftCamera(dt: number, now: number) {
     const placed = [...entities.values()].flatMap((e) => (isAvatar(e) || !position(e) ? [] : [position(e)!]));
     const { target, radius } = extent(recent.length >= 3 ? recent : placed);
     drift.goal.fromArray(target);
-    drift.goalDistance = drift.avatar >= 0 ? 20 : Math.min(160, Math.max(24, radius * (recent.length >= 3 ? 2.4 : 1.5)));
+    drift.goalDistance = drift.avatar >= 0 ? 40 : Math.min(160, Math.max(40, radius * (recent.length >= 3 ? 2.4 : 1.5)));
   }
   const at = drift.avatar >= 0 && position(entities.get(drift.avatar) ?? {});
   if (at) drift.goal.fromArray(at);
@@ -1423,8 +1423,11 @@ function driftCamera(dt: number, now: number) {
   drift.focus.lerp(drift.goal, k);
   drift.distance += (drift.goalDistance - drift.distance) * k;
   drift.angle += dt * 0.06;
+  // Looking down at about 35°, high enough to clear the buildings around the subject.
+  const pitch = 0.62;
   const { x, y, z } = drift.focus;
-  camera.position.set(x + Math.cos(drift.angle) * drift.distance, y + drift.distance * 0.55, z + Math.sin(drift.angle) * drift.distance);
+  const out = Math.cos(pitch) * drift.distance;
+  camera.position.set(x + Math.cos(drift.angle) * out, y + Math.sin(pitch) * drift.distance, z + Math.sin(drift.angle) * out);
   camera.lookAt(drift.focus);
 }
 
