@@ -85,7 +85,7 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | Voice, player without host key | mic reads Voice off | disabled | app: code joins (visitor) |
 | Voice, key refused later | hold T | host: "ElevenLabs refused the voice key. Add it again in Settings."; players: "Voice didn't go through. Try again." | manual |
 | Mic blocked in the app | hold T | "Voice needs the microphone. Hold T again to allow it." | manual |
-| Connect a coding agent | Claude tab | pick Claude Code, Codex or OMP, Copy Connect and Install | manual |
+| Connect a coding agent | Claude tab | pick Claude Code, Codex or OMP (remembered), then 1 Install and 2 Connect, each with its own Copy; Copied shows in place | app: connecting an agent |
 
 ## Browser
 
@@ -108,5 +108,8 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | /menu opened by a player | "Open the menu link from the host's terminal." | says it is the host's, on their own computer |
 | World crashes on start | "the terminal shows why" | "The world crashed while starting. Try again." |
 | Mic blocked in the app | pointed at the browser's address bar | says to hold T again |
-| Coding agent | copy a long command into a terminal | unchanged: a one-click launch would start an agent with permissions off from a page mods can script, so it needs a design that confirms the exact prompt first |
+| Coding agent | Connect listed before Install; Copied resized the row | decided: copy and paste, no one-click launch; steps numbered in order, Copy keeps its size |
+| Pre-play card under a menu | its title, keys and Play showed through Settings and Invite | hidden while a menu is open, in the game's font |
+| Host closed, in game | the message covered the top-bar buttons; Play and the Open badge stayed | message sits below the bar; Play disabled and the badge hidden until the world is back |
+| Reloads and brief tabs | a joined and left line each time | lines wait 3 s to join and 10 s to leave, so neither shows |
 | Getting the app from a browser | curl one-liner | unchanged: unsigned Mac builds and AppImage need it |

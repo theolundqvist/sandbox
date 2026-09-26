@@ -781,6 +781,8 @@ function connect() {
         claudes.set(msg.name, { state: msg.state, task: msg.task });
         return showBuilders();
       case "tick":
+        $("rules").hidden = false;
+        $<HTMLButtonElement>("howto-play").disabled = false;
         if (!replay) applyTick(msg);
         return;
       case "mod":
@@ -853,6 +855,8 @@ async function screenshot() {
   ]);
   const out = Object.assign(document.createElement("canvas"), { width: innerWidth, height: innerHeight });
   const g = out.getContext("2d")!;
+    $("rules").hidden = true;
+    $<HTMLButtonElement>("howto-play").disabled = true;
   g.imageSmoothingEnabled = !screen.pixelated;
   if (drawn) g.drawImage(scene3d, 0, 0, innerWidth, innerHeight);
   if (overlay) g.drawImage(overlay, 0, 0, innerWidth, innerHeight);
@@ -2085,9 +2089,8 @@ async function refreshMenu() {
 for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy]"))
   button.onclick = async () => {
     const code = $(button.dataset.copy!);
-    // Plain-http LAN links have no clipboard API.
-    if (navigator.clipboard) await navigator.clipboard.writeText(code.textContent!);
-    else {
+    // Plain-http LAN links have no clipboard API, and an unfocused page is refused it.
+    if (!(await navigator.clipboard?.writeText(code.textContent!).then(() => true, () => false))) {
       getSelection()!.selectAllChildren(code);
       document.execCommand("copy");
     }

@@ -64,6 +64,7 @@
 .copy-row code { flex: 1; min-width: 0; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d9d6cf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .copy-row .pick { margin-left: auto; font-size: 14px; }
 .copy-row .pick output { min-width: 96px; }
+.copy-row button[data-copy] { min-width: 88px; text-align: right; }
 .copy-row button, .quiet { flex: none; background: none; border: 0; padding: 10px 4px; color: var(--dim); font: 700 12px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; cursor: pointer; outline: none; }
 .copy-row button:hover, .copy-row button:focus, .quiet:hover, .quiet:focus { color: var(--text); background: none; }
 .copy-row button.danger:hover, .copy-row button.danger:focus { color: var(--err); }

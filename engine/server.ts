@@ -340,6 +340,9 @@ setInterval(() => {
 let publicUrl: string | null = null;
 let joinCode: string | null = null;
 /** The host's Wi-Fi address, where friends nearby join when the relay can't be reached. */
+/** Feed lines wait a moment, so a reload or a tab open for a few seconds says nothing. */
+const joiningLine = new Map<string, ReturnType<typeof setTimeout>>();
+const leavingLine = new Map<string, ReturnType<typeof setTimeout>>();
 let lanUrl: string | null = null;
 const shots = new Map<string, (data: string) => void>();
 const mcp = createMcp({
@@ -579,7 +582,12 @@ const server = Bun.serve<Conn>({
           talk: chatLog.filter((c) => c.claudes).map(({ from, text }) => ({ from, text })),
         }),
       );
-      if (!previous) feed(`${name} joined`, "info");
+      if (leavingLine.has(name)) {
+        clearTimeout(leavingLine.get(name));
+        leavingLine.delete(name);
+      } else if (!previous) {
+        joiningLine.set(name, setTimeout(() => (joiningLine.delete(name), feed(`${name} joined`, "info")), 3_000));
+      }
       record.add("session", name, { event: previous ? "rejoin" : "join", ua: ws.data.ua.slice(0, 200) });
     },
     message(ws, raw) {
@@ -616,7 +624,11 @@ const server = Bun.serve<Conn>({
       clientWindow.delete(ws.data.name);
       record.add("session", ws.data.name, { event: "leave", seconds: Math.round((Date.now() - ws.data.at) / 1000) });
       sim.send({ t: "leave", id: ws.data.name });
-      feed(`${ws.data.name} left`, "info");
+      const { name } = ws.data;
+      if (joiningLine.has(name)) {
+        clearTimeout(joiningLine.get(name));
+        joiningLine.delete(name);
+      } else leavingLine.set(name, setTimeout(() => (leavingLine.delete(name), feed(`${name} left`, "info")), 10_000));
     },
   },
 });

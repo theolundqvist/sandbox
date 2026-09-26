@@ -227,6 +227,7 @@ describe("hosting and joining", () => {
     await game.locator("#mic").dispatchEvent("click");
     await game.locator("#voice-key").waitFor();
     assert.equal(await game.evaluate(() => document.activeElement.id), "voice-key");
+    assert.equal(await shown(game, "#howto"), false);
     await game.fill("#voice-key", "sk_wrong");
     await game.press("#voice-key", "Enter");
     await until("the refusal", async () => (await game.textContent("#toasts")).includes("That key didn't work. Copy it again from elevenlabs.io."));
@@ -236,6 +237,28 @@ describe("hosting and joining", () => {
     assert.equal(await game.getAttribute("#voice-key", "placeholder"), "••••_key");
     assert.equal(await game.inputValue("#voice-key"), "");
     assert.equal(readFileSync(join(dir, "host", "Sandbox", "data", "secrets.json"), "utf8").includes(VOICE_KEY), true);
+    await game.keyboard.press("Escape");
+    await game.keyboard.press("Escape");
+  });
+
+  test("connecting an agent: the pick is remembered, and Copy copies each step in place", async () => {
+    const game = await gamePage(app);
+    await game.locator("#menu-button").dispatchEvent("click");
+    await game.click("#rail [data-tab=claude]");
+    await game.click("[data-harness=codex]");
+    const install = game.locator("[data-copy=claude-install]");
+    const box = await install.boundingBox();
+    await install.click();
+    await until("Copied", async () => (await install.textContent()) === "Copied");
+    assert.deepEqual(await install.boundingBox(), box);
+    assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), await game.textContent("#claude-install"));
+    await game.locator("[data-copy=claude-command]").click();
+    await until("the command copied", async () => /codex --/.test(await app.evaluate(({ clipboard }) => clipboard.readText())));
+    await game.reload();
+    await game.locator("#join").waitFor({ state: "hidden" });
+    await game.locator("#menu-button").dispatchEvent("click");
+    await game.click("#rail [data-tab=claude]");
+    assert.equal(await game.getAttribute("[data-harness=codex]", "class"), "active");
     await game.keyboard.press("Escape");
     await game.keyboard.press("Escape");
   });
@@ -541,8 +564,22 @@ describe("the host closes the game", () => {
     await shell.press("#join-link", "Enter");
     game = await gamePage(app);
     await joinAs(game, "stayer");
+    assert.match(await game.evaluate(() => getComputedStyle(document.querySelector("#howto h1")).fontFamily), /^"Archivo Expanded"/);
+    const peek = await guest(other.url, other.invite, "peek");
+    peek.close();
+    await game.reload();
+    await game.locator("#join").waitFor({ state: "hidden" });
+    await sleep(3500);
+    assert.doesNotMatch(await game.textContent("#feed"), /peek|stayer left/);
     otherLauncher.kill();
     await until("the message", async () => (await game.textContent("#status")) === "The host closed the game. You're back in when they open it.");
+    const status = await game.locator("#status").boundingBox();
+    for (const button of await game.locator("#top button:visible").all()) {
+      const b = await button.boundingBox();
+      assert.ok(status.y >= b.y + b.height || status.x >= b.x + b.width || b.x >= status.x + status.width, `the message covers ${await button.textContent()}`);
+    }
+    assert.equal(await game.isDisabled("#howto-play"), true);
+    assert.equal(await shown(game, "#rules"), false);
   });
 
   test("opening it again from Worlds says it is closed, and Retry opens it once the host is back", async () => {
