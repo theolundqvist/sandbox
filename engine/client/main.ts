@@ -1078,7 +1078,8 @@ const chatLine = (from: string, text: string, spoken?: boolean) =>
 /** After a mod arrives, players have 30 s to love it or vote it out. */
 let reacting = "";
 let reactTimer: ReturnType<typeof setTimeout> | undefined;
-function askReaction(a: { mod: string; title: string; color: string }) {
+function askReaction(a: { mod: string; title: string; color: string; author: string }) {
+  if (a.author === me) return;
   reacting = a.mod;
   const bar = $("react");
   bar.style.setProperty("--c", a.color);
@@ -1930,7 +1931,6 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     return closePanel();
   }
   if (replay || spectator || e.repeat || e.metaKey || e.ctrlKey || held.has(e.code) || typing() || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden) return;
-  if ((e.code === "Digit1" || e.code === "Digit2") && !$("react").hidden) return;
   const b = activeBindings().find((x) => x.code === e.code);
   if (!b) return;
   if (b.up) held.set(e.code, b);
@@ -1954,10 +1954,6 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     return;
   }
   if (replay && !typing()) return replayKey(e);
-  if ((e.code === "Digit1" || e.code === "Digit2") && !typing() && menu.hidden && !$("react").hidden) {
-    react(e.code === "Digit1" ? "love" : "undo");
-    return;
-  }
   if (e.code === "Enter" && !typing() && menu.hidden) {
     openChat();
     e.preventDefault();
@@ -2293,6 +2289,7 @@ async function refreshMenu() {
           love!.textContent += m.love ? ` ${m.love}` : "";
           undo!.textContent += ` ${m.undo}/${status.undoNeeded}`;
           for (const b of [love!, undo!]) {
+            b.disabled = m.author === me;
             b.classList.toggle("picked", myVotes.get(m.name) === `${m.version}:${b.dataset.kind}`);
             b.onclick = () => {
               myVotes.set(m.name, `${m.version}:${b.dataset.kind}`);

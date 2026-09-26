@@ -128,11 +128,11 @@ const sockets = new Map<string, ServerWebSocket<Conn>>();
 /** Visitors with an invite watching the game live behind the join screen: no player, unseen and read-only. */
 const spectators = new Map<string, ServerWebSocket<Conn>>();
 
-/** Players' verdicts on the live version of each mod; more than half of those online voting undo reverts it. */
+/** Players' verdicts on the live version of each mod; more than half of those online voting undo reverts it. The author's own votes don't count. */
 const votes = new Map<string, { version: number; love: Set<string>; undo: Set<string> }>();
 function react(from: string, mod: string, kind: string) {
   const live = mods.running.get(mod);
-  if (!live || (kind !== "love" && kind !== "undo")) return;
+  if (!live || from === live.author || (kind !== "love" && kind !== "undo")) return;
   let v = votes.get(mod);
   if (v?.version !== live.version) votes.set(mod, (v = { version: live.version, love: new Set(), undo: new Set() }));
   if (v[kind].has(from)) return;
@@ -376,7 +376,7 @@ const cli = createCli({
     happened.push({ at: Date.now(), t: "announce", ...a });
     about[a.mod] = { title: a.title, text: a.text, color: a.color };
     writeJson("about.json", about);
-    broadcast({ t: "announce", ...a });
+    broadcast({ t: "announce", ...a, author: mods.running.get(a.mod)?.author });
   },
   nextChat: () => new Promise<void>((resolve) => chatWaiters.add(function wake() { chatWaiters.delete(wake); resolve(); })),
   status,

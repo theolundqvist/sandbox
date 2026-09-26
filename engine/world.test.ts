@@ -238,3 +238,11 @@ test("a mod that takes over half a second to start is named in the feed once per
   await Bun.sleep(200);
   expect(received.filter((m) => m.t === "feed" && m.text.includes("to start")).map((m) => m.text)).toEqual(["bell took 2.4 s to start in builder's game"]);
 });
+
+test("a mod's author can't vote on it, so alone online they can't undo it", async () => {
+  player.send(JSON.stringify({ t: "react", mod: "bell", kind: "undo" }));
+  player.send(JSON.stringify({ t: "react", mod: "bell", kind: "love" }));
+  await Bun.sleep(300);
+  const status = await (await fetch(`${BASE}/api/status`, { headers: { authorization: `Bearer ${key}` } })).json();
+  expect(status.mods.find((m: any) => m.name === "bell")).toMatchObject({ author: "builder", love: 0, undo: 0 });
+});

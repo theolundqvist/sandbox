@@ -21,7 +21,7 @@ export const RELOAD_GAP_MS = 20_000;
 const KEY_CODE = /(?:[=!]==?\s*|\.has\(\s*|case\s+)["'`](Key[A-Z]|Digit[0-9]|F[0-9]{1,2}|Arrow(?:Up|Down|Left|Right)|Tab|Enter|Escape|Backquote|Backspace|CapsLock|Minus|Equal|Bracket(?:Left|Right)|Semicolon|Quote|Comma|Period|Slash|Backslash|Numpad\w+|(?:Control|Alt|Meta)(?:Left|Right)|Space|Shift(?:Left|Right)?)["'`]/g;
 const MENU_TAB = /menuTab\(\s*["'`]([^"'`]+)["'`]/g;
 /** Keys the engine itself handles. */
-export const ENGINE_KEYS: Record<string, string> = { Tab: "the game menu", Enter: "chat", KeyT: "push to talk", KeyE: "interact prompts from ctx.interact", Digit1: "love votes after a reload", Digit2: "undo votes after a reload" };
+export const ENGINE_KEYS: Record<string, string> = { Tab: "the game menu", Enter: "chat", KeyT: "push to talk", KeyE: "interact prompts from ctx.interact" };
 /** Keys many mods read on purpose (moving, steering, closing their own window), so sharing them is not an overlap. */
 const SHARED_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Shift", "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "Escape"]);
 /** Whether this machine has a real git. A Mac without the developer tools has only a stub at /usr/bin/git, which opens an install dialog every time it runs. */

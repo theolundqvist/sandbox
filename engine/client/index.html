@@ -90,7 +90,6 @@
   #react-mod { color: var(--c); margin-right: 8px; max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #react button { border-color: transparent; background: rgba(255,255,255,.06); }
   #react button:hover, #react button.picked { background: var(--text); color: #0b0b0c; }
-  #react kbd { margin: 0 6px 0 0; }
   #replay { position: fixed; top: 20px; left: 50%; translate: -50% 0; padding: 10px 18px; background: var(--veil); border-bottom: 2px solid var(--accent); }
   #replay span { color: var(--accent); margin-left: 10px; }
   #replay-caption { position: fixed; left: 50%; top: 66px; translate: -50% 0; display: flex; align-items: baseline; gap: 16px; max-width: calc(100vw - 32px); padding: 14px 24px; background: var(--veil); border-left: 3px solid var(--accent); pointer-events: none; animation: in .4s ease-out; }
@@ -280,7 +279,7 @@
   <div id="hud-left" class="hud-area"></div>
   <div id="hud-right" class="hud-area"></div>
   <div id="hud-bottom" class="hud-area"><div id="interact" hidden><kbd>E</kbd><span></span></div>
-  <div id="react" hidden><span id="react-mod" class="caps"></span><button data-kind="love"><kbd>1</kbd> Love it <span></span></button><button data-kind="undo"><kbd>2</kbd> Vote to undo <span></span></button></div></div>
+  <div id="react" hidden><span id="react-mod" class="caps"></span><button data-kind="love">Love it <span></span></button><button data-kind="undo">Vote to undo <span></span></button></div></div>
   <div id="announce" hidden><div class="caps"></div><b></b><p></p></div>
   <div id="empty" class="shadow" hidden><b>Nothing exists yet</b>Press Tab, connect your Claude, and ask it for the game you want to play.</div>
 </div>
