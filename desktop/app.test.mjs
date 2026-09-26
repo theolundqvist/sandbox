@@ -458,6 +458,23 @@ describe("starting up", () => {
     await close(app);
   });
 
+  test("a game server that can't start shows what it said, and Retry starts it once it can", async () => {
+    const data = join(dir, "broken", "Sandbox", "data");
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(data, "launcher.json"), "{");
+    const { app, shell } = await launch("broken");
+    await until("the menu", () => menuShown(shell));
+    await shell.click("#go-new");
+    await shell.locator("#down").waitFor();
+    assert.equal(await shell.textContent("#down-title"), "Couldn't start");
+    assert.equal(await shell.textContent("#down-text"), "Your game server stopped while starting. The last thing it said:");
+    assert.match(await shell.textContent("#down-log"), /JSON Parse error/);
+    rmSync(join(data, "launcher.json"));
+    await shell.click("#retry");
+    await gamePage(app);
+    await close(app);
+  });
+
   test("a release server that never answers holds the menu back 3 seconds at most", async () => {
     const started = Date.now();
     const { app, shell } = await launch("hang", { SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/hang` });

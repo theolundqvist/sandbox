@@ -165,6 +165,16 @@ const portFree = (port) =>
     });
   });
 
+/** The last lines a log got after `from`, at most 5. */
+function lastLines(path, from) {
+  const size = statSync(path).size;
+  const bytes = Buffer.alloc(Math.min(size - from, 8192));
+  const fd = openSync(path, "r");
+  readSync(fd, bytes, 0, bytes.length, size - bytes.length);
+  closeSync(fd);
+  return bytes.toString().split("\n").map((l) => l.trimEnd()).filter(Boolean).slice(-5);
+}
+
 /** Starts this app's game server the first time it's needed, on the port it used before when that is still free. */
 function startServer() {
   if (server) return Promise.resolve(server);
@@ -173,7 +183,9 @@ function startServer() {
     state.port = port;
     save();
     mkdirSync(DATA, { recursive: true });
-    const log = openSync(join(app.getPath("userData"), "server.log"), "a");
+    const logPath = join(app.getPath("userData"), "server.log");
+    const log = openSync(logPath, "a");
+    const from = statSync(logPath).size;
     const proc = spawn(BUN, [join(ENGINE, "engine/launcher.ts")], {
       env: { ...process.env, PORT: String(port), SANDBOX_DATA: DATA, SANDBOX_NO_OPEN: "1", SANDBOX_EXIT_WITH_STDIN: "1", SANDBOX_RELAY: RELAY },
       stdio: ["pipe", log, log],
@@ -194,7 +206,7 @@ function startServer() {
       return server;
     }
     proc.kill();
-    throw new Error(failed ? `Couldn't start the game server: ${failed.message}` : `The game server didn't start. ${join(app.getPath("userData"), "server.log")} says why.`);
+    throw Object.assign(new Error("The game server didn't start."), { log: failed ? [failed.message] : lastLines(logPath, from) });
   })().finally(() => (starting = null));
   return starting;
 }
@@ -392,7 +404,8 @@ app.whenReady().then(() => {
   ipcMain.handle("open", (event, url) => {
     if (!fromShell(event)) return null;
     const own = String(url).match(/^local:(.+)$/)?.[1];
-    return own ? hostGame(own).catch((e) => e.message) : play(String(url));
+    // A server that didn't start gets a screen with what it said and Retry; other failures are a line under the menu.
+    return own ? hostGame(own).catch((e) => (e.log ? void shell.webContents.send("down", { url, name: null, why: "server", log: e.log }) : e.message)) : play(String(url));
   });
   ipcMain.handle("forget", (event, url) => {
     if (!fromShell(event)) return;
