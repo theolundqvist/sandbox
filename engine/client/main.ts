@@ -4,7 +4,19 @@ import type { ClientCtx, ClientHooks, ClientMod, Entity, ReplayShot } from "../a
 import { clock, extent, isAvatar, plan, position, type Activity, type Plan, type Tick as Moment, type Shot } from "./director";
 import { PhysicsIndex } from "../physics";
 
-const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+/** The engine's own UI (HUD, chat, votes, menus) lives in a shadow root, where no stylesheet a mod adds to the page can hide or restyle it. Mods' HUD stays in the page, slotted in, so their CSS still applies; their menu pages are inside, styled inline. */
+const ui = document.getElementById("ui")!;
+const uiRoot = ui.attachShadow({ mode: "open" });
+uiRoot.adoptedStyleSheets = [...document.styleSheets].map((sheet) => {
+  const copy = new CSSStyleSheet();
+  copy.replaceSync([...sheet.cssRules].map((rule) => rule.cssText).join("\n"));
+  return copy;
+});
+uiRoot.append(...document.querySelectorAll("#hud, #join, #howto, #palette, #menu"));
+new MutationObserver(() => (ui.className = document.body.className)).observe(document.body, { attributes: true, attributeFilter: ["class"] });
+const $ = <T extends HTMLElement>(id: string) => (uiRoot.getElementById(id) ?? document.getElementById(id)) as T;
+/** The focused element, inside the engine's UI too. */
+const focused = () => uiRoot.activeElement ?? document.activeElement;
 const hashParams = new URLSearchParams(location.hash.slice(1));
 
 // Through the relay the game lives at /r/<room>/; its own requests reach the room by cookie, but links and Claude need the full address.
@@ -439,7 +451,7 @@ function keysChanged(mod: string) {
   changedMods.add(mod);
 }
 function showModKeys() {
-  for (const list of document.querySelectorAll(".mod-keys"))
+  for (const list of uiRoot.querySelectorAll(".mod-keys"))
     list.replaceChildren(
       ...activeBindings().flatMap((b) => {
         const dt = document.createElement("dt");
@@ -643,8 +655,8 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
       if (mods.get(name) === loaded) applyScreen();
     },
     hud: (area) => {
-      const el = document.createElement("div");
-      $(`hud-${area}`).append(el);
+      const el = Object.assign(document.createElement("div"), { slot: area });
+      ui.append(el);
       loaded.owned.push(el);
       return el;
     },
@@ -1586,7 +1598,7 @@ const menu = $("menu");
 const howto = $("howto");
 const palette = $("palette");
 const typing = () => {
-  const el = document.activeElement;
+  const el = focused();
   return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || (el instanceof HTMLElement && el.isContentEditable);
 };
 const inputFree = () => !(replay || spectator || typing() || panel || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden);
@@ -1611,7 +1623,7 @@ document.addEventListener("pointerlockchange", () => {
 // Coming back to the window takes mouse-look straight back where the page may lock without a click (the desktop app); browsers refuse quietly.
 addEventListener("focus", capture);
 // Right-click belongs to the game, so no browser menu except over text fields.
-addEventListener("contextmenu", (e) => (e.target as Element).closest("input, textarea, [contenteditable]") || e.preventDefault());
+addEventListener("contextmenu", (e) => (e.composedPath()[0] as Element).closest("input, textarea, [contenteditable]") || e.preventDefault());
 const ideas = ["add a scoreboard", "make it harder every round", "let us play in teams", "add sound effects", "add a timer and a winner", "give everyone a secret role", "surprise us with a twist"];
 function openChat() {
   chat.placeholder = `Chat, or ask your Claude: "${ideas[Math.floor(Math.random() * ideas.length)]}"`;
@@ -1725,9 +1737,9 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     e.preventDefault();
     return;
   }
-  if (e.code === "Tab" && (!typing() || document.activeElement!.closest("#layers") || menu.contains(document.activeElement))) {
+  if (e.code === "Tab" && (!typing() || focused()!.closest("#layers") || menu.contains(focused()))) {
     e.preventDefault();
-    (document.activeElement as HTMLElement).blur();
+    (focused() as HTMLElement).blur();
     return menu.hidden ? openMenu() : closeMenu();
   }
   if (!menu.hidden) return menuKey(e);
@@ -1885,15 +1897,15 @@ $("page-back").onclick = closePage;
 $("pages").tabIndex = -1;
 /** Esc goes back a level and then resumes; right opens the entry on the rail, left goes back to it. */
 function menuKey(e: KeyboardEvent) {
-  const inPage = $("pages").contains(document.activeElement);
-  const field = document.activeElement?.matches("input:not([type=range]), textarea, select, [contenteditable]");
+  const inPage = $("pages").contains(focused());
+  const field = focused()?.matches("input:not([type=range]), textarea, select, [contenteditable]");
   if (e.code === "Escape") {
     e.preventDefault();
     if (performance.now() - menuOpenedAt < 300) return;
     return $("pages").hidden ? closeMenu() : closePage();
   }
-  if (e.code === "ArrowRight" && !inPage && (document.activeElement as HTMLElement | null)?.dataset.tab) return openPage((document.activeElement as HTMLElement).dataset.tab!);
-  if (e.code === "ArrowLeft" && inPage && !field && !document.activeElement?.matches("input[type=range]")) return closePage();
+  if (e.code === "ArrowRight" && !inPage && (focused() as HTMLElement | null)?.dataset.tab) return openPage((focused() as HTMLElement).dataset.tab!);
+  if (e.code === "ArrowLeft" && inPage && !field && !focused()?.matches("input[type=range]")) return closePage();
 }
 
 /** Cmd+K: every menu tab, and every button and setting inside one, searchable in one list. Buttons run straight away. */
@@ -2065,14 +2077,14 @@ const connectCommand = (prompt: (tools: string) => string) => {
   const tools = `the ${bin} command: run it alone to list its tools, call one as ${bin} <tool> name=value, and give wait_for_chat calls a shell timeout of at least 300 seconds`;
   return `mkdir -p ~/.local/bin && curl -fsS -H ${shellQuote(`Authorization: Bearer ${key}`)} ${shellQuote(`${base}/cli?name=${slug(world)}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin} && ${HARNESSES[harness].launch(shellQuote(prompt(tools)), `~/.local/share/sandbox/${slug(world)}`)}`;
 };
-for (const button of document.querySelectorAll<HTMLButtonElement>("[data-harness]")) {
+for (const button of uiRoot.querySelectorAll<HTMLButtonElement>("[data-harness]")) {
   button.classList.toggle("active", button.dataset.harness === harness);
   button.onclick = () => {
     harness = button.dataset.harness as Harness;
     try {
       localStorage.setItem("sandbox-harness", harness);
     } catch {}
-    for (const b of document.querySelectorAll("[data-harness]")) b.classList.toggle("active", b === button);
+    for (const b of uiRoot.querySelectorAll("[data-harness]")) b.classList.toggle("active", b === button);
     openMenu();
   };
 }
@@ -2111,8 +2123,8 @@ async function refreshMenu() {
   const status = await (await fetch("/api/status", { headers: { authorization: `Bearer ${key}` } })).json();
   $("menu-players").replaceChildren(...status.online.map((p: string) => Object.assign(document.createElement("li"), { textContent: p === me ? `${p} (you)` : p })));
   // The rebuild keeps the keyboard on its vote button, or lands it on the first when the page just opened.
-  const voting = [...$("menu-mods").querySelectorAll("button")].indexOf(document.activeElement as HTMLButtonElement);
-  const landing = voting < 0 && document.activeElement === $("pages");
+  const voting = [...$("menu-mods").querySelectorAll("button")].indexOf(focused() as HTMLButtonElement);
+  const landing = voting < 0 && focused() === $("pages");
   $("menu-mods").replaceChildren(
     ...(status.mods.length
       ? status.mods.map((m: any) => {
@@ -2140,7 +2152,7 @@ async function refreshMenu() {
   if (voting >= 0 || landing) $("menu-mods").querySelectorAll("button")[Math.max(voting, 0)]?.focus();
 }
 
-for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy]"))
+for (const button of uiRoot.querySelectorAll<HTMLButtonElement>("[data-copy]"))
   button.onclick = async () => {
     const code = $(button.dataset.copy!);
     // Plain-http LAN links have no clipboard API, and an unfocused page is refused it.

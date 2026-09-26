@@ -1,5 +1,5 @@
 /* The front end shared by the main menu, the join screen and the in-game menu: big type, one amber block for focus, flat panels. */
-:root { --text: #f3f1ec; --dim: #8f8c86; --faint: rgba(243,241,236,.5); --line: rgba(255,255,255,.12); --accent: #ffb547; --ok: #7fe0a0; --err: #ff6b5b; --shade: rgba(7,8,10,.58); --pane: rgba(9,10,12,.9); --display: "Archivo Expanded", "Helvetica Neue", Arial, system-ui, sans-serif; }
+:root, :host { --text: #f3f1ec; --dim: #8f8c86; --faint: rgba(243,241,236,.5); --line: rgba(255,255,255,.12); --accent: #ffb547; --ok: #7fe0a0; --err: #ff6b5b; --shade: rgba(7,8,10,.58); --pane: rgba(9,10,12,.9); --display: "Archivo Expanded", "Helvetica Neue", Arial, system-ui, sans-serif; }
 
 @font-face { font-family: "Archivo Expanded"; src: url(/fonts/archivo-expanded.woff2) format("woff2"); font-weight: 600 900; font-display: swap; }
 

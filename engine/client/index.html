@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" style="display: block !important; visibility: visible !important; opacity: 1 !important">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
@@ -10,7 +10,9 @@
 { "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
 </script>
 <style>
-  :root { --veil: rgba(8,9,11,.84); --glass: rgba(8,9,11,.6); --line: rgba(255,255,255,.1); --text: #f3f1ec; --dim: #8f8c86; --accent: #ffb547; --ok: #7fe0a0; --err: #ff6b5b; --claude: #d4a0ff; }
+  /* The engine's UI is in a shadow root on #ui (see main.ts): these rules apply there as a copy, where nothing a mod adds to the page reaches. */
+  :host { all: initial !important; display: contents !important; font: 14px/1.4 "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif !important; color: var(--text) !important; }
+  :root, :host { --veil: rgba(8,9,11,.84); --glass: rgba(8,9,11,.6); --line: rgba(255,255,255,.1); --text: #f3f1ec; --dim: #8f8c86; --accent: #ffb547; --ok: #7fe0a0; --err: #ff6b5b; --claude: #d4a0ff; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: #16181b; color: var(--text); font: 14px/1.4 "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif; }
   canvas { display: block; }
@@ -55,7 +57,7 @@
   #builders { position: fixed; top: 64px; left: 24px; display: grid; gap: 6px; color: var(--claude); pointer-events: none; }
   #builders div { animation: pulse 1.6s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .45; } }
-  body.touch #builders { top: auto; bottom: 180px; }
+  :host(.touch) #builders { top: auto; bottom: 180px; }
   #toasts { position: fixed; top: 72px; right: 24px; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
   .toast { padding: 10px 14px; background: var(--veil); border-left: 2px solid var(--dim); animation: in .25s ease-out; max-width: 360px; }
   .toast.ok { border-color: var(--ok); } .toast.error { border-color: var(--err); }
@@ -73,12 +75,12 @@
   }
 
   .hud-area { position: fixed; z-index: 1000; display: flex; gap: 10px; pointer-events: none; }
-  .hud-area > * { pointer-events: auto; }
+  .hud-area > *, .hud-area ::slotted(*) { pointer-events: auto; }
   #hud-left { left: 24px; top: 50%; translate: 0 -50%; flex-direction: column; align-items: flex-start; }
   #hud-right { right: 24px; bottom: 24px; flex-direction: column-reverse; align-items: flex-end; }
   #hud-bottom { left: 50%; bottom: 24px; translate: -50% 0; flex-direction: column-reverse; align-items: center; }
-  body.touch #hud-bottom { bottom: 190px; }
-  @media (max-width: 900px) { body:not(.touch) #hud-bottom { bottom: 72px; } }
+  :host(.touch) #hud-bottom { bottom: 190px; }
+  @media (max-width: 900px) { :host(:not(.touch)) #hud-bottom { bottom: 72px; } }
   #interact { display: flex; align-items: center; gap: 12px; padding: 10px 18px 10px 10px; background: var(--veil); border-left: 3px solid var(--accent); cursor: pointer; }
   #interact kbd { margin: 0; }
   #layers { position: fixed; inset: 0; isolation: isolate; pointer-events: none; }
@@ -118,14 +120,14 @@
   #replay-chapters li.active { border-left-color: var(--accent); background: rgba(255,255,255,.07); }
   #replay-chapters li span { color: var(--accent); flex-shrink: 0; }
   #replay-chapters li b { font-weight: 600; }
-  body.replaying .hud-area > * { pointer-events: none; }
+  :host(.replaying) .hud-area > *, :host(.replaying) .hud-area ::slotted(*) { pointer-events: none; }
   /* Mods' HUD, layers and whatever they add to the page stay hidden in a replay until H and in the live view behind the join screen; a 2D world drawn in a layer instead of the 3D scene stays. */
-  body.replaying:not(.replay-hud) > :not(canvas:first-child, #layers, #hud, #join, #howto, #palette, #menu),
-  body.replaying:not(.replay-hud) .hud-area,
+  body.replaying:not(.replay-hud) > :not(canvas:first-child, #layers, #ui),
+  :host(.replaying:not(.replay-hud)) .hud-area,
   body.replaying:not(.replay-hud) > canvas:not([hidden]) ~ #layers,
-  body.spectating > :not(canvas:first-child, #layers, #hud, #join, #howto, #palette, #menu),
+  body.spectating > :not(canvas:first-child, #layers, #ui),
   body.spectating > canvas:not([hidden]) ~ #layers { display: none !important; }
-  body.replaying #interact, body.replaying #react, body.replaying #feed, body.replaying #hint, body.replaying #builders, body.replaying #top, body.replaying #chat, body.replaying #stick, body.replaying #jump, body.replaying #empty { display: none !important; }
+  :host(.replaying) :is(#interact, #react, #feed, #hint, #builders, #top, #chat, #stick, #jump, #empty) { display: none !important; }
   @media (max-width: 760px) {
     body.replaying { --deck: 112px; }
     #replay-bar { padding: 10px 16px; flex-wrap: wrap; align-content: center; }
@@ -162,7 +164,7 @@
   #pages { position: absolute; top: 0; bottom: 0; left: 400px; width: min(760px, calc(100vw - 440px)); padding: 72px 56px 40px; background: var(--pane); overflow-y: auto; }
   #pages .screen-title { font-size: 44px; margin-bottom: 28px; }
   #pages:focus { outline: none; }
-  body:has(#menu:not([hidden])) :is(#top, #feed, #hint, #builders, #chat, #empty) { visibility: hidden; }
+  #hud:has(~ #menu:not([hidden])) :is(#top, #feed, #hint, #builders, #chat, #empty) { visibility: hidden; }
   #menu .copy-row { max-width: 100%; }
   #menu .gap { height: 32px; }
   .field .range { display: flex; align-items: center; gap: 12px; }
@@ -203,7 +205,7 @@
   .overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(6,7,9,.5); padding: 16px; }
   .sheet { width: min(560px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; padding: 40px 44px; background: var(--veil); backdrop-filter: blur(10px); }
   @media (max-width: 600px) { .sheet { padding: 28px 20px; } }
-  body:has(#menu:not([hidden])) #howto { display: none; }
+  #howto:has(~ #menu:not([hidden])) { display: none; }
   #howto h1, #howto button { font-family: var(--display); }
   .sheet h1 { margin: 6px 0 0; font-size: 34px; line-height: 1.05; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; overflow-wrap: anywhere; }
   .sheet .kicker { color: var(--accent); margin: 0; }
@@ -240,20 +242,21 @@
   .keys dt span { display: inline-block; min-width: 26px; text-align: center; border: 1px solid rgba(255,255,255,.35); padding: 4px 7px; margin-right: 4px; }
   .keys dd { margin: 0; color: var(--dim); }
   .mod-keys:empty { display: none; }
-  body.touch .desk, body:not(.touch) .touchonly { display: none; }
+  :host(.touch) .desk, :host(:not(.touch)) .touchonly { display: none; }
 
   #top, #status, #chat, #hint, #builders, #react, #replay, #replay-caption, #replay-bar, #replay-feed, #replay-chapters, #stick, #jump, #announce { z-index: 1000; } .overlay { z-index: 1001; } #toasts { z-index: 1002; }
-  body.touch canvas { touch-action: none; }
-  body.touch #feed { top: 72px; bottom: auto; max-height: 24vh; width: calc(100vw - 130px); }
-  body.touch #chat { top: 72px; bottom: auto; }
-  body.touch #hint { bottom: auto; top: 72px; left: auto; right: 16px; color: var(--text); padding: 10px 14px; background: var(--glass); cursor: pointer; }
+  body.touch canvas, :host(.touch) canvas { touch-action: none; }
+  :host(.touch) #feed { top: 72px; bottom: auto; max-height: 24vh; width: calc(100vw - 130px); }
+  :host(.touch) #chat { top: 72px; bottom: auto; }
+  :host(.touch) #hint { bottom: auto; top: 72px; left: auto; right: 16px; color: var(--text); padding: 10px 14px; background: var(--glass); cursor: pointer; }
   #stick { position: fixed; left: 28px; bottom: 28px; width: 128px; height: 128px; border-radius: 50%; border: 1px solid rgba(255,255,255,.3); background: rgba(8,9,11,.25); touch-action: none; }
   #stick div { position: absolute; left: 40px; top: 40px; width: 48px; height: 48px; border-radius: 50%; background: rgba(255,255,255,.45); pointer-events: none; }
   #jump { position: fixed; right: 28px; bottom: 40px; width: 88px; height: 88px; border-radius: 50%; touch-action: none; background: rgba(8,9,11,.25); border-color: rgba(255,255,255,.3); }
 </style>
 </head>
-<body>
+<body style="display: block !important; visibility: visible !important; opacity: 1 !important">
 <div id="layers"></div>
+<div id="ui"></div>
 <div id="hud" hidden>
   <div id="top" class="shadow">
     <div id="world-name"></div>
@@ -281,10 +284,10 @@
     <button id="replay-hud">HUD<kbd class="desk">H</kbd></button>
     <button id="replay-leave">Leave<kbd class="desk">Esc</kbd></button>
   </div>
-  <div id="hud-left" class="hud-area"></div>
-  <div id="hud-right" class="hud-area"></div>
+  <div id="hud-left" class="hud-area"><slot name="left"></slot></div>
+  <div id="hud-right" class="hud-area"><slot name="right"></slot></div>
   <div id="hud-bottom" class="hud-area"><div id="interact" hidden><kbd class="desk">E</kbd><span></span></div>
-  <div id="react" hidden><span id="react-mod" class="caps"></span><button data-kind="love"><kbd class="desk">1</kbd> Love it <span></span></button><button data-kind="undo"><kbd class="desk">2</kbd> Vote to undo <span></span></button></div></div>
+  <div id="react" hidden><span id="react-mod" class="caps"></span><button data-kind="love"><kbd class="desk">1</kbd> Love it <span></span></button><button data-kind="undo"><kbd class="desk">2</kbd> Vote to undo <span></span></button></div><slot name="bottom"></slot></div>
   <div id="announce" hidden><div class="caps"></div><b></b><p></p></div>
   <div id="stick" hidden><div></div></div>
   <button id="jump" hidden>Jump</button>

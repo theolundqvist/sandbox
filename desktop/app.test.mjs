@@ -113,7 +113,7 @@ async function joinAs(page, name) {
   await page.locator("#join-name").waitFor();
   await page.fill("#join-name", name);
   await page.click("#join-go");
-  await until("the game", () => page.evaluate(() => document.getElementById("join").hidden));
+  await until("the game", () => page.locator("#join").isHidden());
 }
 
 /** A friend in the world, over a socket like the game's. */
@@ -226,7 +226,7 @@ describe("hosting and joining", () => {
     assert.equal(await game.textContent("#mic"), "Turn on voice");
     await game.locator("#mic").dispatchEvent("click");
     await game.locator("#voice-key").waitFor();
-    assert.equal(await game.evaluate(() => document.activeElement.id), "voice-key");
+    assert.equal(await game.locator("#voice-key").evaluate((el) => el.getRootNode().activeElement === el), true);
     assert.equal(await shown(game, "#howto"), false);
     await game.fill("#voice-key", "sk_wrong");
     await game.press("#voice-key", "Enter");
@@ -284,7 +284,7 @@ describe("hosting and joining", () => {
     assert.equal(await game.textContent("#mic"), "Voice off");
     await game.reload();
     await game.locator("#join").waitFor({ state: "hidden" });
-    assert.equal(await game.evaluate(() => document.getElementById("join").hidden), true);
+    assert.equal(await game.locator("#join").isHidden(), true);
     assert.match(game.url(), new RegExp(`^${other.url}/`));
     assert.deepEqual(clips, []);
     await until("the saved world", async () => state().recents.find((r) => r.url === other.url && r.name === "Snow Race"));
@@ -470,7 +470,7 @@ describe("updates", () => {
     const pid = app.process().pid;
     await answer(app, 0);
     releases.latest = "9.9.9";
-    await until("Update in the game", () => game.evaluate(() => !document.getElementById("menu-update").hidden));
+    await until("Update in the game", () => game.locator("#menu-update").evaluate((b) => !b.hidden));
     assert.equal(await shell.textContent("#go-update"), "Update9.9.9");
     await sleep(1500);
     assert.deepEqual(await asked(app), []);
@@ -483,8 +483,8 @@ describe("updates", () => {
     const own = state().port;
     releases.installer = null;
     await answer(app, 0);
-    await game.evaluate(() => document.getElementById("menu-update").click());
-    await until("the error", async () => game.evaluate(() => document.body.innerText.includes("The update didn't download. Check your connection.")));
+    await game.locator("#menu-update").evaluate((b) => b.click());
+    await until("the error", async () => game.getByText("The update didn't download. Check your connection.").isVisible());
     const [q] = await asked(app);
     assert.equal(q.message, "Update to Sandbox 9.9.9?");
     assert.match(q.detail, /^1 player is in Update Test\. Updating ends the game for them\.$/);
@@ -498,7 +498,7 @@ describe("updates", () => {
     const pid = app.process().pid;
     await answer(app, 0);
     const closed = new Promise((r) => app.once("close", r));
-    await game.evaluate(() => document.getElementById("menu-update").click());
+    await game.locator("#menu-update").evaluate((b) => b.click());
     await closed;
     await until("the installer", async () => existsSync(marker) && readFileSync(marker, "utf8").trim() === String(pid));
     assert.equal(await portAnswers(own), false);
@@ -549,8 +549,29 @@ describe("in a browser", () => {
     await page.keyboard.press("Escape");
     await page.fill("#join-name", "Browser");
     await page.click("#join-go");
-    await until("the game", () => page.evaluate(() => document.getElementById("join").hidden));
+    await until("the game", () => page.locator("#join").isHidden());
     assert.ok(page.url().startsWith(other.url));
+  });
+
+  test("a mod that hides everything on the page leaves the vote bar and the chat usable", async () => {
+    const { key } = await (await fetch(`${other.url}/api/join`, { method: "POST", body: JSON.stringify({ invite: other.invite, name: "blackout" }) })).json();
+    const tool = async (name, args) => {
+      const form = new FormData();
+      for (const [k, v] of Object.entries(args)) form.append(k, typeof v === "string" ? v : JSON.stringify(v));
+      return (await fetch(`${other.url}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form })).text();
+    };
+    const content = `import type { ClientMod } from "../../api";
+export default { init(ctx) { if (ctx.playerId === "browser") document.head.append(Object.assign(document.createElement("style"), { textContent: "* { display: none !important; }" })); } } satisfies ClientMod;`;
+    await tool("write_file", { path: "mods/blackout/client.ts", content });
+    assert.match(await tool("reload", { mod: "blackout", announce: { title: "Blackout", text: "Lights out" } }), /^blackout v1 is live/);
+    await page.click("#howto-play");
+    await page.locator("#react").waitFor();
+    await page.keyboard.press("1");
+    assert.match(await page.getAttribute("#react [data-kind=love]", "class"), /picked/);
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("still here");
+    await page.keyboard.press("Enter");
+    await until("the chat line", async () => (await page.textContent("#feed")).includes("browser: still here"));
   });
 });
 
@@ -565,7 +586,7 @@ describe("the host closes the game", () => {
     await shell.press("#join-link", "Enter");
     game = await gamePage(app);
     await joinAs(game, "stayer");
-    assert.match(await game.evaluate(() => getComputedStyle(document.querySelector("#howto h1")).fontFamily), /^"Archivo Expanded"/);
+    assert.match(await game.locator("#howto h1").evaluate((el) => getComputedStyle(el).fontFamily), /^"Archivo Expanded"/);
     const peek = await guest(other.url, other.invite, "peek");
     peek.close();
     await game.reload();

@@ -90,14 +90,21 @@ export function pick(el, onChange) {
 }
 
 const FOCUSABLE = "button, input, select, textarea, a[href], [tabindex='0']";
+/** The focused element, inside the game's shadow-rooted UI too, and every place a list can be. */
+const focused = () => {
+  let el = document.activeElement;
+  while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
+  return el;
+};
+const roots = () => [document, ...[...document.body.children].flatMap((el) => el.shadowRoot ?? [])];
 const shown = (el) => el.getClientRects().length > 0 && !el.disabled && !el.closest("[hidden], [aria-disabled=true]");
 
 /** Up and down move between the controls of the list the focus is in, left and right change a pick, Enter steps it. */
 addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const active = document.activeElement;
+  const active = focused();
   if (active?.matches("select, textarea, input[type=number]")) return;
-  const lists = [...document.querySelectorAll("[data-nav]")].filter(shown);
+  const lists = roots().flatMap((root) => [...root.querySelectorAll("[data-nav]")]).filter(shown);
   const list = active?.closest("[data-nav]") ?? (active === document.body && lists.length === 1 ? lists[0] : null);
   if (!list || !shown(list)) return;
   if (active?.classList.contains("pick") && ["ArrowLeft", "ArrowRight", "Enter"].includes(e.key)) {
@@ -117,8 +124,8 @@ addEventListener("keydown", (e) => {
 // The mouse moves the focus, so one entry is ever marked; not away from a name being typed.
 addEventListener("pointermove", (e) => {
   if (e.pointerType !== "mouse") return;
-  const item = e.target.closest?.("[data-nav] button.item");
-  if (item && item !== document.activeElement && !document.activeElement?.matches("input[type=text], textarea")) item.focus({ preventScroll: true });
+  const item = e.composedPath()[0].closest?.("[data-nav] button.item");
+  if (item && item !== focused() && !focused()?.matches("input[type=text], textarea")) item.focus({ preventScroll: true });
 });
 
 const JOIN_CODE = /^[2-9A-HJKMNP-Z]{6}$/;
