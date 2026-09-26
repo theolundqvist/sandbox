@@ -1,3 +1,6 @@
 node_modules
 .build
 data
+.env
+.claude/
+.playwright-mcp/
