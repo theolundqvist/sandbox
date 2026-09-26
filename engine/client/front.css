@@ -70,6 +70,8 @@
 
 /* A world as a row with its picture: dim until the row is picked, like its name. */
 .item.pictured { align-items: center; white-space: normal; }
+/* Picture rows need more than a menu's width, so names fit before the status. */
+.screen:has(.item.pictured) { width: min(960px, 100%); }
 .item.pictured .what { flex: 1; min-width: 0; font-size: 26px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item.pictured small { display: block; margin-top: 6px; color: var(--dim); font: 600 15px/1.3 system-ui, sans-serif; letter-spacing: normal; text-transform: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cover { width: 160px; aspect-ratio: 16 / 9; flex: none; background: #1b1c1f; opacity: .6; transition: opacity .12s ease-out; }
