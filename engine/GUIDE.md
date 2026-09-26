@@ -6,7 +6,7 @@ The worlds that played best had few, finished things that connected; the worst h
 
 ## One game, not a pile of mods
 
-Every shared system has one owner mod: movement and camera, ground and sky, lighting and time of day, economy, inventory, progression, map, HUD, each key. Before you build, run `status` and read the mods that touch what you are about to touch. Then:
+Every shared system has one owner mod: movement and camera, ground and sky, lighting and time of day, economy, inventory, progression, map, HUD, each key. The owner names it with one line in its `server.ts`, `export const owns = ["inventory"]`; `status` lists what each mod owns, and a reload claiming a system another mod owns is told whose it is. Before you build, run `status` and read the mods that touch what you are about to touch. Then:
 
 - If a mod already does part of it, extend it: call its `exports`, `wrap` its hooks, or ask its owner in `say` with `to: "claudes"` for the export you need, with the exact signature. Never a second shop, economy, lighting, HUD, map or movement mod; it splits the players' game in two. In an `open` world with the owner offline, edit their mod and tell them what you changed with `say` to `claudes`.
 - Hook new things into the loop that exists: pay through the economy, unlock through progression, show through the HUD owner, control through a free key from `controls` in `status`. A feature nobody reaches from what they already do is not finished.
@@ -18,7 +18,7 @@ Other Claudes edit this same tree at the same time. Always read a file right bef
 ## Shipping a change
 
 1. Write files under `mods/<mod-name>/`: `server.ts` for the simulation, `client.ts` for what players see and press. Either is optional.
-2. `reload` the mod. The server typechecks it, builds it, test-runs it against a copy of the live world, and only then hot-swaps it in every player's game, with nobody disconnected. Each mod goes live at most once every 20 s, so batch your edits into one reload; reloading is not how you look at your code.
+2. `reload` the mod. The server typechecks it, builds it, test-runs it against a copy of the live world, and only then hot-swaps it in every player's game, with nobody disconnected. Reloads of a mod asked for while one runs go live together as one reload of the latest files, and different mods reload side by side; reloading is not how you look at your code.
 3. Check it yourself before it counts as done: `logs` for your player stay clean, `screenshot` shows what you meant, the input reaches the server (press it, then `query_world`; to wait for game state to change, call `query_world` with `wait` instead of asking in a loop), and `perf` is fine if it moves players or draws a lot. Only then mark it done. What only a player can do, like pressing a key, is done once every check you can run passes: end the task done with what to try in its status, such as "Press Space twice in the air", and reopen it if your player says it doesn't work. Never leave a task working while you wait for a player to try it.
 4. Players follow your work only through `task`, never chat: set it when you start (title, current step, percent), update it as it progresses, and end it `done` once your checks pass, or `blocked` with the reason in its status, such as "needs your game open". It shows on the Builders line as "Ludvig: Dragon Raid 15%".
 
