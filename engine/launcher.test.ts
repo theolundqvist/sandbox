@@ -268,6 +268,11 @@ test("a world that crashes is hosted again by itself, a Claude waiting on it is 
   const player = await (await fetch(`${base}/api/join`, { method: "POST", body: JSON.stringify({ invite: s.running.invite, name: "stayer" }) })).json();
   const world = () => Number(readdirSync(`/proc/${launcher.pid}/task`).flatMap((t) => readFileSync(`/proc/${launcher.pid}/task/${t}/children`, "utf8").trim().split(" ")).find(Boolean));
   const first = world();
+  const reload = new FormData();
+  reload.append("mod", "basics");
+  expect((await fetch(`${base}/cli/reload`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: reload })).status).toBe(200);
+  // The world samples itself every 10 s.
+  for (let i = 0; i < 150 && !count(join(data, "worlds", s.running.id, "record.sqlite"), "select count(*) n from events where kind = 'server'"); i++) await Bun.sleep(100);
   const form = new FormData();
   form.append("seconds", "30");
   const waiting = fetch(`${base}/cli/wait_for_chat`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: form });
@@ -291,6 +296,7 @@ test("a world that crashes is hosted again by itself, a Claude waiting on it is 
   expect(world()).not.toBe(first);
   const log = readFileSync(join(data, "worlds", s.running.id, "world.log"), "utf8");
   expect(log.match(/Crashy is running/g)).toHaveLength(2);
+  expect(log).toMatch(/\[launcher\] exited with SIGABRT after \d+ s\. Last sample \d+ s ago: \d+ MB RSS, \d+ MB heap\. Last reload \d+ s ago: basics by stayer, v\d+\.\n/);
   launcher.kill();
 }, 60_000);
 const hostMenu = async () => {

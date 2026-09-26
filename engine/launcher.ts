@@ -113,6 +113,17 @@ async function host(id: string, notice?: string) {
     sampleProxy(record);
     const lastSample = record.rows({ kind: "server", since: started, limit: 1 })[0];
     record.add("exit", null, { code: proc.exitCode, signal: proc.signalCode, stopped, seconds: Math.round((Date.now() - started) / 1000), lastSample, lastLines });
+    // Under whatever the world printed as it died, what the launcher knew about it.
+    if (!stopped && proc.exitCode !== 0) {
+      const ago = (at: number) => `${Math.round((Date.now() - at) / 1000)} s ago`;
+      const reload = record.rows({ kind: "reload", since: started, limit: 1 })[0];
+      log.write(
+        `[launcher] exited with ${how} after ${Math.round((Date.now() - started) / 1000)} s. ` +
+          (lastSample ? `Last sample ${ago(lastSample.at)}: ${lastSample.data.rssMB} MB RSS, ${lastSample.data.heapMB} MB heap. ` : "No sample yet. ") +
+          (reload ? `Last reload ${ago(reload.at)}: ${reload.data.mod} by ${reload.who}, ${reload.data.ok ? `v${reload.data.version}` : `failed at ${reload.data.stage}`}.` : "No reload since it started.") +
+          "\n",
+      );
+    }
     record.close();
     log.end();
   });
