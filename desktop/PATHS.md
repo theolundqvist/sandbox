@@ -23,6 +23,7 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | At start, download fails | launch | menu opens, Update offered | app: starting up, fails at start |
 | At start, install didn't take | relaunch still old | opens as it is, Update offered, no install loop | app: starting up, didn't bring the new version |
 | Release while running | poll | Update on the title and in the game menu; never restarts by itself, hosting or not; applied at the next start | app: release while hosting |
+| Which installer | any update | from 0.2.6 the installer script and the build come from the tag being installed, so master cannot break updates; older apps still fetch master's installer | app: newer release installs |
 | Update from the menu | Update | Downloading…, installer handoff, app quits, relaunches | app: downloads before quitting |
 | Update, failure | Update, download fails | app stays open, "The update didn't download. Check your connection." | app: failed download |
 | Update, friends online | Update | asks first, naming the players; after restart hosting resumes under the same code and the host is back in the game | app: failed download (dialog), after the update |
