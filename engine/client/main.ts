@@ -865,7 +865,7 @@ function addLine(text: string, kind = "info", feed = $("feed")) {
   return line;
 }
 const chatLine = (from: string, text: string, spoken?: boolean) =>
-  [`${from}${spoken ? " (voice)" : ""}: ${text}`, from.endsWith("'s Claude") || from === "Game master" ? "claude" : spoken ? "chat spoken" : "chat"] as const;
+  [`${from}${spoken ? " (voice)" : ""}: ${text}`, from.endsWith("'s Claude") ? "claude" : spoken ? "chat spoken" : "chat"] as const;
 
 /** After a mod arrives, players have 30 s to love it or vote it out. */
 let reacting = "";
@@ -1702,8 +1702,7 @@ chat.addEventListener("keydown", (e: KeyboardEvent) => {
 $("menu-button").onclick = () => openMenu();
 
 type Builder = { state: "listening" | "working" | "offline"; task?: { title: string; status: string; percent?: number; state: "working" | "done" | "blocked" } };
-const GAME_MASTER = "gamemaster";
-const builderName = (name: string) => (name === GAME_MASTER ? "Game master" : `${name}'s Claude`);
+const builderName = (name: string) => `${name}'s Claude`;
 let claudes = new Map<string, Builder>();
 /** Everyone sees what every Claude is building: a HUD line per busy Claude and the Builders tab. */
 function showBuilders() {
@@ -1973,29 +1972,37 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
 
 /** Single-quotes a shell argument, so prompts may contain apostrophes and world names anything. */
 const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
-let via = "cli";
-try {
-  via = localStorage.getItem("sandbox-via") ?? "cli";
-} catch {}
-/** Starts a Claude connected to this world, through a shell command it installs (fewer tokens than MCP tool schemas) or through MCP. */
-const connectCommand = (prompt: (tools: string) => string, key: string | null, command: string) => {
-  const base = publicUrl ?? origin;
-  if (via === "mcp") {
-    const name = slug(world);
-    return `claude ${shellQuote(prompt(`the ${name} MCP tools`))} --mcp-config ${shellQuote(JSON.stringify({ mcpServers: { [name]: { type: "http", url: `${base}/mcp`, headers: { Authorization: `Bearer ${key}` } } } }))} --allowedTools mcp__${name} Agent WebSearch WebFetch`;
-  }
-  const bin = `~/.local/bin/${command}`;
-  const tools = `the ${bin} command: run it alone to list its tools, call one as ${bin} <tool> name=value, and give wait_for_chat calls a Bash timeout of 300000`;
-  return `mkdir -p ~/.local/bin && curl -fsS -H ${shellQuote(`Authorization: Bearer ${key}`)} ${shellQuote(`${base}/cli?name=${command}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin} && claude ${shellQuote(prompt(tools))} --allowedTools ${shellQuote(`Bash(${bin}:*)`)} Agent WebSearch WebFetch`;
+/** Permissions off everywhere; only Claude Code can refuse to end a turn (the Stop hook), Codex and OMP keep listening on the prompt alone. */
+const HARNESSES = {
+  claude: {
+    launch: (prompt: string) =>
+      `claude ${prompt} --dangerously-skip-permissions --settings ${shellQuote(JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: `echo ${shellQuote(JSON.stringify({ decision: "block", reason: "Keep listening: call wait_for_chat and keep building for the whole session. Never end the turn." }))}` }] }] } }))}`,
+    install: "curl -fsSL https://claude.ai/install.sh | bash",
+  },
+  codex: { launch: (prompt: string) => `codex --dangerously-bypass-approvals-and-sandbox ${prompt}`, install: "npm i -g @openai/codex" },
+  omp: { launch: (prompt: string) => `omp --approval-mode=yolo ${prompt}`, install: "curl -fsSL https://omp.sh/install | sh" },
 };
-for (const button of document.querySelectorAll<HTMLButtonElement>("[data-via]")) {
-  button.classList.toggle("active", button.dataset.via === via);
+type Harness = keyof typeof HARNESSES;
+let harness: Harness = "claude";
+try {
+  const saved = localStorage.getItem("sandbox-harness");
+  if (saved && saved in HARNESSES) harness = saved as Harness;
+} catch {}
+/** Starts the chosen agent connected to this world through a shell command it installs first (fewer tokens than MCP tool schemas). */
+const connectCommand = (prompt: (tools: string) => string) => {
+  const base = publicUrl ?? origin;
+  const bin = `~/.local/bin/${slug(world)}`;
+  const tools = `the ${bin} command: run it alone to list its tools, call one as ${bin} <tool> name=value, and give wait_for_chat calls a shell timeout of at least 300 seconds`;
+  return `mkdir -p ~/.local/bin && curl -fsS -H ${shellQuote(`Authorization: Bearer ${key}`)} ${shellQuote(`${base}/cli?name=${slug(world)}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin} && ${HARNESSES[harness].launch(shellQuote(prompt(tools)))}`;
+};
+for (const button of document.querySelectorAll<HTMLButtonElement>("[data-harness]")) {
+  button.classList.toggle("active", button.dataset.harness === harness);
   button.onclick = () => {
-    via = button.dataset.via!;
+    harness = button.dataset.harness as Harness;
     try {
-      localStorage.setItem("sandbox-via", via);
+      localStorage.setItem("sandbox-harness", harness);
     } catch {}
-    for (const b of document.querySelectorAll("[data-via]")) b.classList.toggle("active", b === button);
+    for (const b of document.querySelectorAll("[data-harness]")) b.classList.toggle("active", b === button);
     openMenu();
   };
 }
@@ -2018,10 +2025,9 @@ async function openMenu() {
   $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;
   $("invite-code-row").hidden = !joinCode;
   $("invite-code").textContent = joinCode ? `${joinCode.slice(0, 3)}-${joinCode.slice(3)}` : "";
+  $("claude-install").textContent = HARNESSES[harness].install;
   $("claude-command").textContent = connectCommand(
-    (tools) => `We are playing ${world} together right now: a live multiplayer game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through ${tools}, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and when I hold T or have the chat open my voice is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 240, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
-    key,
-    slug(world),
+    (tools) => `We are playing ${world} together right now: a live multiplayer game that my friends and I build while we play it, each with our own coding agent. I am ${me} in the game. You are connected to the game server through ${tools}, and anything you reload goes live for every player at once, so make it one coherent game that is fun for everyone: extend what the others built instead of building it again, and check that a thing works before you tell me it does. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. From then on I talk to you only through the in-game chat, and when I hold T or have the chat open my voice is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. Call wait_for_chat with seconds 240, build what I (${me}) ask for there, say what you did in a line, and call wait_for_chat again. Keep that up for the whole session: nothing ever arrives in this terminal, so never end your turn to wait for me.`,
   );
   showBuilders();
   await refreshMenu();
@@ -2030,12 +2036,6 @@ async function openMenu() {
 const myVotes = new Map<string, string>();
 async function refreshMenu() {
   const status = await (await fetch("/api/status", { headers: { authorization: `Bearer ${key}` } })).json();
-  $("gm-command").textContent = connectCommand(
-    (tools) => `You are the game master of ${world}, a live multiplayer game that my friends and I build with our own Claudes while we play it. You are connected to the game server through ${tools} as the game master, shared by every player. Start with the status tool, read GUIDE.md (especially its Game master section), then run the game master loop it describes until I tell you to stop.`,
-    status.gameMaster.key,
-    `${slug(world)}-gm`,
-  );
-  $("gm-state").textContent = { working: "Running", listening: "Running", offline: "" }[status.gameMaster.state as Builder["state"]];
   $("menu-players").replaceChildren(...status.online.map((p: string) => Object.assign(document.createElement("li"), { textContent: p === me ? `${p} (you)` : p })));
   // The rebuild keeps the keyboard on its vote button, or lands it on the first when the page just opened.
   const voting = [...$("menu-mods").querySelectorAll("button")].indexOf(document.activeElement as HTMLButtonElement);
