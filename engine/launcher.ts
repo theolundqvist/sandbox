@@ -115,8 +115,17 @@ async function host(id: string) {
   });
 }
 
+const NAMES = ["Amber Hollow", "Cinder Flats", "Frost Reach", "Copper Bay", "Ember Ridge", "Moss Harbor", "Salt Mesa", "Iron Grove", "Dune Sea", "Glass Lake", "Thorn Vale", "Echo Point", "Pine Barrens", "Stone Garden", "Lantern Isle", "Fog Basin"];
+
+/** A name no other world here has, for a world created without one. */
+function freshName() {
+  const taken = new Set(worlds().map((w) => w.name));
+  const free = NAMES.filter((n) => !taken.has(n));
+  return free.length ? free[Math.floor(Math.random() * free.length)]! : `World ${taken.size + 1}`;
+}
+
 function create(body: any) {
-  const name = String(body.name || "Sandbox").trim().slice(0, 40);
+  const name = String(body.name ?? "").trim().slice(0, 40) || freshName();
   const id = `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "world"}-${token().slice(0, 4)}`;
   const world: Config = { name, rules: body.rules === "additive" ? "additive" : "open", start: ["hills", "blank"].includes(body.start) ? body.start : "basics", invite: token(), hostKey: token() };
   mkdirSync(join(WORLDS, id));
