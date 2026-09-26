@@ -3,7 +3,26 @@ import type * as THREE from "three";
 
 export type Entity = Record<string, any>;
 
-export type Player = { id: string; name: string };
+/** `game` is the game the player is in, or null in the world's own hub; world.enter moves them. */
+export type Player = { id: string; name: string; readonly game: string | null };
+
+export type GameStatus = "live" | "early" | "building";
+/** A game played inside a world: its card in the picker (games.json). Mods join it with `game: "<id>"`. */
+export type Game = {
+  id: string;
+  title: string;
+  tagline: string;
+  color: string;
+  accent?: string;
+  status: GameStatus;
+  /** Picker order, then title. */
+  order?: number;
+  spawn?: [number, number, number];
+  /** A client mod whose default export has paintCard(canvas, t). */
+  art?: string;
+  createdBy: string;
+  createdAt: number;
+};
 
 /** A solid entity's box: centre, half extents and yaw. */
 export type SolidBox = { readonly id: number; readonly x: number; readonly y: number; readonly z: number; readonly hx: number; readonly hy: number; readonly hz: number; readonly yaw: number };
@@ -58,6 +77,10 @@ export interface World {
   spawn(entity: Entity): number;
   remove(id: number): void;
   query(...components: string[]): [number, Entity][];
+  /** Moves a player into a game, or with null into the world's own hub. False if they aren't in this mod's game, the game doesn't exist or they are already there. */
+  enter(player: string, game: string | null): boolean;
+  /** The players in this mod's game (for a shared mod: in the game it runs in), the same as `players`. */
+  playersInGame(): Map<string, Player>;
 }
 
 export interface ServerHooks {
@@ -68,6 +91,10 @@ export interface ServerHooks {
   leave?(world: World, player: Player): void;
   /** A message a client mod sent with ctx.send. */
   message?(world: World, player: Player, msg: any): void;
+  /** Game mods only: a player came into this game, by switching to it or joining the world while in it. Runs after join. */
+  enterGame?(world: World, player: Player): void;
+  /** Game mods only: a player left this game, by switching away or leaving the world. Runs before leave. */
+  exitGame?(world: World, player: Player): void;
   /** Return false to hide an entity from a player (fog of war, hidden roles). Entities with `only: [playerIds]` are hidden from everyone else without a hook. */
   see?(world: World, player: Player, id: number, entity: Entity): boolean | void;
 }
@@ -77,6 +104,8 @@ type Wrapped<H> = {
 };
 
 export interface ServerMod extends ServerHooks {
+  /** The game this mod belongs to: it runs only there, and its client only for players in it. Write it as a string literal, the same in client.ts. Leave it out for a mod every game shares. */
+  game?: string;
   /** Mods run in ascending order (default 0), then by name. */
   order?: number;
   /** Intercept another mod's hooks by its folder name: call next(...) to let it run, change the args, or skip it. */
@@ -98,6 +127,8 @@ export interface ClientCtx {
   /** The same collision queries as the server's world.physics, over the replicated entities. */
   physics: Physics;
   playerId: string;
+  /** The game the local player is in, or null in the world's own hub. */
+  readonly game: string | null;
   /** Currently held keys, as KeyboardEvent.code (e.g. "KeyW", "Space"). */
   keys: Set<string>;
   /** Sends a message to this mod's server half. */
@@ -180,7 +211,11 @@ export interface ReplayShot {
 type ClientWrapped = { [K in keyof ClientHooks]?: (next: (...args: any[]) => any, ctx: ClientCtx, ...args: any[]) => any };
 
 export interface ClientMod extends ClientHooks {
+  /** As ServerMod's game. */
+  game?: string;
   order?: number;
+  /** Paints a game's card in the games picker, for the game whose `art` names this mod; t is seconds since the card showed. */
+  paintCard?(canvas: HTMLCanvasElement, t: number): void;
   wrap?: Record<string, ClientWrapped>;
   /** Called as ctx.use("<this mod>").fn(...args); they receive (ctx, ...args). */
   exports?: Record<string, (ctx: ClientCtx, ...args: any[]) => any>;

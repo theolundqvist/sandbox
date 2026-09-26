@@ -1,14 +1,24 @@
+import { rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Entity, Player } from "./api";
 import type { Diff, Tick } from "./world";
 
-
-export type RunningMod = { name: string; id: number; server: string | null };
+/** `game` is the game the mod belongs to, or null for a mod every game shares. */
+export type RunningMod = { name: string; id: number; server: string | null; game: string | null };
 /** The server put a player somewhere other than where their own game or another mod had just moved them. */
 export type Correction = { at: number; mod: string; hook: string; player: string; entity: number; overruled: string; from: number[]; to: number[]; wanted: number[] | null; repeats: number };
+export type Perf = { msPerTick: number; p50: number; p95: number; max: number; mods: Record<string, number>; modTicks: Record<string, { p95: number; max: number }> };
 
 const HANG_MS = 2000;
 /** Starting a trial loads every server mod, which takes seconds on a busy machine; only its ticks count as hanging. */
 const TRIAL_START_MS = 15_000;
+/** A game whose process keeps dying at start waits this long before the next try, so it can't spin. */
+const CRASH_BACKOFF_MS = 1000;
+const SIM = new URL("./sim.ts", import.meta.url);
+
+/** How a host reaches its simulation: a worker in this process for the hub, a child process for a game. */
+type Channel = { send(msg: object): void; retire(now?: boolean): void; pid: number | null };
 
 /** Closes a worker's databases before terminating it, since Bun never frees what a terminated worker left open; one too stuck to answer is terminated anyway. */
 function retire(worker: Worker) {
@@ -21,17 +31,56 @@ function retire(worker: Worker) {
   worker.postMessage({ t: "close" });
 }
 
+function workerChannel(receive: (msg: any) => void, log: (text: string) => void): Channel {
+  const worker = new Worker(SIM);
+  worker.onerror = (e) => log(`simulation worker: ${e.message}`);
+  worker.onmessage = ({ data }) => receive(data);
+  return { send: (msg) => worker.postMessage(msg), retire: () => retire(worker), pid: null };
+}
+
+/** A game's own process: a busy or crashing mod stops only that game, and its exit frees everything it loaded. */
+function processChannel(receive: (msg: any) => void, exited: (code: number | string) => void): Channel {
+  let retiring = false;
+  const proc = Bun.spawn([process.execPath, SIM.pathname], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "inherit",
+    ipc: (msg) => (msg.t === "closed" ? proc.kill("SIGKILL") : receive(msg)),
+  });
+  proc.exited.then((code) => retiring || exited(proc.signalCode ?? code));
+  return {
+    send: (msg) => {
+      try {
+        proc.send(msg);
+      } catch {}
+    },
+    retire(now) {
+      retiring = true;
+      if (now) return void proc.kill("SIGKILL");
+      setTimeout(() => proc.kill("SIGKILL"), 500);
+      try {
+        proc.send({ t: "close" });
+      } catch {}
+    },
+    pid: proc.pid,
+  };
+}
+
 export class SimHost {
   entities = new Map<number, Entity>();
   nextId = 1;
-  perf: { msPerTick: number; p50: number; p95: number; max: number; mods: Record<string, number>; modTicks: Record<string, { p95: number; max: number }> } | null = null;
+  perf: Perf | null = null;
   players = new Map<string, Player>();
   watchers = new Set<string>();
-  /** Which mod spawned each entity, kept across worker restarts. */
+  /** Which mod spawned each entity, kept across restarts. */
   creators = new Map<number, string>();
   corrections: Correction[] = [];
-  private worker!: Worker;
-  private beat = new Int32Array(new SharedArrayBuffer(8));
+  private channel: Channel | null = null;
+  private beat: Int32Array;
+  private beatFile: string | null = null;
+  /** Until the simulation has loaded its mods, only a much longer silence counts as hanging. */
+  private ready = false;
+  private startedAt = 0;
   private applying = new Map<string, (error: string | null) => void>();
 
   constructor(
@@ -41,61 +90,68 @@ export class SimHost {
       tick(outs: Record<string, string>, diff: Diff): void;
       log(mod: string, level: string, text: string): void;
       fault(mod: string, error: string): void;
+      /** A mod asked with world.enter to move a player. */
+      enter?(player: string, game: string | null): void;
+      /** A mod to blame when the process dies with none running, like one reloaded just before. */
+      crashSuspect?(): string | undefined;
     },
+    /** The game this host runs, in a process of its own; null for the world's own hub. */
+    readonly game: string | null = null,
+    private games: () => string[] = () => [],
   ) {
+    if (game === null) this.beat = new Int32Array(new SharedArrayBuffer(8));
+    else {
+      // Processes share no memory, so the heartbeat goes through a file both map.
+      const file = (this.beatFile = join(tmpdir(), `sandbox-beat-${process.pid}-${game}`));
+      writeFileSync(file, new Uint8Array(8));
+      const mapped = Bun.mmap(file);
+      this.beat = new Int32Array(mapped.buffer, mapped.byteOffset, 2);
+      process.on("exit", () => rmSync(file, { force: true }));
+    }
     let lastBeat = -1;
     let lastChange = Date.now();
     setInterval(() => {
       const b = Atomics.load(this.beat, 0);
-      if (b !== lastBeat) {
+      if (b !== lastBeat || !this.channel) {
         lastBeat = b;
         lastChange = Date.now();
         return;
       }
-      if (Date.now() - lastChange < HANG_MS) return;
-      const culprit = this.mods().find((m) => m.id === Atomics.load(this.beat, 1));
-      retire(this.worker);
+      if (Date.now() - lastChange < (this.ready ? HANG_MS : TRIAL_START_MS)) return;
+      const culprit = this.culprit();
+      this.channel.retire(true);
       if (culprit) this.on.fault(culprit.name, `froze the server for over ${HANG_MS / 1000} s`);
       this.start();
       lastChange = Date.now();
     }, 250);
   }
 
+  get running() {
+    return !!this.channel;
+  }
+
+  get pid() {
+    return this.channel?.pid ?? null;
+  }
+
+  private culprit() {
+    return this.mods().find((m) => m.id === Atomics.load(this.beat, 1));
+  }
+
   start() {
     Atomics.store(this.beat, 1, 0);
-    const worker = (this.worker = new Worker(new URL("./sim.ts", import.meta.url)));
-    this.worker.onerror = (e) => this.on.log("engine", "error", `simulation worker: ${e.message}`);
-    this.worker.onmessage = ({ data: msg }) => {
-      if (worker !== this.worker) return;
-      if (msg.t === "tick") {
-        const d: Diff = msg.diff;
-        for (const [id, set] of Object.entries(d.set)) this.entities.set(Number(id), { ...this.entities.get(Number(id)), ...set });
-        for (const [id, keys] of Object.entries(d.unset)) {
-          const e = this.entities.get(Number(id));
-          if (e) for (const k of keys) delete e[k];
-        }
-        for (const [id, mod] of Object.entries(msg.made as Record<string, string>)) this.creators.set(Number(id), mod);
-        for (const id of d.removed) {
-          this.entities.delete(id);
-          this.creators.delete(id);
-        }
-        this.nextId = msg.nextId;
-        this.on.tick(msg.outs, d);
-      } else if (msg.t === "log") this.on.log(msg.mod, msg.level, msg.text);
-      else if (msg.t === "perf") this.perf = msg;
-      else if (msg.t === "fault") this.on.fault(msg.mod, msg.error);
-      else if (msg.t === "applied") this.applying.get(msg.name)?.(msg.error);
-      else if (msg.t === "correction") {
-        const { t, ...c } = msg;
-        if (this.corrections.push(c) > 500) this.corrections.shift();
-      } else if (msg.t === "answer") {
-        this.asking.get(msg.id)?.(msg.value);
-        this.asking.delete(msg.id);
-      }
-    };
-    this.worker.postMessage({
+    this.ready = false;
+    this.startedAt = Date.now();
+    const receive = (msg: any) => channel === this.channel && this.receive(msg);
+    const channel: Channel =
+      this.game === null ? workerChannel(receive, (text) => this.on.log("engine", "error", text)) : processChannel(receive, (code) => channel === this.channel && this.crashed(code));
+    this.channel = channel;
+    channel.send({
       t: "init",
-      beat: this.beat.buffer,
+      beat: this.game === null ? this.beat.buffer : undefined,
+      beatFile: this.beatFile,
+      game: this.game,
+      games: this.games(),
       entities: Object.fromEntries(this.entities),
       nextId: this.nextId,
       players: [...this.players.values()],
@@ -106,13 +162,66 @@ export class SimHost {
     });
   }
 
+  /** The mod running when the process died is blamed, as for a freeze, else one reloaded within the last minute; the game restarts from the last state it sent. */
+  private crashed(code: number | string) {
+    const culprit = this.culprit()?.name;
+    const suspect = culprit ? undefined : this.on.crashSuspect?.();
+    this.on.log("engine", "error", `game ${this.game}'s process stopped (${code})${culprit ? ` in ${culprit}` : ""}; restarting it${suspect ? ` without the last change to ${suspect}` : ""}`);
+    if (culprit) this.on.fault(culprit, `crashed its game's process (${code})`);
+    else if (suspect) this.on.fault(suspect, `its game's process crashed (${code}) within a minute of this reload, so it was undone. Its files still have the change: find what crashed it before reloading it again.`);
+    this.channel = null;
+    const soon = Date.now() - this.startedAt < 5000;
+    setTimeout(() => !this.channel && this.start(), soon ? CRASH_BACKOFF_MS : 0);
+  }
+
+  /** Stops the simulation and forgets its world; whoever stops it saves the world first. */
+  stop() {
+    this.channel?.retire();
+    this.channel = null;
+    this.ready = false;
+    this.perf = null;
+    this.entities.clear();
+    this.creators.clear();
+    this.players.clear();
+  }
+
+  private receive(msg: any) {
+    if (msg.t === "tick") {
+      const d: Diff = msg.diff;
+      for (const [id, set] of Object.entries(d.set)) this.entities.set(Number(id), { ...this.entities.get(Number(id)), ...set });
+      for (const [id, keys] of Object.entries(d.unset)) {
+        const e = this.entities.get(Number(id));
+        if (e) for (const k of keys) delete e[k];
+      }
+      for (const [id, mod] of Object.entries(msg.made as Record<string, string>)) this.creators.set(Number(id), mod);
+      for (const id of d.removed) {
+        this.entities.delete(id);
+        this.creators.delete(id);
+      }
+      this.nextId = msg.nextId;
+      this.on.tick(msg.outs, d);
+    } else if (msg.t === "log") this.on.log(msg.mod, msg.level, msg.text);
+    else if (msg.t === "perf") this.perf = msg;
+    else if (msg.t === "ready") this.ready = true;
+    else if (msg.t === "fault") this.on.fault(msg.mod, msg.error);
+    else if (msg.t === "applied") this.applying.get(msg.name)?.(msg.error);
+    else if (msg.t === "enter") this.on.enter?.(msg.player, msg.game);
+    else if (msg.t === "correction") {
+      const { t, ...c } = msg;
+      if (this.corrections.push(c) > 500) this.corrections.shift();
+    } else if (msg.t === "answer") {
+      this.asking.get(msg.id)?.(msg.value);
+      this.asking.delete(msg.id);
+    }
+  }
+
   private asking = new Map<number, (value: any) => void>();
   private askSeq = 0;
   private ask<T>(msg: object) {
     const id = ++this.askSeq;
     return new Promise<T>((resolve) => {
       this.asking.set(id, resolve);
-      this.worker.postMessage({ ...msg, id });
+      this.channel?.send({ ...msg, id });
     });
   }
 
@@ -127,12 +236,12 @@ export class SimHost {
   }
 
   resync(id: string) {
-    this.worker.postMessage({ t: "resync", id });
+    this.channel?.send({ t: "resync", id });
   }
 
-  /** Replaces the world wholesale: a fresh worker loads every mod against the new entities. */
+  /** Replaces the world wholesale: a fresh simulation loads every mod against the new entities. */
   restart() {
-    retire(this.worker);
+    this.channel?.retire();
     this.start();
   }
 
@@ -141,11 +250,12 @@ export class SimHost {
     if (msg.t === "leave") this.players.delete(msg.id);
     if (msg.t === "watch") this.watchers.add(msg.id);
     if (msg.t === "unwatch") this.watchers.delete(msg.id);
-    this.worker.postMessage(msg);
+    this.channel?.send(msg);
   }
 
   /** Swaps a mod into the live simulation; resolves once its load hook ran, with that hook's error if any. */
   apply(mod: RunningMod): Promise<string | null> {
+    if (!this.channel) return Promise.resolve(null);
     return new Promise((resolve) => {
       const timer = setTimeout(() => done(null), HANG_MS);
       const done = (error: string | null) => {
@@ -171,7 +281,7 @@ export class SimHost {
         resolve(error);
       };
       // A child process rather than a worker: its exit frees everything the test run loaded, which a terminated worker never does.
-      const proc = Bun.spawn([process.execPath, new URL("./sim.ts", import.meta.url).pathname], {
+      const proc = Bun.spawn([process.execPath, SIM.pathname], {
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
@@ -186,6 +296,8 @@ export class SimHost {
       proc.exited.then((code) => done(`the test run crashed (exit ${proc.signalCode ?? code})`));
       proc.send({
         t: "init",
+        game: this.game,
+        games: this.games(),
         entities: Object.fromEntries(this.entities),
         nextId: this.nextId,
         players: [],
@@ -196,5 +308,4 @@ export class SimHost {
       });
     });
   }
-
 }

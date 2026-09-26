@@ -8,7 +8,8 @@ import { GameWorld, modDb, type Diff, type Tick } from "./world";
 declare var self: Worker;
 
 type Ground = (x: number, z: number, fromY: number) => number | null;
-type Loaded = { id: number; name: string; mod: ServerMod; errors: number; slowTicks: number; ms: number; ticks: number[]; lastError?: string; grounds: Set<Ground> };
+/** `game` is the game the mod belongs to, or null for a mod every game shares. */
+type Loaded = { id: number; name: string; game: string | null; mod: ServerMod; errors: number; slowTicks: number; ms: number; ticks: number[]; lastError?: string; grounds: Set<Ground> };
 type Event = { from: string; name: string; data: any; to?: string[] };
 
 const world = new GameWorld();
@@ -26,8 +27,11 @@ let events: Event[] = [];
 const watchers = new Map<string, Player>();
 /** Set while checking what a spectator sees: a hook that throws on someone who isn't a player hides the thing instead of counting against its mod. */
 let spectating = false;
+/** The game this simulation runs, or null for the world's own hub, and every game players may be moved to. */
+let game: string | null = null;
+let games = new Set<string>();
 
-/** Test runs run in a child process, which frees everything when it exits; the live simulation runs in a worker. */
+/** Test runs and games run in a child process, which frees everything when it exits; the hub runs in a worker. */
 const child = Bun.isMainThread;
 const post = (msg: any) => (child ? process.send!(msg) : self.postMessage(msg));
 
@@ -123,6 +127,12 @@ world.spawn = (e) => {
   const id = spawn(e);
   if (current) creators.set(id, (made[id] = current.name));
   return id;
+};
+world.enter = (player, to) => {
+  caller("world.enter");
+  if (trial || !world.players.has(player) || to === game || (to !== null && !games.has(to))) return false;
+  post({ t: "enter", player, game: to });
+  return true;
 };
 world.has = (name) => !!mods.get(name)?.mod.exports;
 world.use = (name) => {
@@ -267,15 +277,31 @@ function fault(m: Loaded, error: string, fatal: boolean) {
   }
 }
 
-async function setMod(name: string, id: number, path: string | null) {
+async function setMod(name: string, id: number, path: string | null, game: string | null = null) {
   if (!path) {
     mods.delete(name);
     return reorder();
   }
-  const loaded: Loaded = { id, name, mod: (await import(path)).default ?? {}, errors: 0, slowTicks: 0, ms: 0, ticks: [], grounds: new Set() };
+  const loaded: Loaded = { id, name, game, mod: (await import(path)).default ?? {}, errors: 0, slowTicks: 0, ms: 0, ticks: [], grounds: new Set() };
   mods.set(name, loaded);
   reorder();
   call(loaded, "load");
+}
+
+// ---------- players coming and going ----------
+/** Joining the world or switching in from another game: shared mods get join either way, this game's mods get join only on joining, then enterGame. */
+function arrive(p: Player, switched: boolean, at: Vec | undefined) {
+  world.players.set(p.id, p);
+  for (const m of ordered) if (!switched || !m.game) call(m, "join", p);
+  for (const m of ordered) if (m.game) call(m, "enterGame", p);
+  if (at) for (const [, e] of world.query("player", "pos")) if (e.player === p.id) e.pos = [...at];
+}
+
+function depart(p: Player, switched: boolean) {
+  for (const m of ordered) if (m.game) call(m, "exitGame", p);
+  for (const m of ordered) if (!switched || !m.game) call(m, "leave", p);
+  world.players.delete(p.id);
+  known.delete(p.id);
 }
 
 // ---------- per-player streams ----------
@@ -286,7 +312,7 @@ let tickCount = 0;
 
 function visible(p: Player, id: number, e: Entity) {
   if (Array.isArray(e.only) && !e.only.includes(p.id)) return false;
-  spectating = watchers.has(p.id);
+  spectating = watchers.has(p.id) || !world.players.has(p.id);
   try {
     for (const m of seers) if (call(m, "see", p, id, e) === false) return false;
   } catch {
@@ -361,19 +387,23 @@ function tick(dt: number) {
 const receive = async (msg: any) => {
   switch (msg.t) {
     case "init": {
-      beat = new Int32Array(msg.beat ?? new SharedArrayBuffer(8));
+      // A game's process shares its heartbeat with the world process through a memory-mapped file.
+      const mapped = msg.beatFile ? Bun.mmap(msg.beatFile) : null;
+      beat = mapped ? new Int32Array(mapped.buffer, mapped.byteOffset, 2) : new Int32Array(msg.beat ?? new SharedArrayBuffer(8));
+      game = msg.game ?? null;
+      games = new Set(msg.games ?? []);
       world.nextId = msg.nextId;
       for (const [id, e] of Object.entries(msg.entities)) world.entities.set(Number(id), e as any);
       for (const p of msg.players as Player[]) world.players.set(p.id, p);
       for (const [id, mod] of Object.entries(msg.creators ?? {})) creators.set(Number(id), mod as string);
-      for (const id of msg.watchers as string[]) watchers.set(id, { id, name: id });
+      for (const id of msg.watchers as string[]) watchers.set(id, { id, name: id, game });
       trial = msg.trial ?? null;
       dbDir = msg.dbDir;
       world.delta();
       for (const [id, e] of world.entities.raw()) physics.update(id, e);
       for (const m of msg.mods) {
         try {
-          await setMod(m.name, m.id, m.server);
+          await setMod(m.name, m.id, m.server, m.game ?? null);
         } catch (e: any) {
           if (trial === m.name) return post({ t: "trial", error: `import: ${e?.stack ?? e}` });
           if (!trial) post({ t: "fault", mod: m.name, error: `import: ${e?.stack ?? e}` });
@@ -411,7 +441,7 @@ const receive = async (msg: any) => {
     }
     case "mod":
       try {
-        await setMod(msg.name, msg.id, msg.server);
+        await setMod(msg.name, msg.id, msg.server, msg.game ?? null);
         post({ t: "applied", name: msg.name, error: mods.get(msg.name)?.lastError ?? null });
       } catch (e: any) {
         post({ t: "fault", mod: msg.name, error: `import: ${e?.stack ?? e}` });
@@ -419,24 +449,25 @@ const receive = async (msg: any) => {
       }
       return;
     case "join":
-      world.players.set(msg.player.id, msg.player);
-      for (const m of ordered) call(m, "join", msg.player);
-      return;
+      return arrive(msg.player, !!msg.switched, msg.at);
+    case "games":
+      return void (games = new Set(msg.ids));
     case "watch":
-      return void watchers.set(msg.id, { id: msg.id, name: msg.id });
+      return void watchers.set(msg.id, { id: msg.id, name: msg.id, game });
     case "unwatch":
       watchers.delete(msg.id);
       return void known.delete(msg.id);
     case "resync":
       return void resync.add(msg.id);
     case "see": {
-      const p = world.players.get(msg.player);
+      // A player in a game still sees the hub's timelapse, as someone who isn't in it.
+      const p: Player = world.players.get(msg.player) ?? { id: msg.player, name: msg.player, game };
       // Visibility is checked when an entity changes, so the check runs once per change instead of once per entity per moment.
       const whole = new Map<string, Entity>();
       const shown = new Set<string>();
       const ticks: Tick[] = [];
       let slice = performance.now();
-      for (const t of p ? (msg.ticks as Tick[]) : []) {
+      for (const t of msg.ticks as Tick[]) {
         const out: Tick = { at: t.at, reset: t.reset, set: {}, unset: {}, removed: [], activity: t.activity, mods: t.mods };
         for (const id of t.removed) {
           whole.delete(String(id));
@@ -446,7 +477,7 @@ const receive = async (msg: any) => {
           const e = { ...whole.get(id), ...t.set[id] };
           for (const k of t.unset[id] ?? []) delete e[k];
           whole.set(id, e);
-          if (!visible(p!, Number(id), e)) {
+          if (!visible(p, Number(id), e)) {
             if (shown.delete(id)) out.removed.push(Number(id));
           } else if (!shown.has(id)) {
             shown.add(id);
@@ -472,10 +503,7 @@ const receive = async (msg: any) => {
       return void walks.push(msg);
     case "leave": {
       const p = world.players.get(msg.id);
-      if (!p) return;
-      for (const m of ordered) call(m, "leave", p);
-      world.players.delete(msg.id);
-      known.delete(msg.id);
+      if (p) depart(p, !!msg.switched);
       return;
     }
     case "msg": {
@@ -538,22 +566,24 @@ function blocker(pos: number[], dir: [number, number], radius: number, height: n
   return null;
 }
 
+/** What arrives while init still loads mods waits for it, so no mod misses a player's join. */
+let initialized: Promise<unknown> = Promise.resolve();
+const deliver = (msg: any) => (msg.t === "init" ? (initialized = receive(msg).catch(() => {})) : initialized.then(() => receive(msg)));
 if (child) {
-  process.on("message", receive);
+  process.on("message", deliver);
   process.on("disconnect", () => process.exit());
-} else self.onmessage = ({ data }) => receive(data);
+} else self.onmessage = ({ data }) => deliver(data);
 
 /** Every live mod runs with the candidate swapped in, but only the candidate's errors fail the test. */
 function runTrial() {
   post({ t: "ticking" });
-  const bot: Player = { id: "trial-bot", name: "trial-bot" };
-  world.players.set(bot.id, bot);
-  for (const m of ordered) call(m, "join", bot);
+  const bot: Player = { id: "trial-bot", name: "trial-bot", game };
+  arrive(bot, false, undefined);
   for (let i = 0; i < 20; i++) {
     tick(0.05);
     flush();
   }
-  for (const m of ordered) call(m, "leave", bot);
+  depart(bot, false);
   try {
     JSON.stringify(world.snapshot());
   } catch (e: any) {

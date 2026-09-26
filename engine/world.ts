@@ -61,6 +61,7 @@ export class GameWorld implements World {
   later!: World["later"];
   async!: World["async"];
   physics!: World["physics"];
+  enter!: World["enter"];
   /** What players last received of each entity, as JSON. */
   private sent = new Map<number, string>();
   private cursor: number[] = [];
@@ -73,6 +74,11 @@ export class GameWorld implements World {
 
   remove(id: number) {
     this.entities.delete(id);
+  }
+
+  /** Each simulation runs one game, so its players are that game's. */
+  playersInGame() {
+    return new Map(this.players);
   }
 
   query(...components: string[]): [number, Entity][] {
@@ -231,6 +237,7 @@ export function openStore(path: string) {
     },
     snapshots: () => (db.query("select at from snapshots order by at desc").all() as { at: number }[]).map((r) => r.at),
     rewind: (at: number, world: Persisted) => read(db.query("select next_id, entities from snapshots where at = ?").get(at) as any, world),
+    close: () => db.close(),
   };
 }
 

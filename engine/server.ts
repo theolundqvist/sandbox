@@ -5,7 +5,8 @@ import { frontFile } from "./front";
 import { createCli, type Task } from "./cli";
 import { ENGINE_KEYS, hasGit, Mods } from "./mods";
 import { latencies, openRecord, route } from "./record";
-import { SimHost } from "./simhost";
+import { Sims } from "./sims";
+import type { Perf } from "./simhost";
 import { savedVoice, transcribe, type Voice } from "./voice";
 import { openStore, type Activity, type Tick } from "./world";
 
@@ -220,32 +221,50 @@ function feed(text: string, kind = "info") {
 }
 
 const mods = new Mods(ROOT, BUILD, join(DATA, "mods.json"), {
-  client: (name, url) => {
-    broadcast({ t: "mod", name, url });
-    for (const ws of spectators.values()) ws.send(JSON.stringify({ t: "mod", name, url }));
-    return sockets.size > 0;
+  // Players in other games get null, which unloads the mod where a move to another game left it behind and does nothing elsewhere.
+  client: (name, url, game) => {
+    let loaded = false;
+    for (const [player, ws] of sockets) {
+      const loads = !game || sims.gameOf(player) === game;
+      const text = JSON.stringify({ t: "mod", name, url: loads ? url : null });
+      ws.send(text);
+      sent(player, text);
+      loaded ||= loads;
+    }
+    for (const ws of spectators.values()) ws.send(JSON.stringify({ t: "mod", name, url: game ? null : url }));
+    return loaded;
   },
   feed,
   record: record.add,
 });
-const sim = new SimHost(DB, () => mods.list(), {
-  tick: (outs, diff) => {
-    store.track(diff);
-    for (const [id, text] of Object.entries(outs)) {
-      (sockets.get(id) ?? spectators.get(id))?.send(text);
-      sent(id, text);
-    }
+const sims = new Sims(DATA, DB, () => mods.list(), {
+  deliver: (id, text) => {
+    (sockets.get(id) ?? spectators.get(id))?.send(text);
+    sent(id, text);
   },
+  notify: (id, msg) => sockets.get(id)?.send(JSON.stringify(msg)),
+  clientMods: (game) => clientMods(game),
   log,
   fault: (mod, error) => {
     log(mod, "error", error);
     mods.revert(mod, error);
   },
+  reloadedJustBefore: (game) => mods.reloadedJustBefore(game),
+  hubTick: (diff) => store.track(diff),
+  changed: () => broadcast(gamesMessage()),
 });
-mods.sim = sim;
+mods.sims = sims;
+/** The world's own simulation: every player outside a game, and the whole world when it has no games. */
+const hub = sims.hub;
+/** The picker's live data: the games, where every player is, and how many live mods each game has. */
+function gamesMessage() {
+  const counts: Record<string, number> = {};
+  for (const m of mods.list()) if (m.game) counts[m.game] = (counts[m.game] ?? 0) + 1;
+  return { t: "games", games: sims.games.list(), seats: sims.seatList(), mods: counts };
+}
 
 const store = openStore(join(DATA, "world.sqlite"));
-store.load(sim);
+store.load(hub);
 await mods.loadAll(owners);
 // The launcher restarts a world that crashed right after a reload without that reload.
 const crashed = process.env.SANDBOX_REVERT;
@@ -254,14 +273,14 @@ if (crashed) {
   log(crashed, "error", why);
   mods.rollBack(crashed, why);
 }
-sim.start();
+hub.start();
 if (process.env.SANDBOX_NOTICE) feed(process.env.SANDBOX_NOTICE, "error");
 for (const mod of refreshed) await mods.reload(mod, "world", owners[mod] ?? "world");
-setInterval(() => store.save(sim), 5000);
-store.snapshot(sim);
-setInterval(() => store.snapshot(sim), 60_000);
+setInterval(() => store.save(hub), 5000);
+store.snapshot(hub);
+setInterval(() => store.snapshot(hub), 60_000);
 setInterval(() => {
-  store.record(sim, happened.slice(-30));
+  store.record(hub, happened.slice(-30));
   happened = [];
 }, 2000);
 /** Reloads from the world's git history, for timelapse moments recorded before activity was stored. */
@@ -292,16 +311,17 @@ const inWorker = <T>(msg: object) =>
 let built: { at: number; ticks: Promise<Tick[]> } | null = null;
 async function timelapseFor(who: string | null) {
   if (!built || Date.now() - built.at > 10_000) {
-    const live = Object.fromEntries([...mods.running].map(([name, m]) => [name, m.build.client]));
+    const live = Object.fromEntries([...mods.running].filter(([, m]) => !m.build.game).map(([name, m]) => [name, m.build.client]));
     built = { at: Date.now(), ticks: inWorker<{ ticks: Tick[] }>({ t: "build", path: join(DATA, "world.sqlite"), limit: 900, older: olderReloads(), builds: BUILD, live }).then((r) => r.ticks) };
   }
-  const seen = who ? await sim.visibleTo(who, await built.ticks) : await built.ticks;
+  const seen = who ? await hub.visibleTo(who, await built.ticks) : await built.ticks;
   return (await inWorker<{ gz: Uint8Array<ArrayBuffer> }>({ t: "encode", ticks: seen })).gz;
 }
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, () => {
     record.close();
-    store.save(sim);
+    store.save(hub);
+    sims.saveAll();
     process.exit(0);
   });
 
@@ -315,26 +335,31 @@ const status = () => ({
   online: [...sockets.keys()],
   mods: [...mods.running].map(([name, m]) => {
     const v = votes.get(name)?.version === m.version ? votes.get(name) : undefined;
-    return { name, author: m.author, version: m.version, server: !!m.build.server, client: !!m.build.client, about: about[name], usedBy: mods.users(name), owns: m.source?.owns.length ? m.source.owns : undefined, love: v?.love.size ?? 0, undo: v?.undo.size ?? 0 };
+    return { name, author: m.author, version: m.version, game: m.build.game, server: !!m.build.server, client: !!m.build.client, about: about[name], usedBy: mods.users(name), owns: m.source?.owns.length ? m.source.owns : undefined, love: v?.love.size ?? 0, undo: v?.undo.size ?? 0 };
   }),
   undoNeeded: Math.floor(sockets.size / 2) + 1,
-  controls: { engineKeys: ENGINE_KEYS, ...mods.controls() },
-  entities: sim.entities.size,
+  controls: { engineKeys: sims.games.list().length ? { ...ENGINE_KEYS, KeyG: "the games picker" } : ENGINE_KEYS, ...mods.controls() },
+  games: sims.summary().map((g) => ({ id: g.id, title: g.title, status: g.status, mods: g.mods, players: g.players })),
+  entities: hub.entities.size,
   recent: feedLog.slice(-15).map((f) => f.text),
   voice: voiceKey() ? "on: what players say arrives as chat" : "off",
 });
 
 const perf = () => ({
-  server: { ...sim.perf, budget: "a tick is due every 50 ms; mods is each mod's average ms per tick, modTicks its p95 and slowest tick hook over the last 2 s" },
-  entities: sim.entities.size,
+  server: { ...hub.perf, budget: "a tick is due every 50 ms; mods is each mod's average ms per tick, modTicks its p95 and slowest tick hook over the last 2 s" },
+  games: sims.perfByGame(),
+  entities: hub.entities.size,
   players: Object.fromEntries([...clientPerf].map(([name, { at, ...p }]) => [name, { ...p, secondsOld: Math.round((Date.now() - at) / 1000) }])),
   joins: Object.fromEntries(joins),
 });
 
 /** Every 10 s: simulation tick times, how long the main thread stalled, process CPU and memory, and each player's websocket traffic. */
 const http = latencies();
-const simWindow: NonNullable<typeof sim.perf>[] = [];
-let lastPerf = sim.perf;
+const simWindow: Perf[] = [];
+let lastPerf = hub.perf;
+/** The same per running game, which ticks in its own process. */
+const gameWindows = new Map<string, Perf[]>();
+const lastGamePerf = new Map<string, Perf>();
 let lagMs = 0;
 let lagAt = performance.now();
 let cpu = process.cpuUsage();
@@ -342,28 +367,42 @@ setInterval(() => {
   const now = performance.now();
   lagMs = Math.max(lagMs, now - lagAt - 100);
   lagAt = now;
-  if (sim.perf && sim.perf !== lastPerf) simWindow.push((lastPerf = sim.perf));
+  if (hub.perf && hub.perf !== lastPerf) simWindow.push((lastPerf = hub.perf));
+  for (const [game, p] of Object.entries(sims.perfByGame())) {
+    if (!p || p === lastGamePerf.get(game)) continue;
+    lastGamePerf.set(game, p);
+    gameWindows.set(game, [...(gameWindows.get(game) ?? []), p]);
+  }
 }, 100);
+const r = (v: number) => Math.round(v * 10) / 10;
+/** The worst of a window's tick times. */
+const tickTimes = (window: Perf[]) => ({
+  avg: r(Math.max(0, ...window.map((p) => p.msPerTick))),
+  p50: r(Math.max(0, ...window.map((p) => p.p50))),
+  p95: r(Math.max(0, ...window.map((p) => p.p95))),
+  max: r(Math.max(0, ...window.map((p) => p.max))),
+});
 setInterval(() => {
   const used = process.cpuUsage(cpu);
   cpu = process.cpuUsage();
-  const r = (v: number) => Math.round(v * 10) / 10;
   const modMaxMs: Record<string, number> = {};
-  for (const p of simWindow) for (const [name, t] of Object.entries(p.modTicks)) modMaxMs[name] = Math.max(modMaxMs[name] ?? 0, t.max);
+  for (const p of [...simWindow, ...[...gameWindows.values()].flat()]) for (const [name, t] of Object.entries(p.modTicks)) modMaxMs[name] = Math.max(modMaxMs[name] ?? 0, t.max);
   record.add("server", null, {
-    tick: { avg: r(Math.max(0, ...simWindow.map((p) => p.msPerTick))), p50: r(Math.max(0, ...simWindow.map((p) => p.p50))), p95: r(Math.max(0, ...simWindow.map((p) => p.p95))), max: r(Math.max(0, ...simWindow.map((p) => p.max))) },
+    tick: tickTimes(simWindow),
+    games: gameWindows.size ? Object.fromEntries([...gameWindows].map(([game, window]) => [game, tickTimes(window)])) : undefined,
     mods: simWindow.at(-1)?.mods,
     modMaxMs,
     lagMs: Math.round(lagMs),
     cpuPct: Math.round((used.user + used.system) / 100_000),
     rssMB: Math.round(process.memoryUsage().rss / 1048576),
     heapMB: Math.round(process.memoryUsage().heapUsed / 1048576),
-    entities: sim.entities.size,
+    entities: hub.entities.size,
     online: sockets.size,
     ws: Object.fromEntries([...traffic].map(([name, t]) => [name, { outKB: Math.round(t.outKB), out: t.out, maxKB: r(t.maxKB), inKB: r(t.inKB), in: t.in }])),
     http: http.take(),
   });
   simWindow.length = 0;
+  gameWindows.clear();
   lagMs = 0;
   traffic.clear();
 }, 10_000);
@@ -384,7 +423,7 @@ const cli = createCli({
   owners,
   saveOwners: () => writeJson("owners.json", owners),
   mods,
-  sim,
+  sims,
   logs,
   feed,
   chat,
@@ -433,7 +472,9 @@ function hostIs(body: { host?: string }, name: string) {
   writeJson("config.json", config);
 }
 
-const clientMods = () => [...mods.running].filter(([, m]) => m.build.client).map(([name, m]) => ({ name, url: m.build.client }));
+/** The client builds a player in this game loads: every shared mod and the game's own. */
+const clientMods = (game: string | null) =>
+  [...mods.running].filter(([, m]) => m.build.client && (!m.build.game || m.build.game === game)).map(([name, m]) => ({ name, url: m.build.client! }));
 const html = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });
 const bearer = (req: Request) => req.headers.get("authorization")?.replace(/^Bearer /, "") ?? new URL(req.url).searchParams.get("key");
 
@@ -503,9 +544,9 @@ const server = Bun.serve<Conn>({
             }),
           );
         case "rewind": {
-          if (!store.rewind(Number(body.at), sim)) return Response.json({ error: "That moment is no longer saved." }, { status: 404 });
-          store.save(sim);
-          sim.restart();
+          if (!store.rewind(Number(body.at), hub)) return Response.json({ error: "That moment is no longer saved." }, { status: 404 });
+          store.save(hub);
+          hub.restart();
           store.keyframe();
           feed(`The host rewound the world to ${new Date(Number(body.at)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, "error");
           return Response.json({});
@@ -593,15 +634,14 @@ const server = Bun.serve<Conn>({
       if (!name) return ws.close(4001, "You joined from another device");
       if (ws.data.spectator) {
         spectators.set(name, ws);
-        sim.send({ t: "watch", id: name });
-        ws.send(JSON.stringify({ t: "welcome", playerId: name, mods: clientMods() }));
+        hub.send({ t: "watch", id: name });
+        ws.send(JSON.stringify({ t: "welcome", playerId: name, mods: clientMods(null) }));
         return;
       }
       const previous = sockets.get(name);
       sockets.set(name, ws);
       if (previous) previous.close(4000, "Opened in another tab");
-      if (previous) sim.resync(name);
-      else sim.send({ t: "join", player: { id: name, name } });
+      const game = sims.gameOf(name);
       ws.send(
         JSON.stringify({
           t: "welcome",
@@ -614,12 +654,18 @@ const server = Bun.serve<Conn>({
           lanUrl,
           voice: !!voiceKey(),
           host: config.host ?? null,
-          mods: clientMods(),
+          game,
+          mods: clientMods(game),
           feed: feedLog.slice(-8),
           claudes: Object.fromEntries([...claudes.keys()].map((name) => [name, builder(name)])),
           talk: chatLog.filter((c) => c.claudes).map(({ from, text }) => ({ from, text })),
         }),
       );
+      // After the welcome, so the game knows who it is when the games arrive.
+      if (previous) {
+        sims.resync(name);
+        ws.send(JSON.stringify(gamesMessage()));
+      } else sims.join(name);
       if (leavingLine.has(name)) {
         clearTimeout(leavingLine.get(name));
         leavingLine.delete(name);
@@ -634,9 +680,15 @@ const server = Bun.serve<Conn>({
       t.in++;
       t.inKB += raw.length / 1024;
       const msg = JSON.parse(String(raw));
-      if (msg.t === "m") sim.send({ t: "msg", id: ws.data.name, mod: msg.mod, msg: msg.msg });
+      if (msg.t === "m") sims.message(ws.data.name, msg.mod, msg.msg);
       else if (msg.t === "chat") chat(ws.data.name, String(msg.text));
-      else if (msg.t === "resync") sim.resync(ws.data.name);
+      else if (msg.t === "resync") sims.resync(ws.data.name);
+      else if (msg.t === "enterGame") {
+        const game = typeof msg.game === "string" ? msg.game : null;
+        const refused = sims.enter(ws.data.name, game);
+        if (refused) ws.send(JSON.stringify({ t: "gameSwitch", game, phase: "failed", reason: refused }));
+        else record.add("action", ws.data.name, { what: "game", detail: game ?? "hub" });
+      }
       else if (msg.t === "react") react(ws.data.name, String(msg.mod), String(msg.kind));
       else if (msg.t === "keys") mods.reportKeys(msg.keys);
       else if (msg.t === "shot") shots.get(msg.id)?.(String(msg.data));
@@ -661,7 +713,7 @@ const server = Bun.serve<Conn>({
     close(ws) {
       if (ws.data.spectator) {
         spectators.delete(ws.data.name);
-        sim.send({ t: "unwatch", id: ws.data.name });
+        hub.send({ t: "unwatch", id: ws.data.name });
         return;
       }
       if (sockets.get(ws.data.name) !== ws) return;
@@ -670,7 +722,7 @@ const server = Bun.serve<Conn>({
       slowFrames.delete(ws.data.name);
       clientWindow.delete(ws.data.name);
       record.add("session", ws.data.name, { event: "leave", seconds: Math.round((Date.now() - ws.data.at) / 1000) });
-      sim.send({ t: "leave", id: ws.data.name });
+      sims.leave(ws.data.name);
       const { name } = ws.data;
       if (joiningLine.has(name)) {
         clearTimeout(joiningLine.get(name));

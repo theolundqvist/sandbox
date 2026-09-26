@@ -1,9 +1,12 @@
 import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import type { RunningMod, SimHost } from "./simhost";
+import { declaredGame } from "./modgame";
+import type { RunningMod } from "./simhost";
+import type { Sims } from "./sims";
 
-type Build = { server: string | null; client: string | null };
+/** `game` is the game this build's source names; absent for a mod every game shares. */
+type Build = { server: string | null; client: string | null; game?: string };
 type Key = { code: string; label: string };
 /** Found in the mod's files when it went live: keys its client reads, menu tabs it fills, mods it uses, and systems its server claims with `export const owns`. */
 type Source = { keys: string[]; menus: string[]; uses: string[]; owns: string[] };
@@ -12,8 +15,8 @@ type Mod = { id: number; author: string; version: number; build: Build; previous
 type Result = { ok: boolean; report: string };
 
 export type ModEvents = {
-  /** Returns whether any player has the game open to load it. */
-  client(name: string, url: string | null): boolean;
+  /** Returns whether any player who loads it (everyone for a shared mod, else those in its game) has the game open. */
+  client(name: string, url: string | null, game: string | null): boolean;
   feed(text: string, kind?: "ok" | "error" | "info"): void;
   record(kind: "reload" | "error", who: string | null, data: object): void;
 };
@@ -74,7 +77,7 @@ export class Mods {
   private slots = PARALLEL_RELOADS;
   private waitingForSlot: (() => void)[] = [];
   private commits: Promise<unknown> = Promise.resolve();
-  sim!: SimHost;
+  sims!: Pick<Sims, "trial" | "apply" | "hasGame">;
   private awaitingKeys = new Map<string, () => void>();
 
   constructor(
@@ -85,7 +88,17 @@ export class Mods {
   ) {}
 
   list(): RunningMod[] {
-    return [...this.running].map(([name, m]) => ({ name, id: m.id, server: m.build.server }));
+    return [...this.running].map(([name, m]) => ({ name, id: m.id, server: m.build.server, game: m.build.game ?? null }));
+  }
+
+  gameOf(name: string) {
+    return this.running.get(name)?.build.game ?? null;
+  }
+
+  /** The mod running in this game (its own or a shared one) whose reload went live within a minute, as the launcher finds for a crashed world. */
+  reloadedJustBefore(game: string) {
+    const recent = [...this.running].filter(([, m]) => m.at && Date.now() - m.at < 60_000 && (!m.build.game || m.build.game === game));
+    return recent.sort(([, a], [, b]) => b.at! - a.at!)[0]?.[0];
   }
 
   names() {
@@ -167,8 +180,9 @@ export class Mods {
         );
       this.running.delete(name);
       this.save();
-      this.sim.send({ t: "mod", name, id: current.id, server: null });
-      this.events.client(name, null);
+      const game = current.build.game ?? null;
+      void this.sims.apply({ name, id: current.id, server: null, game });
+      this.events.client(name, null, game);
       await this.commit(name, `remove ${name}`, who);
       this.events.feed(`${who} removed ${name}`, "info");
       return { ok: true, report: `Unloaded ${name} for everyone.` };
@@ -187,6 +201,11 @@ export class Mods {
       this.events.record("reload", who, { mod: name, ok: false, stage, ms: { ...ms, total: Math.round(performance.now() - started) }, report: report.slice(0, 500) });
       return this.fail(name, who, report);
     };
+    // Which game a mod belongs to is read from its files, so a bad or unknown one fails before anything builds.
+    const named = this.gameNamedBy(name);
+    if ("error" in named) return reject("game", `${named.error} Nothing changed.`);
+    if (named.game && !this.sims.hasGame(named.game))
+      return reject("game", `${name} names the game ${named.game}, which doesn't exist. Create it with create_game first (list_games shows the games); nothing changed.`);
     // The typecheck runs alongside the build and the test run, and gates going live all the same.
     const typecheck = this.typecheck(name).then((result) => ((ms.typecheck = Math.round(performance.now() - started)), result));
     const typeErrors = async () => {
@@ -201,14 +220,17 @@ export class Mods {
     const source = scan(dir);
     const build = await this.build(name);
     if (typeof build === "string") return (await typeErrors()) ?? reject("build", `Build failed, nothing changed:\n${build}`);
+    const game = build.game ?? null;
+    const moved = game !== (current?.build.game ?? null);
     // Players' games keep the client they have, and the simulation the server it runs, when this change leaves it byte for byte the same.
     if (build.client && current?.build.client && sameFile(join(this.buildDir, build.client.slice("/build/".length)), join(this.buildDir, current.build.client.slice("/build/".length)))) build.client = current.build.client;
     if (build.server && current?.build.server && sameFile(build.server, current.build.server)) build.server = current.build.server;
     lap("build");
 
     const id = current?.id ?? this.nextId++;
-    const serverChanged = build.server !== current?.build.server;
-    const trial = build.server && serverChanged ? this.sim.trial({ name, id, server: build.server }) : null;
+    // A mod that moved to another game runs in other simulations, so it is tried and swapped even when its server is the same.
+    const serverChanged = build.server !== current?.build.server || moved;
+    const trial = build.server && serverChanged ? this.sims.trial({ name, id, server: build.server, game }) : null;
     const typeError = await typeErrors();
     if (typeError) return typeError;
     const error = await trial;
@@ -218,9 +240,10 @@ export class Mods {
     const version = (current?.version ?? 0) + 1;
     this.running.set(name, { id, author: current?.author ?? author, version, build, previous: current ? [...current.previous, current.build].slice(-5) : [], keys: current?.keys, source, at: Date.now() });
     this.save();
-    const loadError = serverChanged ? await this.sim.apply({ name, id, server: build.server }) : null;
+    const loadError = serverChanged ? await this.sims.apply({ name, id, server: build.server, game }) : null;
     lap("apply");
-    if (build.client !== current?.build.client && this.events.client(name, build.client) && build.client) await Promise.race([new Promise<void>((r) => this.awaitingKeys.set(name, r)), Bun.sleep(3000)]);
+    // A mod that moved to another game leaves the old one's players even when its client stayed the same.
+    if ((build.client !== current?.build.client || moved) && this.events.client(name, build.client, game) && build.client) await Promise.race([new Promise<void>((r) => this.awaitingKeys.set(name, r)), Bun.sleep(3000)]);
     this.awaitingKeys.delete(name);
     lap("keys");
     await this.commit(name, `${name} v${version}`, who);
@@ -269,7 +292,8 @@ export class Mods {
     for (const [key, list] of Object.entries(declared)) keys[key] = [...new Set([...(SHARED_KEYS.has(key) ? [] : (keys[key] ?? [])), ...list.map((d) => d.mod)])];
     for (const [key, users] of Object.entries(keys)) {
       if (!users.includes(name) || (SHARED_KEYS.has(key) && !declared[key])) continue;
-      const others = users.filter((u) => u !== name);
+      // Mods of two different games never run in the same player's game, so their keys can't clash.
+      const others = users.filter((u) => u !== name && (!this.gameOf(u) || !this.gameOf(name) || this.gameOf(u) === this.gameOf(name)));
       if (key === "KeyE") lines.push("- KeyE: the engine owns E. Offer the action with ctx.interact instead, so players get one prompt for the nearest thing and E never fires two mods.");
       else if (ENGINE_KEYS[key]) lines.push(`- ${key}: the engine uses it for ${ENGINE_KEYS[key]}. Pick another key.`);
       else if (others.length) lines.push(`- ${key}: also used by ${others.join(", ")}. Pick a free key (status lists every key in use), or share the feature through that mod's exports.`);
@@ -292,8 +316,10 @@ export class Mods {
     const mod = this.rollBack(name, error);
     if (!mod) return;
     const build = this.running.get(name)?.build;
-    this.sim.send({ t: "mod", name, id: mod.id, server: build?.server ?? null });
-    this.events.client(name, build?.client ?? null);
+    // Rolled back, the mod holds the build it went back to, or the one it was unloaded from; either names the game it runs in.
+    const game = mod.build.game ?? null;
+    void this.sims.apply({ name, id: mod.id, server: build?.server ?? null, game });
+    this.events.client(name, build?.client ?? null, game);
   }
 
   /** Reverts a mod in the saved state only, as at startup before the simulation loads any mod. */
@@ -371,7 +397,24 @@ export class Mods {
       result[side] = side === "server" ? file : `/build/${relative(this.buildDir, file)}`;
     }
     if (!result.server && !result.client) return `mods/${name}/ needs a server.ts or a client.ts`;
+    const named = this.gameNamedBy(name);
+    if ("error" in named) return named.error;
+    if (named.game) result.game = named.game;
     return result;
+  }
+
+  /** The game a mod's server.ts and client.ts name on their default exports; either may name it, but not two different ones. */
+  private gameNamedBy(name: string): { game: string | null } | { error: string } {
+    const games = new Set<string>();
+    for (const side of ["server", "client"]) {
+      const path = join(this.root, "mods", name, `${side}.ts`);
+      if (!existsSync(path)) continue;
+      const found = declaredGame(readFileSync(path, "utf8"));
+      if ("error" in found) return { error: `mods/${name}/${side}.ts: ${found.error}.` };
+      if (found.game) games.add(found.game);
+    }
+    if (games.size > 1) return { error: `server.ts and client.ts name different games (${[...games].join(", ")}); a mod belongs to one game.` };
+    return { game: [...games][0] ?? null };
   }
 
   /** One at a time: git holds one lock on the index. */

@@ -1,8 +1,9 @@
 import { toCanvas } from "html-to-image";
 import * as THREE from "three";
-import type { ClientCtx, ClientHooks, ClientMod, Entity, ReplayShot } from "../api";
+import type { ClientCtx, ClientHooks, ClientMod, Entity, Game, ReplayShot } from "../api";
 import { clock, extent, isAvatar, plan, position, type Activity, type Plan, type Tick as Moment, type Shot } from "./director";
 import { PhysicsIndex, sizeOf } from "../physics";
+import { mountPicker } from "./games";
 import { phrases } from "./phrases";
 
 /** The Tab menu, where players vote on mods, is in a closed shadow root only this file holds, so no mod can reach, hide or remove it; mods' blocks on its pages stay in the page, slotted in. Everything else on screen is the page's, for mods to restyle or remove. */
@@ -463,7 +464,9 @@ function applyTick({ reset, set, unset, removed, events, makers: made }: Tick) {
 // ---------- mods ----------
 type Action = Parameters<ClientCtx["interact"]>[0];
 type Ground = (x: number, z: number, fromY: number) => number | null;
-type Loaded = { name: string; url: string; mod: ClientMod; ctx: ClientCtx; errors: number; ms: number; owned: HTMLElement[]; actions: Set<Action>; grounds: Set<Ground>; screen: Screen };
+/** `traces` are the page-wide listeners and intervals its hooks added, swept when it unloads for good. */
+type Loaded = { name: string; url: string; mod: ClientMod; ctx: ClientCtx; errors: number; ms: number; owned: HTMLElement[]; actions: Set<Action>; grounds: Set<Ground>; screen: Screen; traces: Trace[] };
+type Trace = { listener: [EventTarget, string, EventListenerOrEventListenerObject, (boolean | EventListenerOptions)?] } | { interval: number };
 const mods = new Map<string, Loaded>();
 let ordered: Loaded[] = [];
 const keys = new Set<string>();
@@ -474,12 +477,14 @@ const warn = console.warn.bind(console);
 /** Keys mods declare with ctx.key: the engine dispatches them, so they never fire while the player types or has a window open. */
 type Binding = { mod: Loaded; code: string; label: string; down?: () => void; up?: () => void };
 const ENGINE_OWNED = ["Tab", "Escape", "Enter", "KeyT", "KeyE"];
+/** G opens the games picker, in a world that has games. */
+const engineOwns = (code: string) => ENGINE_OWNED.includes(code) || (code === "KeyG" && gameList.length > 0);
 let bindings: Binding[] = [];
 const held = new Map<string, Binding>();
 const keyLabel = (code: string) => code.replace(/^(Key|Digit)/, "");
 
 function declareKey(mod: Loaded, code: string, label: string, run: Parameters<ClientCtx["key"]>[2], opts?: { hold?: boolean }) {
-  if (ENGINE_OWNED.includes(code)) throw new Error(`${code} belongs to the engine; pick another key`);
+  if (engineOwns(code)) throw new Error(`${code} belongs to the engine; pick another key`);
   const b: Binding = typeof run === "function" ? { mod, code, label, down: () => run(true), up: opts?.hold ? () => run(false) : undefined } : { mod, code, label, down: run.down, up: run.up };
   const other = bindings.findLast((x) => x.code === code && x.mod.name !== mod.name);
   if (other) {
@@ -498,7 +503,7 @@ function declareKey(mod: Loaded, code: string, label: string, run: Parameters<Cl
 /** The latest live binding for each key; while a panel is open, only its mod's. */
 function activeBindings() {
   const seen = new Map<string, Binding>();
-  for (const b of bindings.toReversed()) if (!seen.has(b.code) && mods.get(b.mod.name) === b.mod && (!panel || b.mod === panel.mod)) seen.set(b.code, b);
+  for (const b of bindings.toReversed()) if (!seen.has(b.code) && !engineOwns(b.code) && mods.get(b.mod.name) === b.mod && (!panel || b.mod === panel.mod)) seen.set(b.code, b);
   return [...seen.values()];
 }
 function press(b: Binding, down: boolean) {
@@ -574,6 +579,28 @@ function reorder() {
 
 /** The mod whose hook is running, so what it creates is counted against it. */
 let running: Loaded | null = null;
+
+// What a mod's hooks hang on the page, the canvas or the clock outlives its elements; it is taken down when the mod leaves the player's game.
+const lasting = (target: EventTarget) => target === window || target === document || target === document.body || target === renderer.domElement;
+const addListener = EventTarget.prototype.addEventListener;
+EventTarget.prototype.addEventListener = function (this: EventTarget, type: string, fn: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+  if (running && fn && lasting(this)) running.traces.push({ listener: [this, type, fn, typeof options === "object" ? { capture: options.capture } : options] });
+  return addListener.call(this, type, fn, options);
+};
+const startInterval = window.setInterval;
+window.setInterval = function (...args: Parameters<typeof setInterval>) {
+  const id = startInterval.apply(window, args);
+  running?.traces.push({ interval: id as unknown as number });
+  return id;
+} as typeof setInterval;
+/** A mod leaving for good takes what its dispose forgot: its listeners and intervals, and the scene objects its code added at the top level. */
+function sweep(m: Loaded) {
+  for (const t of m.traces) {
+    if ("interval" in t) clearInterval(t.interval);
+    else t.listener[0].removeEventListener(t.listener[1], t.listener[2], t.listener[3]);
+  }
+  for (const o of [...scene.children]) if (o.userData.mod === m.name) scene.remove(o);
+}
 
 function guarded<T>(m: Loaded, label: string, fn: () => T): T | undefined {
   const prev = running;
@@ -664,7 +691,8 @@ let live = new Map<string, string>();
 
 async function loadMod(name: string, url: string | null, rebuild = true) {
   const old = mods.get(name);
-  if (old?.url === url) return;
+  // Unloading a mod this game never had is what players in other games hear when it changes.
+  if (old?.url === url || (!old && !url)) return;
   let mod: ClientMod | null = null;
   if (url) {
     try {
@@ -683,6 +711,7 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
     for (const [code, b] of held) if (b.mod === old) held.delete(code);
     mods.delete(name);
     pruneTabs();
+    if (!url) sweep(old);
   }
   keysChanged(name);
   if (!mod || !url) {
@@ -709,6 +738,9 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
       },
     },
     playerId: (replay && director.shot?.player) || me,
+    get game() {
+      return game;
+    },
     keys,
     send: (msg) => !replay && send({ t: "m", mod: name, msg }),
     use,
@@ -754,7 +786,7 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
     audio,
     shake: (strength, seconds) => void (seconds > 0 && shakes.push({ strength, seconds, left: seconds })),
   };
-  const loaded: Loaded = { name, url, mod, ctx, errors: 0, ms: 0, owned: [], actions: new Set(), grounds: new Set(), screen: {} };
+  const loaded: Loaded = { name, url, mod, ctx, errors: 0, ms: 0, owned: [], actions: new Set(), grounds: new Set(), screen: {}, traces: [] };
   mods.set(name, loaded);
   reorder();
   call(loaded, "init");
@@ -842,6 +874,33 @@ function showAction() {
 }
 $("interact").onclick = runAction;
 
+// ---------- games ----------
+/** The game this player is in, or null in the world's own hub. */
+let game: string | null = null;
+let gameList: Game[] = [];
+/** The picker opens once the player is in, the first time the world has games. */
+let pickerDue = true;
+const picker = mountPicker(uiRoot, {
+  get me() {
+    return me;
+  },
+  onPlay: (id) => send({ t: "enterGame", game: id }),
+  onClose: () => capture(),
+  paintArt(id) {
+    const art = gameList.find((g) => g.id === id)?.art;
+    const m = art ? mods.get(art) : undefined;
+    const paint = m?.mod.paintCard;
+    return m && paint ? (canvas, t) => void guarded(m, "paintCard", () => paint.call(m.mod, canvas, t)) : null;
+  },
+});
+function openPicker() {
+  if (!gameList.length || spectator || replay) return;
+  releaseKeys();
+  keys.clear();
+  if (document.pointerLockElement) document.exitPointerLock();
+  picker.open();
+}
+
 // ---------- network ----------
 /** Loads the server's live client builds and unloads the rest. Every mod downloads at once, then they start in order, each import a task of its own so frames draw in between, and each mod draws the entities it takes over as it starts. */
 async function loadLive(list: { name: string; url: string }[], progress?: (started: number, total: number) => void) {
@@ -895,6 +954,7 @@ function connect() {
         $("menu-talk").replaceChildren();
         for (const line of msg.talk) addTalk(line.from, line.text);
         leaveReplay();
+        game = msg.game ?? null;
         for (const f of msg.feed) addLine(f.text, f.kind);
         const go = $<HTMLButtonElement>("howto-play");
         go.disabled = true;
@@ -932,6 +992,29 @@ function connect() {
         else live.delete(msg.name);
         // Loads whichever build is live by the time its turn comes, so versions that arrive in quick succession load once.
         return !replay && queue(() => loadMod(msg.name, live.get(msg.name) ?? null));
+      case "games":
+        gameList = msg.games;
+        picker.update(msg.games, msg.seats, msg.mods ?? {});
+        $("menu-games").hidden = !gameList.length;
+        if (pickerDue && gameList.length) {
+          pickerDue = false;
+          if (howto.hidden) openPicker();
+          else pickerAfterHowto = true;
+        }
+        return;
+      case "gameSwitch":
+        // The old game's mods and entities go before the new game's arrive, under the picker's cover.
+        if (msg.phase === "start") {
+          if (msg.game) picker.switching(msg.game);
+          game = msg.game;
+          applyTick({ reset: true, set: {}, unset: {}, removed: [] });
+          void loadLive(msg.mods);
+          return;
+        }
+        picker.switching(null);
+        if (msg.phase === "done") picker.close();
+        else toast(msg.reason ?? "That game couldn't be opened.", "error");
+        return;
       case "shot":
         return send({ t: "shot", id: msg.id, data: await screenshot() });
       case "colliders":
@@ -1739,11 +1822,11 @@ const typing = () => {
   const el = focused();
   return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || (el instanceof HTMLElement && el.isContentEditable);
 };
-const inputFree = () => !(replay || spectator || typing() || panel || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden);
+const inputFree = () => !(replay || spectator || typing() || panel || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden || picker.isOpen());
 
 /** When a mod asks for mouse-look, clicking the game locks the mouse; the cursor is free again while chat, the menu, a panel or an overlay is open. */
 function capture() {
-  if (!replay && !spectator && screen.lockPointer && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !panel && !document.pointerLockElement) renderer.domElement.requestPointerLock()?.catch(() => {});
+  if (!replay && !spectator && screen.lockPointer && menu.hidden && chat.hidden && howto.hidden && palette.hidden && !panel && !picker.isOpen() && !document.pointerLockElement) renderer.domElement.requestPointerLock()?.catch(() => {});
 }
 renderer.domElement.addEventListener("click", capture);
 /** Mods free the mouse for their own windows through exitPointerLock; a loss nobody asked for (Esc, switching windows) pauses into the menu. */
@@ -1802,10 +1885,21 @@ function closeMenu() {
   showTab(null);
   capture();
 }
+/** A world with games shows its picker once the how-to is out of the way. */
+let pickerAfterHowto = false;
 function play() {
   howto.hidden = true;
+  if (pickerAfterHowto) {
+    pickerAfterHowto = false;
+    return openPicker();
+  }
   capture();
 }
+$("menu-games").onclick = () => {
+  showMenu(false);
+  showTab(null);
+  openPicker();
+};
 
 /** Push to talk: hold T (or the mic button) and the phrase goes to chat, transcribed by the host, so everyone and every Claude hears it. */
 let voiceAvailable = false;
@@ -1932,7 +2026,13 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     e.stopImmediatePropagation();
     return closePanel();
   }
-  if (replay || spectator || e.repeat || e.metaKey || e.ctrlKey || held.has(e.code) || typing() || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden) return;
+  // Ahead of mods' bindings: in a world with games, G is the engine's.
+  if (e.code === "KeyG" && engineOwns("KeyG") && !replay && !spectator && !e.repeat && !typing() && !panel && menu.hidden && chat.hidden && howto.hidden && palette.hidden) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    return picker.isOpen() ? picker.close() : openPicker();
+  }
+  if (replay || spectator || e.repeat || e.metaKey || e.ctrlKey || held.has(e.code) || typing() || !menu.hidden || !chat.hidden || !howto.hidden || !palette.hidden || picker.isOpen()) return;
   const b = activeBindings().find((x) => x.code === e.code);
   if (!b) return;
   if (b.up) held.set(e.code, b);
@@ -1966,7 +2066,7 @@ addEventListener("keydown", (e: KeyboardEvent) => {
   if (e.code === "Escape" && inputFree()) return openMenu();
   if (e.code === "KeyT" && !typing() && menu.hidden) return startTalking();
   if (e.code === "KeyE" && !e.repeat && !typing() && menu.hidden && !panel) runAction();
-  if (typing() || panel || !menu.hidden) return;
+  if (typing() || panel || !menu.hidden || picker.isOpen()) return;
   keys.add(e.code);
   if (!e.repeat) pressed[e.code] = (pressed[e.code] ?? 0) + 1;
 });

@@ -4,7 +4,8 @@ import { dirname, join, relative, resolve } from "node:path";
 import { hasGit, type Mods } from "./mods";
 import { brief, type Recorder } from "./record";
 import { exportWorld } from "./share";
-import type { SimHost } from "./simhost";
+import type { GameCard } from "./games";
+import type { Sims } from "./sims";
 
 export type Task = { title: string; status: string; percent?: number; state: "working" | "done" | "blocked"; at: number };
 const speaker = (who: string) => `${who}'s Claude`;
@@ -18,7 +19,7 @@ export type CliContext = {
   owners: Record<string, string>;
   saveOwners(): void;
   mods: Mods;
-  sim: SimHost;
+  sims: Sims;
   logs: { at: number; mod: string; level: string; text: string; player?: string }[];
   feed(text: string, kind?: string): void;
   chat(from: string, text: string, how?: "claudes"): void;
@@ -38,6 +39,19 @@ export type CliContext = {
 /** Longest chat line a Claude may show players: 95% of what Claudes said to players in a busy session fit. */
 const SAY_MAX = 400;
 const hash = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex").slice(0, 12);
+
+const GAME_PARAM = { type: "string", description: "Which game's simulation: a game id, or empty (game=) for the world's own hub. Default: the game your player is in." };
+const GAME_CARD = {
+  title: { type: "string", description: "At most 40 characters." },
+  tagline: { type: "string", description: "One line under the title, at most 160 characters." },
+  color: { type: "string", description: "The card's base CSS colour, e.g. #1d6b4f." },
+  accent: { type: "string", description: "A second CSS colour for the card." },
+  status: { type: "string", enum: ["live", "early", "building"], description: "LIVE, EARLY ACCESS or BEING BUILT on the card; default building." },
+  order: { type: "number", description: "Picker order, lowest first, then by title." },
+  spawn: { type: "array", items: { type: "number" }, description: "Where a player first appears in the game, [x, y, z]; afterwards they come back where they left it." },
+  art: { type: "string", description: "A client mod whose default export has paintCard(canvas, t) to paint the card; t is seconds." },
+};
+const CARD_FIELDS = ["title", "tagline", "color", "accent", "status", "order", "spawn", "art"] as const;
 
 const tools = [
   {
@@ -147,6 +161,7 @@ const tools = [
         from: { type: "array", items: { type: "number" }, description: "Feet position [x, y, z]." },
         to: { type: "array", items: { type: "number" }, description: "Feet position [x, y, z], at most 500 m away." },
         body: { type: "object", description: "radius, height and step of the walker; defaults 0.35, 1.8 and 0.45." },
+        game: GAME_PARAM,
       },
       required: ["from", "to"],
     },
@@ -180,8 +195,37 @@ const tools = [
         components: { type: "array", items: { type: "string" } },
         limit: { type: "number" },
         wait: { type: "number", description: "Seconds to wait for the answer to change, at most 60, instead of asking again and again: returns as soon as it differs from what it was when you called." },
+        game: GAME_PARAM,
       },
     },
+  },
+  {
+    name: "list_games",
+    description: "The games played inside this world, each with its picker card, the live mods that belong to it and who is in it. A world with no games is one game of its own.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "create_game",
+    description:
+      "Add a game to the world's games picker. Players pick it and play it in its own simulation, with its own save, running the shared mods (those without a game field) plus the mods whose default export says game: \"<id>\" in server.ts and/or client.ts. It shows as COMING SOON until it has mods or a status other than building.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...GAME_CARD,
+        id: { type: "string", description: "Lowercase letters, digits and dashes, starting with a letter; never changes. Mods name it with game: \"<id>\"." },
+      },
+      required: ["id", "title", "tagline", "color"],
+    },
+  },
+  {
+    name: "edit_game",
+    description: "Change a game's picker card: pass only the fields to change. Any Claude can edit any game.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, ...GAME_CARD }, required: ["id"] },
+  },
+  {
+    name: "delete_game",
+    description: "Remove a game and its save. Refused while live mods name it: remove or move them first. Players in it go back to the world's own hub.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
   },
   {
     name: "query_db",
@@ -334,8 +378,39 @@ export function createCli(ctx: CliContext) {
     }
   }
 
+  /** The game a tool looks at: the one asked for (empty for the hub), else the caller's player's. */
+  function gameFor(args: { game?: string }, who: string) {
+    if (args.game === undefined) return ctx.sims.gameOf(who);
+    if (args.game === "") return null;
+    if (!ctx.sims.hasGame(args.game)) throw new ToolError(`There is no game ${args.game}; list_games shows them.`);
+    return args.game;
+  }
+
+  const card = (args: Record<string, unknown>) => Object.fromEntries(CARD_FIELDS.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
+
   async function run(name: string, args: any, who: string): Promise<string | { image: string } | { archive: Blob }> {
     switch (name) {
+      case "list_games":
+        return JSON.stringify(ctx.sims.summary(), null, 2);
+      case "create_game": {
+        const game = ctx.sims.createGame({ ...card(args), id: String(args.id ?? "") } as GameCard, who);
+        if (typeof game === "string") throw new ToolError(game);
+        ctx.feed(`${speaker(who)} created the game ${game.title}`, "info");
+        return `Created the game ${game.id} (${game.status}). Mods join it with game: "${game.id}" on the default export of their server.ts and client.ts.`;
+      }
+      case "edit_game": {
+        const game = ctx.sims.editGame(String(args.id), card(args));
+        if (typeof game === "string") throw new ToolError(game);
+        ctx.feed(`${speaker(who)} changed the game ${game.title}`, "info");
+        return JSON.stringify(game, null, 2);
+      }
+      case "delete_game": {
+        const title = ctx.sims.games.get(String(args.id))?.title;
+        const refused = ctx.sims.deleteGame(String(args.id));
+        if (refused) throw new ToolError(refused);
+        ctx.feed(`${speaker(who)} deleted the game ${title}`, "info");
+        return `Deleted the game ${args.id} and its save.`;
+      }
       case "status":
         return JSON.stringify(ctx.status(), null, 2);
       case "list_files":
@@ -427,22 +502,23 @@ export function createCli(ctx: CliContext) {
       case "activity":
         return JSON.stringify(ctx.record.activity(args), null, 1);
       case "corrections": {
-        const found = ctx.sim.corrections.filter((c) => (!args.player || c.player === args.player) && (!args.mod || c.mod === args.mod)).slice(-(args.limit ?? 50));
+        const found = ctx.sims.corrections().filter((c) => (!args.player || c.player === args.player) && (!args.mod || c.mod === args.mod)).slice(-(args.limit ?? 50));
         return found.map((c) => JSON.stringify({ ...c, at: new Date(c.at).toISOString().slice(11, 19) })).join("\n") || "No player has been corrected since the world started.";
       }
       case "walk_test": {
         const point = (v: unknown) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
         if (!point(args.from) || !point(args.to)) throw new ToolError("from and to are feet positions like [x, y, z].");
         if (Math.hypot(args.to[0] - args.from[0], args.to[2] - args.from[2]) > 500) throw new ToolError("from and to are over 500 m apart; test the walk in shorter legs.");
-        return JSON.stringify(await ctx.sim.walk(args.from, args.to, args.body));
+        return JSON.stringify(await ctx.sims.awake(gameFor(args, who)).walk(args.from, args.to, args.body));
       }
       case "colliders":
         if (!ctx.sendToGame(who, { t: "colliders", on: !!args.on })) throw new ToolError(`${who} doesn't have the game open.`);
         return args.on ? "Colliders are showing in your player's game: red boxes are ones nothing draws." : "Colliders are hidden.";
       case "query_world": {
         const components: string[] = args.components ?? [];
+        const game = gameFor(args, who);
         const query = () => {
-          const found = [...ctx.sim.entities].filter(([, e]) => components.every((c) => c in e));
+          const found = [...ctx.sims.entities(game)].filter(([, e]) => components.every((c) => c in e));
           const games = Object.entries((ctx.perf() as { players: Record<string, { solidWithoutModel?: { count: number } }> }).players);
           const [player, report] = games.find(([name]) => name === who) ?? games[0] ?? [];
           const walls = report?.solidWithoutModel?.count ? `\nsolidWithoutModel: ${JSON.stringify(report.solidWithoutModel)} (solid entities nothing draws, orange wireframes in ${player}'s game)` : "";
@@ -490,7 +566,7 @@ export function createCli(ctx: CliContext) {
         };
       case "publish":
         try {
-          const files = exportWorld({ data: ctx.data, entities: ctx.sim.entities, nextId: ctx.sim.nextId }, String(args.handle ?? ""), String(args.description ?? ""));
+          const files = exportWorld({ data: ctx.data, entities: ctx.sims.hub.entities, nextId: ctx.sims.hub.nextId }, String(args.handle ?? ""), String(args.description ?? ""));
           return { archive: await new Bun.Archive(files, { compress: "gzip" }).blob() };
         } catch (e: any) {
           throw new ToolError(e.message);
