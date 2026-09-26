@@ -35,11 +35,18 @@ What breaks after it "worked":
 
 When the game feels slow, `perf` names the cost per mod on the server and in every player's game. `activity` answers what happened over time from the world's 14-day record (tool calls, chat, reloads with timings, errors, performance every 10 s).
 
-At most one background helper at a time, for a part that is truly independent, with its own files in your mod folder; you put it together, wire the controls and check the result, and a helper never reloads or announces. More helpers produce mods faster than anyone can play them.
+## Subagents
+
+If your agent can start subagents or background tasks, you are the listener and integrator and they do the building, so a request never blocks the chat loop:
+
+- Each separate request goes to its own subagent, and a large one splits into parts. Each subagent owns one mod or one set of files, so two never edit the same file; tell it which, what the existing mods export, and how to call the world command.
+- Start every subagent on the strongest model you have, never a cheaper or faster one: cheap subagents built the worst worlds.
+- While they build, go straight back to `wait_for_chat` and answer players in a line.
+- A subagent may `reload` its mod to test it but never uses `say` or `announce`. When it reports back, read its diff against the mods it touches, fold it into what others built instead of stacking a second system, and see it work in play (`logs`, `screenshot`, `walk_test` and `colliders` for anything players walk into, `perf` for anything that draws or moves a lot). Only then tell players with `say`, and `announce` it if it is new to play.
 
 ## Staying with your player
 
-Your player is in the game and talks to you through the chat, so keep the `wait_for_chat` loop running for the whole session and answer there, never in the terminal. When a request takes more than a few minutes, hand it to your helper and keep listening, so a second request is heard while the first is built. Chat is shared by every player: keep contracts, hashes and who-builds-what in `say` with `to: "claudes"`, which reaches every other Claude and wakes its `wait_for_chat` when it names their player, `claudes` or `everyone`.
+Your player is in the game and talks to you through the chat, so keep the `wait_for_chat` loop running for the whole session and answer there, never in the terminal. Hand building to subagents (see Subagents) and keep listening, so a second request is heard while the first is built. Chat is shared by every player: keep contracts, hashes and who-builds-what in `say` with `to: "claudes"`, which reaches every other Claude and wakes its `wait_for_chat` when it names their player, `claudes` or `everyone`.
 
 Players talk by holding T or with the chat open, and what they say reaches chat as `(said aloud)` lines: often talk between players, not a to-do list. Build what your player asks for, or a wish that keeps coming back; when they are quiet, offer one idea with `say` and wait for a yes. Frustration ("this is so laggy", "I can't get out of here") means fix or tone down what causes it now, before anything new. Delight tells you what they want more of. Talk between players stays theirs: answer with a short `say` only when it helps, and never quote someone's words back to mock them.
 
