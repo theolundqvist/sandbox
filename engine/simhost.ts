@@ -10,7 +10,7 @@ const HANG_MS = 2000;
 /** Starting a trial loads every server mod, which takes seconds on a busy machine; only its ticks count as hanging. */
 const TRIAL_START_MS = 15_000;
 
-/** Closes a worker's databases before terminating it: Bun never frees what a terminated worker left open, and each test run's database copies stayed in memory until the server crashed. One too stuck to answer is terminated anyway. */
+/** Closes a worker's databases before terminating it, since Bun never frees what a terminated worker left open; one too stuck to answer is terminated anyway. */
 function retire(worker: Worker) {
   const timer = setTimeout(() => worker.terminate(), 500);
   worker.addEventListener("message", ({ data }) => {
@@ -160,26 +160,32 @@ export class SimHost {
 
   /** Runs every live mod, with the candidate swapped in, against a copy of the world; resolves to the candidate's error or null. */
   trial(mod: RunningMod): Promise<string | null> {
-    const worker = new Worker(new URL("./sim.ts", import.meta.url));
     return new Promise((resolve) => {
       let timer = setTimeout(() => done(`did not load within ${TRIAL_START_MS / 1000} s (infinite loop at import?)`), TRIAL_START_MS);
+      let finished = false;
       const done = (error: string | null) => {
+        if (finished) return;
+        finished = true;
         clearTimeout(timer);
-        worker.onmessage = worker.onerror = null;
-        retire(worker);
+        proc.kill("SIGKILL");
         resolve(error);
       };
-      worker.onmessage = ({ data: msg }) => {
-        if (msg.t === "trial") done(msg.error);
-        else if (msg.t === "ticking") {
-          clearTimeout(timer);
-          timer = setTimeout(() => done(`did not finish 20 test ticks within ${HANG_MS / 1000} s (infinite loop?)`), HANG_MS);
-        }
-      };
-      worker.onerror = (e) => done(String(e.message));
-      worker.postMessage({
+      // A child process rather than a worker: its exit frees everything the test run loaded, which a terminated worker never does.
+      const proc = Bun.spawn([process.execPath, new URL("./sim.ts", import.meta.url).pathname], {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        ipc: (msg) => {
+          if (msg.t === "trial") done(msg.error);
+          else if (msg.t === "ticking") {
+            clearTimeout(timer);
+            timer = setTimeout(() => done(`did not finish 20 test ticks within ${HANG_MS / 1000} s (infinite loop?)`), HANG_MS);
+          }
+        },
+      });
+      proc.exited.then((code) => done(`the test run crashed (exit ${proc.signalCode ?? code})`));
+      proc.send({
         t: "init",
-        beat: new SharedArrayBuffer(8),
         entities: Object.fromEntries(this.entities),
         nextId: this.nextId,
         players: [],
@@ -190,4 +196,5 @@ export class SimHost {
       });
     });
   }
+
 }

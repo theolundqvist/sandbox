@@ -27,7 +27,9 @@ const watchers = new Map<string, Player>();
 /** Set while checking what a spectator sees: a hook that throws on someone who isn't a player hides the thing instead of counting against its mod. */
 let spectating = false;
 
-const post = (msg: any) => self.postMessage(msg);
+/** Test runs run in a child process, which frees everything when it exits; the live simulation runs in a worker. */
+const child = Bun.isMainThread;
+const post = (msg: any) => (child ? process.send!(msg) : self.postMessage(msg));
 
 for (const level of ["log", "info", "warn", "error"] as const) {
   console[level] = (...args: any[]) =>
@@ -353,10 +355,10 @@ function tick(dt: number) {
   Atomics.add(beat, 0, 1);
 }
 
-self.onmessage = async ({ data: msg }) => {
+const receive = async (msg: any) => {
   switch (msg.t) {
     case "init": {
-      beat = new Int32Array(msg.beat);
+      beat = new Int32Array(msg.beat ?? new SharedArrayBuffer(8));
       world.nextId = msg.nextId;
       for (const [id, e] of Object.entries(msg.entities)) world.entities.set(Number(id), e as any);
       for (const p of msg.players as Player[]) world.players.set(p.id, p);
@@ -523,6 +525,11 @@ function blocker(pos: number[], dir: [number, number], radius: number, height: n
     }
   return null;
 }
+
+if (child) {
+  process.on("message", receive);
+  process.on("disconnect", () => process.exit());
+} else self.onmessage = ({ data }) => receive(data);
 
 /** Every live mod runs with the candidate swapped in, but only the candidate's errors fail the test. */
 function runTrial() {

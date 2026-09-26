@@ -160,6 +160,6 @@ test("test runs of a mod don't keep copies of the world's databases alive", asyn
   await tool("reload", { mod: "broken" });
   const before = rss();
   for (let i = 0; i < 30; i++) expect((await tool("reload", { mod: "broken" })).text).toStartWith("Test run");
-  // Measured: 84 MB with the copies closed, 584 MB without.
-  expect(rss() - before).toBeLessThan(250);
+  // Measured over these 30 runs: 584 MB when test runs were workers that kept their copies, 84 MB when they closed them, 0 MB as child processes.
+  expect(rss() - before).toBeLessThan(50);
 }, 60_000);
