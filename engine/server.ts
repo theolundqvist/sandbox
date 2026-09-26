@@ -492,7 +492,7 @@ const server = Bun.serve<Conn>({
       transcribe(audio).then(
         (text) => {
           record.add("action", who, { what: "voice", ms: Math.round(performance.now() - started), bytes: audio.size, heard: !!text });
-          if (text) chat(who, text.slice(0, 300), "spoken");
+          if (text) chat(who, text, "spoken");
         },
         (error) => {
           console.log(`[voice] ${who}: ${error.message}`);
@@ -571,7 +571,7 @@ const server = Bun.serve<Conn>({
       t.inKB += raw.length / 1024;
       const msg = JSON.parse(String(raw));
       if (msg.t === "m") sim.send({ t: "msg", id: ws.data.name, mod: msg.mod, msg: msg.msg });
-      else if (msg.t === "chat") chat(ws.data.name, String(msg.text).slice(0, 300));
+      else if (msg.t === "chat") chat(ws.data.name, String(msg.text));
       else if (msg.t === "resync") sim.resync(ws.data.name);
       else if (msg.t === "react") react(ws.data.name, String(msg.mod), String(msg.kind));
       else if (msg.t === "keys") mods.reportKeys(msg.keys);
