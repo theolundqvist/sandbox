@@ -163,3 +163,12 @@ test("test runs of a mod don't keep copies of the world's databases alive", asyn
   // Measured over these 30 runs: 584 MB when test runs were workers that kept their copies, 84 MB when they closed them, 0 MB as child processes.
   expect(rss() - before).toBeLessThan(50);
 }, 60_000);
+
+test("perf names the mod behind a slow tick, not just its average", async () => {
+  await write("mods/spiky/server.ts", serverMod(`{ tick() { if (Date.now() % 500 < 60) { const until = performance.now() + 30; while (performance.now() < until); } } }`));
+  expect((await tool("reload", { mod: "spiky" })).text).toStartWith("spiky v1 is live");
+  await Bun.sleep(4500);
+  const { server } = JSON.parse((await tool("perf")).text);
+  expect(server.modTicks.spiky.max).toBeGreaterThanOrEqual(29);
+  expect(server.mods.spiky).toBeLessThan(15);
+}, 30_000);

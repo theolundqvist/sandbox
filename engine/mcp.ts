@@ -125,7 +125,7 @@ const tools = [
   },
   {
     name: "perf",
-    description: "Why is the game slow? Server cost per mod (ms per 50 ms tick) and, for every player's game, fps, slowest frames, ms per frame spent in each client mod and in drawing, draw calls, triangles, scene objects, network ping and download rate, memory and GPU. Games report every 2 seconds.",
+    description: "Why is the game slow? Server cost per mod (average, p95 and slowest ms per 50 ms tick) and, for every player's game, fps, slowest frames, ms per frame spent in each client mod and in drawing, draw calls, triangles, scene objects, the geometries and textures each mod created and has not disposed, network ping and download rate, memory and GPU. Games report every 2 seconds.",
     inputSchema: { type: "object", properties: {} },
   },
   {

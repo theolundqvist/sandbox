@@ -298,7 +298,7 @@ const status = () => ({
 });
 
 const perf = () => ({
-  server: { ...sim.perf, budget: "a tick is due every 50 ms; mods is ms per tick" },
+  server: { ...sim.perf, budget: "a tick is due every 50 ms; mods is each mod's average ms per tick, modTicks its p95 and slowest tick hook over the last 2 s" },
   entities: sim.entities.size,
   players: Object.fromEntries([...clientPerf].map(([name, { at, ...p }]) => [name, { ...p, secondsOld: Math.round((Date.now() - at) / 1000) }])),
 });
@@ -320,9 +320,12 @@ setInterval(() => {
   const used = process.cpuUsage(cpu);
   cpu = process.cpuUsage();
   const r = (v: number) => Math.round(v * 10) / 10;
+  const modMaxMs: Record<string, number> = {};
+  for (const p of simWindow) for (const [name, t] of Object.entries(p.modTicks)) modMaxMs[name] = Math.max(modMaxMs[name] ?? 0, t.max);
   record.add("server", null, {
     tick: { avg: r(Math.max(0, ...simWindow.map((p) => p.msPerTick))), p50: r(Math.max(0, ...simWindow.map((p) => p.p50))), p95: r(Math.max(0, ...simWindow.map((p) => p.p95))), max: r(Math.max(0, ...simWindow.map((p) => p.max))) },
     mods: simWindow.at(-1)?.mods,
+    modMaxMs,
     lagMs: Math.round(lagMs),
     cpuPct: Math.round((used.user + used.system) / 100_000),
     rssMB: Math.round(process.memoryUsage().rss / 1048576),

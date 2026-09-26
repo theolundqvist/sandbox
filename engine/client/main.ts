@@ -484,7 +484,12 @@ function reorder() {
   applyScreen();
 }
 
+/** The mod whose hook is running, so what it creates is counted against it. */
+let running: Loaded | null = null;
+
 function guarded<T>(m: Loaded, label: string, fn: () => T): T | undefined {
+  const prev = running;
+  running = m;
   try {
     return fn();
   } catch (e: any) {
@@ -497,8 +502,40 @@ function guarded<T>(m: Loaded, label: string, fn: () => T): T | undefined {
       reorder();
       toast(`${m.name} kept crashing in your game and was switched off`, "error");
     }
+  } finally {
+    running = prev;
   }
 }
+
+/** Geometries and textures not yet disposed, by the mod whose hook created them; "engine" also holds what mods create in async callbacks. */
+const made = { geometries: new Map<string, number>(), textures: new Map<string, number>() };
+function countMade(proto: { dispose(): void }, counts: Map<string, number>) {
+  const owner = Symbol("owner");
+  const uuid = Symbol("uuid");
+  // Three's constructors assign uuid first thing, which makes its setter the one place every instance passes through.
+  Object.defineProperty(proto, "uuid", {
+    configurable: true,
+    get() {
+      return this[uuid];
+    },
+    set(value: string) {
+      if (!(owner in this)) {
+        this[owner] = running?.name ?? "engine";
+        counts.set(this[owner], (counts.get(this[owner]) ?? 0) + 1);
+      }
+      this[uuid] = value;
+    },
+  });
+  const dispose = proto.dispose;
+  proto.dispose = function (this: any) {
+    if (this[owner]) counts.set(this[owner], counts.get(this[owner])! - 1);
+    this[owner] = null;
+    dispose.call(this);
+  };
+}
+countMade(THREE.BufferGeometry.prototype, made.geometries);
+countMade(THREE.Texture.prototype, made.textures);
+const topMade = (counts: Map<string, number>) => Object.fromEntries([...counts].filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).slice(0, 10));
 
 function call(m: Loaded, hook: keyof ClientHooks, ...args: any[]): any {
   const base = m.mod[hook] as ((...a: any[]) => any) | undefined;
@@ -844,21 +881,25 @@ async function reconnect() {
 
 /** The scene with every mod layer and HTML overlay (engine HUD and mod UI) drawn on top, as base64 JPEG. */
 async function screenshot() {
-  const drawn = screen.scene !== false;
-  if (drawn) draw(0);
-  const scene3d = new Image();
-  scene3d.src = drawn ? renderer.domElement.toDataURL("image/png") : "";
-  // html-to-image waits on animation frames, which never come in a background tab.
-  const [overlay] = await Promise.all([
-    document.hidden ? null : toCanvas(document.body, { filter: (node) => node !== renderer.domElement && !(node as HTMLElement).hidden, skipFonts: true, pixelRatio: 1, style: { background: "transparent" } }),
-    drawn && scene3d.decode(),
-  ]);
   const out = Object.assign(document.createElement("canvas"), { width: innerWidth, height: innerHeight });
   const g = out.getContext("2d")!;
     $("rules").hidden = true;
     $<HTMLButtonElement>("howto-play").disabled = true;
   g.imageSmoothingEnabled = !screen.pixelated;
-  if (drawn) g.drawImage(scene3d, 0, 0, innerWidth, innerHeight);
+  // Copied while the frame is still in the drawing buffer, instead of encoding it to PNG and decoding it again on the main thread.
+  if (screen.scene !== false) {
+    draw(0);
+    g.drawImage(renderer.domElement, 0, 0, innerWidth, innerHeight);
+  }
+  // html-to-image waits on animation frames, which never come in a background tab.
+  const overlay = document.hidden
+    ? null
+    : await toCanvas(document.body, {
+        filter: (node) => node !== renderer.domElement && !(node as HTMLElement).hidden && (!(node instanceof Element) || node.checkVisibility()),
+        skipFonts: true,
+        pixelRatio: 1,
+        style: { background: "transparent" },
+      });
   if (overlay) g.drawImage(overlay, 0, 0, innerWidth, innerHeight);
   else {
     g.font = "bold 18px sans-serif";
@@ -867,7 +908,13 @@ async function screenshot() {
     g.fillStyle = "#fff";
     g.fillText("The game tab is in the background: 3D view only, no HUD or menus.", 12, 24);
   }
-  return out.toDataURL("image/jpeg", 0.8).split(",")[1]!;
+  // toBlob encodes off the main thread; toDataURL would block the game while it encodes.
+  const jpeg = await new Promise<Blob>((resolve) => out.toBlob((b) => resolve(b!), "image/jpeg", 0.8));
+  return new Promise<string>((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1]!);
+    reader.readAsDataURL(jpeg);
+  });
 }
 
 // ---------- HUD ----------
@@ -2173,6 +2220,8 @@ setInterval(() => {
     trianglesPerFrame: Math.round(stats.triangles / n),
     geometries: renderer.info.memory.geometries,
     textures: renderer.info.memory.textures,
+    geometriesByMod: topMade(made.geometries),
+    texturesByMod: topMade(made.textures),
     ...sceneCost(),
     entities: entities.size,
     pingMs: stats.ping,

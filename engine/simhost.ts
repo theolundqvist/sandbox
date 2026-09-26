@@ -24,7 +24,7 @@ function retire(worker: Worker) {
 export class SimHost {
   entities = new Map<number, Entity>();
   nextId = 1;
-  perf: { msPerTick: number; p50: number; p95: number; max: number; mods: Record<string, number> } | null = null;
+  perf: { msPerTick: number; p50: number; p95: number; max: number; mods: Record<string, number>; modTicks: Record<string, { p95: number; max: number }> } | null = null;
   players = new Map<string, Player>();
   watchers = new Set<string>();
   /** Which mod spawned each entity, kept across worker restarts. */

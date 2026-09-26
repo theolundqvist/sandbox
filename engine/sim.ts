@@ -8,7 +8,7 @@ import { GameWorld, modDb, type Diff, type Tick } from "./world";
 declare var self: Worker;
 
 type Ground = (x: number, z: number, fromY: number) => number | null;
-type Loaded = { id: number; name: string; mod: ServerMod; errors: number; slowTicks: number; ms: number; lastError?: string; grounds: Set<Ground> };
+type Loaded = { id: number; name: string; mod: ServerMod; errors: number; slowTicks: number; ms: number; ticks: number[]; lastError?: string; grounds: Set<Ground> };
 type Event = { from: string; name: string; data: any; to?: string[] };
 
 const world = new GameWorld();
@@ -191,6 +191,7 @@ function call(m: Loaded, hook: keyof ServerHooks, ...args: any[]): any {
   if (before) checkMoves(m, hook, before, hook === "message" ? args : null);
   m.ms += ms;
   if (hook === "tick") {
+    m.ticks.push(ms);
     m.slowTicks = ms > 50 ? m.slowTicks + 1 : 0;
     if (m.slowTicks >= 100) fault(m, "every tick took over 50 ms for 5 s", true);
   }
@@ -271,7 +272,7 @@ async function setMod(name: string, id: number, path: string | null) {
     mods.delete(name);
     return reorder();
   }
-  const loaded: Loaded = { id, name, mod: (await import(path)).default ?? {}, errors: 0, slowTicks: 0, ms: 0, grounds: new Set() };
+  const loaded: Loaded = { id, name, mod: (await import(path)).default ?? {}, errors: 0, slowTicks: 0, ms: 0, ticks: [], grounds: new Set() };
   mods.set(name, loaded);
   reorder();
   call(loaded, "load");
@@ -391,8 +392,17 @@ const receive = async (msg: any) => {
         const cost = Object.fromEntries(ordered.filter((m) => m.ms).sort((a, b) => b.ms - a.ms).map((m) => [m.name, +(m.ms / ticks).toFixed(2)]));
         const sorted = times.sort((a, b) => a - b);
         const at = (p: number) => +sorted[Math.floor(ticks * p)].toFixed(2);
-        post({ t: "perf", msPerTick: +(sorted.reduce((a, b) => a + b, 0) / ticks).toFixed(2), p50: at(0.5), p95: at(0.95), max: +sorted[ticks - 1].toFixed(2), mods: cost });
-        for (const m of ordered) m.ms = 0;
+        const spikes = Object.fromEntries(
+          ordered
+            .filter((m) => m.ticks.length)
+            .map((m) => {
+              const own = m.ticks.sort((a, b) => a - b);
+              return [m.name, { p95: +own[Math.floor(own.length * 0.95)]!.toFixed(2), max: +own.at(-1)!.toFixed(2) }] as const;
+            })
+            .sort((a, b) => b[1].max - a[1].max),
+        );
+        post({ t: "perf", msPerTick: +(sorted.reduce((a, b) => a + b, 0) / ticks).toFixed(2), p50: at(0.5), p95: at(0.95), max: +sorted[ticks - 1].toFixed(2), mods: cost, modTicks: spikes });
+        for (const m of ordered) [m.ms, m.ticks] = [0, []];
         times = [];
       }, 50);
       return post({ t: "ready" });
