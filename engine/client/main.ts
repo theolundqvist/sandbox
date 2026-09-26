@@ -781,6 +781,8 @@ function connect() {
         me = msg.playerId;
         $("world-name").textContent = world;
         $("rules").textContent = msg.rules === "additive" ? "additive" : "open";
+        $("rules").hidden = false;
+        $<HTMLButtonElement>("howto-play").disabled = false;
         $("status").hidden = true;
         welcomedAt = performance.now();
         showClaude(msg.claudes[me]?.state ?? "offline");
@@ -818,8 +820,6 @@ function connect() {
         claudes.set(msg.name, { state: msg.state, task: msg.task });
         return showBuilders();
       case "tick":
-        $("rules").hidden = false;
-        $<HTMLButtonElement>("howto-play").disabled = false;
         if (!replay) applyTick(msg);
         return;
       case "mod":
@@ -855,6 +855,8 @@ function connect() {
   };
   ws.onclose = (e) => {
     $("status").hidden = false;
+    $("rules").hidden = true;
+    $<HTMLButtonElement>("howto-play").disabled = true;
     if (leaving) return;
     if (e.code === 4000) {
       $("status").textContent = "You opened the game in another tab.";
@@ -883,8 +885,6 @@ async function reconnect() {
 async function screenshot() {
   const out = Object.assign(document.createElement("canvas"), { width: innerWidth, height: innerHeight });
   const g = out.getContext("2d")!;
-    $("rules").hidden = true;
-    $<HTMLButtonElement>("howto-play").disabled = true;
   g.imageSmoothingEnabled = !screen.pixelated;
   // Copied while the frame is still in the drawing buffer, instead of encoding it to PNG and decoding it again on the main thread.
   if (screen.scene !== false) {

@@ -340,12 +340,12 @@ setInterval(() => {
   traffic.clear();
 }, 10_000);
 
-let publicUrl: string | null = null;
-let joinCode: string | null = null;
-/** The host's Wi-Fi address, where friends nearby join when the relay can't be reached. */
 /** Feed lines wait a moment, so a reload or a tab open for a few seconds says nothing. */
 const joiningLine = new Map<string, ReturnType<typeof setTimeout>>();
 const leavingLine = new Map<string, ReturnType<typeof setTimeout>>();
+let publicUrl: string | null = null;
+let joinCode: string | null = null;
+/** The host's Wi-Fi address, where friends nearby join when the relay can't be reached. */
 let lanUrl: string | null = null;
 const shots = new Map<string, (data: string) => void>();
 const mcp = createMcp({
