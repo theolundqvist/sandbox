@@ -252,7 +252,7 @@ export class Mods {
     this.events.record("reload", who, { mod: name, ok: true, version, ms: { ...ms, total }, loadError: loadError?.slice(0, 500) });
     this.events.feed(`${who} reloaded ${name} v${version}`, "ok");
     const warning = loadError ? `\nBut its load hook threw on the live world:\n${loadError}` : "";
-    return { ok: true, report: `${name} v${version} is live for everyone (${total} ms).${warning}${this.overlaps(name)}\nWatch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.` };
+    return { ok: true, report: `${name} v${version} is live ${game ? `in the game ${game}` : "for everyone"} (${total} ms).${warning}${this.overlaps(name)}\nWatch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.` };
   }
 
   /** A player's game (re)loaded these mods, which declared these keys. */
