@@ -109,7 +109,9 @@
     localStorage.setItem("sandbox-menu", hashKey);
     history.replaceState(null, "", "/menu");
   }
-  const key = localStorage.getItem("sandbox-menu");
+  // On the host's own computer the launcher hands the key over, so the main menu needs no link there.
+  const localKey = () => fetch("/api/local-key").then((r) => (r.ok ? r.json() : {})).then((r) => r.key ?? null, () => null);
+  const key = localStorage.getItem("sandbox-menu") ?? (await localKey());
   let state = null;
   let selected = null;
 
@@ -312,7 +314,8 @@
     for (const b of $("title").querySelectorAll(".item")) b.hidden = true;
     $("waiting").hidden = false;
     show("title");
-    setInterval(async () => (await fetch("/api/info")).ok && location.assign("/"), 2000);
+    if (location.pathname === "/menu") $("waiting").textContent = "Open the menu link from the host's terminal.";
+    else setInterval(async () => (await fetch("/api/info")).ok && location.assign("/"), 2000);
   } else {
     offerApp(`${location.origin}/menu#key=${key}`);
     api("state").catch(() => {

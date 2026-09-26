@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
-import type { ServerWebSocket, Subprocess } from "bun";
+import type { Server, ServerWebSocket, Subprocess } from "bun";
 import { frontFile } from "./front";
 import { latencies, openRecord, route, type Recorder } from "./record";
 import type { Config } from "./server";
@@ -122,6 +122,21 @@ function create(body: any) {
   return id;
 }
 
+/** Set by this launcher on everything it forwards from the relay, whatever the player sent, so relayed requests never pass as local. */
+const RELAYED = "x-sandbox-relayed";
+const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+
+/**
+ * Whoever sits at this machine is the host, including through an SSH port forward, which also arrives on loopback.
+ * Proxies on this machine (the relay tunnel, cloudflared, nginx) arrive on loopback too, so any forwarding header disqualifies,
+ * and the Host header must name localhost so a page rebound to 127.0.0.1 by DNS can't read the key.
+ */
+function local(req: Request, server: Server<Pipe>) {
+  if (!LOOPBACK.has(server.requestIP(req)?.address ?? "")) return false;
+  if ([RELAYED, "forwarded", "x-forwarded-for", "x-real-ip", "cf-connecting-ip", "via"].some((h) => req.headers.has(h))) return false;
+  return /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(req.headers.get("host") ?? "");
+}
+
 const RELAY = process.env.SANDBOX_RELAY ?? "https://sandbox-relay.lundqvistliss.com";
 
 /** Makes this machine reachable through the public relay, which forwards players' requests and sockets over one outbound connection. */
@@ -152,7 +167,7 @@ function share(on: boolean) {
     if (msg.t === "req") {
       const started = performance.now();
       try {
-        const res = await fetch(`http://127.0.0.1:${PORT}${msg.path}`, { method: msg.method, headers: msg.headers, body: msg.body && Buffer.from(msg.body, "base64"), redirect: "manual", decompress: false });
+        const res = await fetch(`http://127.0.0.1:${PORT}${msg.path}`, { method: msg.method, headers: { ...msg.headers, [RELAYED]: "1" }, body: msg.body && Buffer.from(msg.body, "base64"), redirect: "manual", decompress: false });
         const headers = Object.fromEntries([...res.headers].filter(([k]) => !["content-length", "transfer-encoding", "connection"].includes(k)));
         reply({ t: "res", id: msg.id, status: res.status, headers });
         if (res.body) for await (const chunk of res.body) reply({ t: "chunk", id: msg.id, data: Buffer.from(chunk).toString("base64") });
@@ -163,7 +178,7 @@ function share(on: boolean) {
       reply({ t: "end", id: msg.id });
       proxy.add(`relay ${msg.method} ${route(msg.path.split("?")[0])}`, performance.now() - started);
     } else if (msg.t === "open") {
-      const upstream = new WebSocket(`ws://127.0.0.1:${PORT}${msg.path}`, { headers: msg.headers } as any);
+      const upstream = new WebSocket(`ws://127.0.0.1:${PORT}${msg.path}`, { headers: { ...msg.headers, [RELAYED]: "1" } } as any);
       const pipe = { ws: upstream, queue: [] as string[] };
       local.set(msg.id, pipe);
       upstream.onopen = () => {
@@ -273,6 +288,7 @@ Bun.serve<Pipe>({
   async fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname === "/menu") return page("menu.html");
+    if (url.pathname === "/api/local-key") return local(req, server) ? Response.json({ key: state.hostKey }) : Response.json({ error: "Only on the host's own computer." }, { status: 401 });
     if (url.pathname.startsWith("/api/menu/")) return menuApi(req, url.pathname.slice("/api/menu/".length));
     const front = await frontFile(url.pathname);
     if (front) return front;
