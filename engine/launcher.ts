@@ -14,8 +14,10 @@ const STATE = join(DATA, "launcher.json");
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 mkdirSync(WORLDS, { recursive: true });
-const state: { hostKey: string; hosting: string | null; sharing?: boolean; room?: string; relayToken?: string } = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : { hostKey: token(), hosting: null };
+const state: { hostKey: string; hosting: string | null; sharing?: boolean; room?: string; relayToken?: string; code?: string } = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : { hostKey: token(), hosting: null };
 const saveState = () => writeFileSync(STATE, JSON.stringify(state, null, 2));
+const CODE_LETTERS = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => CODE_LETTERS[b % CODE_LETTERS.length]).join("");
 saveState();
 
 type Pipe = { target: string; upstream?: WebSocket; queue: string[] };
@@ -144,7 +146,10 @@ function share(on: boolean) {
   if (!on) {
     const current = tunnel;
     tunnel = null;
+    if (current?.ws.readyState === WebSocket.OPEN) current.ws.send(JSON.stringify({ t: "code", code: null }));
     current?.ws.close();
+    delete state.code;
+    saveState();
     void publish();
     return;
   }
@@ -160,11 +165,17 @@ function share(on: boolean) {
   const reply = (msg: object) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(msg));
   ws.onopen = () => {
     current.url = `${RELAY}/r/${state.room}`;
+    state.code ??= newCode();
+    saveState();
     void publish();
   };
   ws.onmessage = async ({ data }) => {
     const msg = JSON.parse(String(data));
-    if (msg.t === "req") {
+    if (msg.t === "code" && msg.taken === state.code) {
+      state.code = newCode();
+      saveState();
+      void publish();
+    } else if (msg.t === "req") {
       const started = performance.now();
       try {
         const res = await fetch(`http://127.0.0.1:${PORT}${msg.path}`, { method: msg.method, headers: { ...msg.headers, [RELAYED]: "1" }, body: msg.body && Buffer.from(msg.body, "base64"), redirect: "manual", decompress: false });
@@ -228,9 +239,11 @@ async function world(action: string, body?: object) {
   return data;
 }
 
-/** The running world's public address, so its invite links point at the relay rather than wherever the host opened the game. */
+/** The running world's public address and join code, so its invites point at the relay rather than wherever the host opened the game. */
 async function publish() {
-  if (running) await world("public", { url: tunnel?.url ?? null });
+  const code = tunnel?.url ? state.code : null;
+  if (code && tunnel?.ws.readyState === WebSocket.OPEN) tunnel.ws.send(JSON.stringify({ t: "code", code, invite: running ? config(running.id).invite : null }));
+  if (running) await world("public", { url: tunnel?.url ?? null, code });
 }
 
 async function menuState() {
@@ -242,7 +255,8 @@ async function menuState() {
         ? { id: running.id, name: live.name, invite: live.invite, hostKey: live.hostKey, players: await world("players"), snapshots: await world("snapshots") }
         : null,
     lan: lan ? `http://${lan}:${PORT}` : null,
-    tunnel: tunnel ? { url: tunnel.url } : null,
+    tunnel: tunnel ? { url: tunnel.url, code: tunnel.url ? state.code : null } : null,
+    relay: RELAY,
     tunnelError,
   };
 }
@@ -257,6 +271,7 @@ async function menuApi(req: Request, action: string) {
       await stop();
       state.hosting = null;
       saveState();
+      await publish();
     } else if (action === "delete") {
       if (running?.id === body.id) throw new Error("Stop the game before deleting it.");
       if (!/^[a-z0-9-]+$/.test(body.id ?? "")) throw new Error("That game doesn't exist.");
@@ -267,12 +282,20 @@ async function menuApi(req: Request, action: string) {
       const current = config(body.id);
       const name = String(body.name ?? current.name).trim().slice(0, 40) || current.name;
       writeFileSync(join(WORLDS, body.id, "config.json"), JSON.stringify({ ...current, name, rules: body.rules === "additive" ? "additive" : body.rules === "open" ? "open" : current.rules }, null, 2));
+    } else if (action === "code") {
+      if (!tunnel?.url) throw new Error("Share the game first.");
+      state.code = newCode();
+      saveState();
+      await publish();
     } else if (action === "share") {
       share(!!body.on);
       state.sharing = !!body.on;
       saveState();
     }
-    else if (["remove", "invite", "rewind"].includes(action)) await world(action, body);
+    else if (action === "invite") {
+      await world(action, body);
+      await publish();
+    } else if (["remove", "rewind"].includes(action)) await world(action, body);
     else if (action !== "state") return Response.json({ error: "Unknown action" }, { status: 404 });
     return Response.json(await menuState());
   } catch (e: any) {

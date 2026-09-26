@@ -13,7 +13,6 @@
   .front { top: 36px; bottom: 96px; padding-top: 60px; padding-bottom: 0; scrollbar-width: none; }
   .status { margin: 0; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .16em; text-transform: uppercase; }
   #down .lead { margin: -16px 0 32px; }
-  .item.entry input { text-transform: none; }
   .hints span { white-space: nowrap; }
   @media (max-width: 1000px), (max-height: 640px) {
     .front { bottom: 64px; padding: 28px 48px 0; }
@@ -77,7 +76,7 @@
 
   <section id="join" class="screen" data-nav hidden>
     <h1>Join game</h1>
-    <label class="item entry"><input type="text" id="join-link" placeholder="Paste an invite link" autocomplete="off" spellcheck="false"></label>
+    <label class="item entry"><input type="text" id="join-link" placeholder="Code or invite link" autocomplete="off" spellcheck="false"></label>
   </section>
 
   <section id="down" class="screen" data-nav hidden>
@@ -95,7 +94,7 @@
 <div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span><kbd>Esc</kbd>Back</span><span id="fullscreen-hint"><kbd>F11</kbd>Full screen</span><span id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span></div>
 
 <script type="module">
-  import { backdrop, logo } from "/front.js";
+  import { backdrop, joinEntry, joinLink, joinable, logo } from "/front.js";
   const $ = (id) => document.getElementById(id);
   backdrop($("backdrop"));
   logo($("logo"));
@@ -177,7 +176,7 @@
     $("no-games").hidden = !!games.length;
     $("go-new").hidden = !s.newGame;
     $("go-new").onclick = () => open(s.newGame);
-    if (s.copied && !$("join-link").value) $("join-link").value = s.copied;
+    if (s.copied && !$("join-link").value && joinable(s.copied)) $("join-link").set(s.copied);
     if (current()?.id === "title" && !document.activeElement?.closest("#title")) enter();
   }
   $("game-continue").onclick = () => open(selected.url);
@@ -187,9 +186,13 @@
     refresh();
   };
 
-  function join() {
-    const link = $("join-link").value.trim();
-    if (link) open(link);
+  joinEntry($("join-link"));
+  async function join() {
+    try {
+      await open(await joinLink($("join-link").value, "/relay"));
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
   }
 
   $("quit").onclick = () => shell.quit();

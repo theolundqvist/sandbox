@@ -44,7 +44,7 @@
 
   <section id="join" class="screen" data-nav hidden>
     <h1>Join game</h1>
-    <label class="item entry"><input type="text" id="join-link" placeholder="Paste an invite link" autocomplete="off" spellcheck="false"></label>
+    <label class="item entry"><input type="text" id="join-link" placeholder="Code or invite link" autocomplete="off" spellcheck="false"></label>
   </section>
 
   <section id="world" class="screen" data-nav hidden>
@@ -80,6 +80,7 @@
     <div class="copy-row"><span>Wi-Fi</span><code id="link-lan"></code><button data-copy="link-lan">Copy</button><button id="new-invite" title="Old links stop working">New link</button></div>
     <div class="copy-row" title="Anyone with the link can join and run code on this computer"><span>Internet</span><div class="pick" id="share" data-options="off:Off,on:On"></div></div>
     <div class="copy-row" id="public" hidden><span>Link</span><code id="link-public"></code><button data-copy="link-public">Copy</button></div>
+    <div class="copy-row" id="code-row" hidden><span>Code</span><code id="join-code" class="join-code"></code><button data-copy="join-code">Copy</button><button id="new-code" title="The old code stops working">New code</button></div>
     <div class="gap"></div>
     <div id="players"></div>
   </section>
@@ -105,7 +106,7 @@
 </main>
 <div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span></div>
 <script type="module">
-  import { backdrop, logo, pick } from "/front.js";
+  import { backdrop, joinEntry, joinLink, joinable, logo, pick } from "/front.js";
   const $ = (id) => document.getElementById(id);
   backdrop($("backdrop"));
   logo($("logo"));
@@ -115,7 +116,7 @@
   const hashKey = jump.get("key");
   if (hashKey) {
     localStorage.setItem("sandbox-menu", hashKey);
-    history.replaceState(null, "", "/menu");
+    history.replaceState(null, "", location.pathname);
   }
   // On the host's own computer the launcher hands the key over, so the main menu needs no link there.
   const localKey = () => fetch("/api/local-key").then((r) => (r.ok ? r.json() : {})).then((r) => r.key ?? null, () => null);
@@ -228,6 +229,8 @@
       if (s.tunnelError) $("error").textContent = s.tunnelError;
       $("public").hidden = !s.tunnel;
       $("link-public").textContent = s.tunnel?.url ? `${s.tunnel.url}/#invite=${r.invite}` : "Opening…";
+      $("code-row").hidden = !s.tunnel?.code;
+      $("join-code").textContent = s.tunnel?.code ? `${s.tunnel.code.slice(0, 3)}-${s.tunnel.code.slice(3)}` : "";
       rebuild($("players"), r.players.map((p) => {
         const link = el("button", { textContent: "Copy link", title: "Their own link back in, from any address" });
         link.dataset.key = `link-${p.name}`;
@@ -276,23 +279,26 @@
     $("configure-rules").set(w.rules);
   }
 
-  const play = (s) => location.assign(`/#invite=${s.running.hostKey}`);
+  const play = (s) => location.assign(`./#invite=${s.running.hostKey}`);
   async function hostWorld(id) {
     if (state.running && state.running.id !== id && !(await ask(`Stop ${state.running.name}?`, "Stop and host"))) return;
     await attempt(async () => play(await api("host", { id })));
   }
-  function joinGame() {
-    const link = $("join-link").value.trim();
-    if (/^https?:\/\/\S+$/.test(link)) location.assign(link);
-    else $("error").textContent = "Paste the invite link your host sent.";
-  }
+  joinEntry($("join-link"));
+  const joinGame = () => attempt(async () => location.assign(await joinLink($("join-link").value, state.relay)));
+  /** Only reads the clipboard where the browser already allows it, so opening Join game never prompts. */
+  $("go-join").addEventListener("click", async () => {
+    const allowed = await navigator.permissions?.query({ name: "clipboard-read" }).then((p) => p.state === "granted", () => false);
+    const copied = allowed ? (await navigator.clipboard.readText().catch(() => "")).trim() : "";
+    if (copied && !$("join-link").value && joinable(copied)) $("join-link").set(copied);
+  });
   $("world-play").onclick = () => hostWorld(selected);
   /** The timelapse plays from the world's own server, so a world that isn't running is hosted first. */
   $("world-timelapse").onclick = async () => {
     if (state.running && state.running.id !== selected && !(await ask(`Stop ${state.running.name}?`, "Stop and watch"))) return;
     await attempt(async () => {
       const s = state.running?.id === selected ? state : await api("host", { id: selected });
-      location.assign(`/#watch=${s.running.hostKey}`);
+      location.assign(`./#watch=${s.running.hostKey}`);
     });
   };
   $("world-stop").onclick = async () => (await ask(`Stop ${state.running.name}?`, "Stop")) && attempt(() => api("stop", {}));
@@ -313,6 +319,7 @@
     await attempt(async () => play(await api("create", { name: $("create-name").value, rules: $("create-rules").dataset.value, start: $("create-start").dataset.value })));
   };
 
+  $("new-code").onclick = async () => (await ask("Make a new code?", "New code")) && attempt(() => api("code", {}));
   $("new-invite").onclick = async () => (await ask("Make a new invite link?", "New link")) && attempt(() => api("invite", {}));
   pick($("share"), (on) => attempt(() => api("share", { on: on === "on" })).then(() => state && $("share").set(state.tunnel ? "on" : "off")));
   for (const button of document.querySelectorAll("[data-copy]"))
@@ -333,8 +340,8 @@
     for (const b of $("title").querySelectorAll(".item")) b.hidden = true;
     $("waiting").hidden = false;
     show("title");
-    if (location.pathname === "/menu") $("waiting").textContent = "Open the menu link from the host's terminal.";
-    else setInterval(async () => (await fetch("/api/info")).ok && location.assign("/"), 2000);
+    if (location.pathname.endsWith("/menu")) $("waiting").textContent = "Open the menu link from the host's terminal.";
+    else setInterval(async () => (await fetch("/api/info")).ok && location.assign("./"), 2000);
   } else {
     api("state").catch(() => {
       localStorage.removeItem("sandbox-menu");

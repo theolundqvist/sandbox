@@ -7,6 +7,7 @@ const { pathToFileURL } = require("node:url");
 const mac = process.platform === "darwin";
 const BAR = 36;
 const LOCAL = "http://localhost:7777";
+const RELAY = process.env.SANDBOX_RELAY ?? "https://sandbox-relay.lundqvistliss.com";
 const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"]);
 
 /** An invite or personal link passed on the command line, e.g. `sandbox http://host:7777/#invite=…`. */
@@ -162,12 +163,12 @@ async function games() {
     if (m.base === LOCAL) newGame = `${share}/menu#key=${m.key}&screen=create`;
     for (const w of m.s.worlds) hosted.push({ name: w.name, at: w.played, live: m.s.running?.id === w.id, url: `${share}/menu#key=${m.key}&world=${w.id}` });
   }
-  const copied = (await clipboard.readText()).trim();
+  const copied = (await clipboard.readText()).trim().slice(0, 2000);
   return {
     hosted,
     joined: state.recents.filter((r) => !mine.has(r.url)),
     newGame,
-    copied: /^https?:\/\/\S+#(invite|key)=\S+$/.test(copied) ? copied : null,
+    copied,
   };
 }
 
@@ -262,6 +263,7 @@ app.whenReady().then(() => {
 
   protocol.handle("sandbox", (req) => {
     const path = decodeURIComponent(new URL(req.url).pathname);
+    if (path.startsWith("/relay/join/")) return net.fetch(`${RELAY}/join/${encodeURIComponent(path.slice(12))}`);
     if (path === "/shell.html") return net.fetch(pathToFileURL(join(__dirname, "shell.html")).href);
     if (path === "/clips/") return Response.json(readdirSync(join(FRONT, "clips")).filter((f) => f.endsWith(".mp4")));
     const file = normalize(join(FRONT, path));

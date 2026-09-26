@@ -52,7 +52,7 @@ Open the main menu link the terminal prints (on a Mac it opens by itself). Name 
 
 ## Let friends in
 
-Friends only need a browser to play. The menu shows the invite link, and ticking **Share over the internet** gives you a public link through a free relay, with no port forwarding; it stays the same every time you host.
+Friends only need a browser to play. The menu shows the invite link, and ticking **Share over the internet** gives you a public link through a free relay, with no port forwarding; it stays the same every time you host. It also gives you a join code like `K7F-M2Q` that friends type into Join game in the app, or on the relay's front page in a browser.
 
 ![The hosting tab with Share over the internet on, the public invite link and the player list](docs/readme/menu-invite.png)
 

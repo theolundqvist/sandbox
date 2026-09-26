@@ -6,6 +6,7 @@ const PORT = Number(process.env.PORT ?? 9100);
 const CLAIMS = process.env.RELAY_CLAIMS ?? "claims.json";
 const ROOM = /^[a-z0-9-]{3,32}$/;
 const MAX_BODY = 25 * 1024 * 1024;
+const CODE = /^[2-9A-HJKMNP-Z]{6}$/;
 
 type HostData = { kind: "host"; room: string };
 type PlayerData = { kind: "player"; room: string; id: number; path: string; headers: Record<string, string> };
@@ -13,10 +14,45 @@ type Data = HostData | PlayerData;
 type Pending = { resolve(res: Response): void; stream?: ReadableStreamDefaultController<Uint8Array> };
 type Host = { ws: ServerWebSocket<Data>; pending: Map<number, Pending>; players: Map<number, ServerWebSocket<Data>> };
 
-const claims: Record<string, { token: string; seen: number }> = existsSync(CLAIMS) ? JSON.parse(readFileSync(CLAIMS, "utf8")) : {};
+/** Each room's owner, and while it shares, the join code players can type instead of its invite link. */
+const claims: Record<string, { token: string; seen: number; code?: string; invite?: string }> = existsSync(CLAIMS) ? JSON.parse(readFileSync(CLAIMS, "utf8")) : {};
 const saveClaims = () => writeFileSync(CLAIMS, JSON.stringify(claims));
 const hosts = new Map<string, Host>();
 let nextId = 1;
+const lookups = new Map<string, { n: number; until: number }>();
+
+function tooMany(ip: string) {
+  const now = Date.now();
+  const l = lookups.get(ip);
+  if (!l || l.until < now) {
+    if (lookups.size > 10_000) for (const [k, v] of lookups) v.until < now && lookups.delete(k);
+    lookups.set(ip, { n: 1, until: now + 60_000 });
+    return false;
+  }
+  return ++l.n > 10;
+}
+
+function join(code: string, req: Request, ip: string) {
+  const headers = { "access-control-allow-origin": "*" };
+  if (tooMany(ip)) return Response.json({ error: "Too many tries. Wait a minute." }, { status: 429, headers });
+  const room = Object.keys(claims).find((r) => claims[r]!.code === code.replace(/[^a-z0-9]/gi, "").toUpperCase());
+  if (!room) return Response.json({ error: "No game with that code" }, { status: 404, headers });
+  const origin = `${req.headers.get("x-forwarded-proto") ?? new URL(req.url).protocol.slice(0, -1)}://${req.headers.get("host")}`;
+  const invite = claims[room]!.invite;
+  return Response.json({ url: `${origin}/r/${room}/${invite ? `#invite=${invite}` : ""}` }, { headers });
+}
+
+const JOIN_PAGE = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sandbox</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@125,700;125,800&display=swap">
+<style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;flex-direction:column;justify-content:center;gap:28px;padding:16px max(16px,8vw);background:#101113;color:#f3f1ec;font:700 14px/1.4 Archivo,system-ui,sans-serif;font-stretch:125%;text-transform:uppercase;letter-spacing:.16em}
+h1{margin:0;font:800 clamp(40px,7vw,72px)/1 Archivo,system-ui,sans-serif;font-stretch:125%;letter-spacing:.02em}
+label{display:flex;align-items:center;gap:20px}label::before{content:"";width:12px;height:12px;flex:none;background:#ffb547}
+input{all:unset;width:100%;font:800 clamp(40px,8vw,64px)/1.1 Archivo,system-ui,sans-serif;font-stretch:125%;letter-spacing:.2em;text-transform:uppercase;caret-color:#ffb547}input::placeholder{color:#3a3b3e}
+p{margin:0;min-height:1.4em;color:#ffb547}</style>
+<h1>Join game</h1><label><input id="code" placeholder="K7F-M2Q" autocomplete="off" spellcheck="false" autofocus></label><p id="error"></p>
+<script>const input=document.getElementById("code"),error=document.getElementById("error");
+input.oninput=()=>{const c=input.value.replace(/[^a-z0-9]/gi,"").toUpperCase().slice(0,6);input.value=c.length>3?c.slice(0,3)+"-"+c.slice(3):c;error.textContent="";if(c.length===6)go(c)};
+async function go(c){const res=await fetch("/join/"+c);const body=await res.json();if(res.ok)location.assign(body.url);else error.textContent=body.error}</script></html>`;
 
 const text = (body: string, status: number) => new Response(body, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
@@ -34,6 +70,10 @@ Bun.serve<Data>({
   idleTimeout: 255,
   async fetch(req, server) {
     const url = new URL(req.url);
+    // Behind the TLS proxy every peer is loopback; the proxy's own header names the player.
+    const ip = req.headers.get("x-real-ip") ?? server.requestIP(req)?.address ?? "";
+    if (url.pathname.startsWith("/join/")) return join(decodeURIComponent(url.pathname.slice(6)), req, ip);
+    if (url.pathname === "/" && req.method === "GET" && req.headers.get("upgrade") !== "websocket") return new Response(JOIN_PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
     if (url.pathname === "/_host") {
       const room = url.searchParams.get("room") ?? "";
       const token = url.searchParams.get("token") ?? "";
@@ -103,6 +143,14 @@ Bun.serve<Data>({
       } else if (msg.t === "msg") host.players.get(msg.id)?.send(msg.data, true);
       else if (msg.t === "close") host.players.get(msg.id)?.close(msg.code >= 3000 || msg.code === 1000 ? msg.code : 1011, msg.reason);
       else if (msg.t === "ping") ws.send(JSON.stringify({ t: "pong" }));
+      else if (msg.t === "code") {
+        const claim = claims[d.room]!;
+        if (msg.code !== null && !CODE.test(msg.code)) return;
+        if (msg.code && Object.entries(claims).some(([r, c]) => r !== d.room && c.code === msg.code)) return void ws.send(JSON.stringify({ t: "code", taken: msg.code }));
+        claim.code = msg.code ?? undefined;
+        claim.invite = /^[a-z0-9]{1,64}$/.test(msg.invite ?? "") ? msg.invite : undefined;
+        saveClaims();
+      }
     },
     close(ws) {
       const d = ws.data;

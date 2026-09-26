@@ -70,3 +70,37 @@ test("a player through the relay is not the host", async () => {
   expect((await localKey(url!)).status).toBe(401);
   expect((await localKey(url!, { host: "localhost" })).status).toBe(401);
 });
+
+test("a join code leads to the game's invite link until the host replaces it or stops sharing", async () => {
+  const { key } = await (await localKey(`http://127.0.0.1:${LAUNCHER}`)).json();
+  const menu = async (action: string, body?: object) =>
+    (await fetch(`http://127.0.0.1:${LAUNCHER}/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) })).json();
+  const lookup = (code: string, ip = "198.51.100.1") => fetch(`http://127.0.0.1:${RELAY}/join/${code}`, { headers: { "x-real-ip": ip } });
+  await menu("share", { on: true });
+  const s = await menu("create", { name: "Code Test" });
+  expect(s.tunnel.code).toMatch(/^[2-9A-HJKMNP-Z]{6}$/);
+  const first = s.tunnel.code;
+  const formatted = `${first.slice(0, 3)}-${first.slice(3).toLowerCase()}`;
+  expect(await (await lookup(formatted)).json()).toEqual({ url: `${s.tunnel.url}/#invite=${s.running.invite}` });
+
+  const invited = await menu("invite", {});
+  expect(invited.running.invite).not.toBe(s.running.invite);
+  expect((await (await lookup(first)).json()).url).toEndWith(`#invite=${invited.running.invite}`);
+
+  const renewed = await menu("code", {});
+  expect(renewed.tunnel.code).not.toBe(first);
+  expect(await (await lookup(first)).json()).toEqual({ error: "No game with that code" });
+  expect((await lookup(renewed.tunnel.code)).status).toBe(200);
+
+  await menu("share", { on: false });
+  await Bun.sleep(200);
+  expect((await lookup(renewed.tunnel.code)).status).toBe(404);
+  await menu("stop", {});
+});
+
+test("join code lookups are limited per address", async () => {
+  const statuses = [];
+  for (let i = 0; i < 11; i++) statuses.push((await fetch(`http://127.0.0.1:${RELAY}/join/AAAAAA`, { headers: { "x-real-ip": "198.51.100.2" } })).status);
+  expect(statuses).toEqual([...Array(10).fill(404), 429]);
+  expect((await fetch(`http://127.0.0.1:${RELAY}/join/AAAAAA`, { headers: { "x-real-ip": "198.51.100.3" } })).status).toBe(404);
+});

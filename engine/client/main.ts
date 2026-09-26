@@ -13,12 +13,13 @@ const info = await (await fetch("/api/info")).json();
 const keyName = `sandbox-key:${info.id}`;
 /** The host watching the timelapse from the main menu, without joining: their world's host key. */
 const watching = hashParams.get("watch");
-if (watching) history.replaceState(null, "", "/");
+if (watching) history.replaceState(null, "", location.pathname);
 let key = watching ?? hashParams.get("key") ?? localStorage.getItem(keyName);
 let me = "";
 let world = "";
 let invite = "";
 let publicUrl: string | null = null;
+let joinCode: string | null = null;
 
 async function join(body: object) {
   const res = await fetch("/api/join", { method: "POST", body: JSON.stringify(body) });
@@ -28,7 +29,7 @@ async function join(body: object) {
   localStorage.setItem("sandbox-name", data.name);
   key = data.key;
   me = data.name;
-  history.replaceState(null, "", "/");
+  history.replaceState(null, "", location.pathname);
 }
 
 /** The desktop app installs from GitHub and opens the link it's given. The app marks its user agent with SandboxDesktop. */
@@ -687,6 +688,7 @@ function connect() {
         world = msg.world;
         invite = msg.invite;
         publicUrl = msg.publicUrl;
+        joinCode = msg.joinCode;
         voiceAvailable = msg.voice;
         showMic();
         me = msg.playerId;
@@ -716,6 +718,7 @@ function connect() {
       }
       case "public":
         publicUrl = msg.url;
+        joinCode = msg.code;
         return;
       case "claude":
         if (msg.name === me) showClaude(msg.state);
@@ -911,7 +914,7 @@ function startReplay(frames: Moment[]) {
 function leaveReplay() {
   const r = replay;
   if (!r) return;
-  if (watching) return location.assign("/menu");
+  if (watching) return location.assign("menu");
   replay = null;
   director.shot = null;
   replayKeys.clear();
@@ -1858,7 +1861,7 @@ let leaving = false;
 $("leave").onclick = () => {
   leaving = true;
   socket?.close();
-  if (localStorage.getItem("sandbox-menu")) return location.assign("/menu");
+  if (localStorage.getItem("sandbox-menu")) return location.assign("menu");
   history.replaceState(null, "", `${origin}/#left`);
   location.reload();
 };
@@ -1927,6 +1930,8 @@ async function openMenu() {
   if (document.pointerLockElement) document.exitPointerLock();
   $("menu-world").textContent = world;
   $("invite-link").textContent = `${publicUrl ?? origin}/#invite=${invite}`;
+  $("invite-code-row").hidden = !joinCode;
+  $("invite-code").textContent = joinCode ? `${joinCode.slice(0, 3)}-${joinCode.slice(3)}` : "";
   $("claude-command").textContent = connectCommand(
     (tools) => `We are playing ${world} together right now: a live multiplayer game that my friends and I build while we play it, each with our own Claude. I am ${me} in the game. You are connected to the game server through ${tools}, and anything you reload goes live for every player instantly, so build boldly but keep it fun for everyone. Start with the status tool and read GUIDE.md, then use say to tell me in-game in a line or two what the world has and one thing you could build. After that I stay in the game and talk to you through the in-game chat, and when I hold T or have the chat open my voice is transcribed into it too: read those spoken lines for what I want and how I feel, and act when I ask for something or clearly want a change, not on every word. call wait_for_chat with seconds 240, build what I (${me}) ask for there, say what you did, and wait again. Keep that loop going until I tell you to stop.`,
     key,
@@ -2133,7 +2138,7 @@ addEventListener("unhandledrejection", (e: PromiseRejectionEvent) => {
 if (watching) {
   $("hud").hidden = false;
   $("status").hidden = true;
-  if (!(await playTimelapse())) setTimeout(() => location.assign("/menu"), 4000);
+  if (!(await playTimelapse())) setTimeout(() => location.assign("menu"), 4000);
 } else {
   await start();
   $("app-row").hidden = !appWanted;

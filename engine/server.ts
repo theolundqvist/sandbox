@@ -337,6 +337,7 @@ setInterval(() => {
 }, 10_000);
 
 let publicUrl: string | null = null;
+let joinCode: string | null = null;
 const shots = new Map<string, (data: string) => void>();
 const mcp = createMcp({
   root: ROOT,
@@ -436,7 +437,8 @@ const server = Bun.serve<Conn>({
         }
         case "public":
           publicUrl = body.url ?? null;
-          broadcast({ t: "public", url: publicUrl });
+          joinCode = body.code ?? null;
+          broadcast({ t: "public", url: publicUrl, code: joinCode });
           return Response.json({});
         case "invite":
           config.invite = token();
@@ -551,6 +553,7 @@ const server = Bun.serve<Conn>({
           rules: config.rules,
           invite: config.invite,
           publicUrl,
+          joinCode,
           voice: !!process.env.ELEVENLABS_API_KEY,
           mods: clientMods(),
           feed: feedLog.slice(-8),
