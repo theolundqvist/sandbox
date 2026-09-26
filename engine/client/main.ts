@@ -380,6 +380,8 @@ function releaseKeys() {
 let changedMods: Set<string> | null = null;
 /** Tells the server each changed mod's declared keys, once per batch of changes, so status and reload reports list them. */
 function keysChanged(mod: string) {
+  // A timelapse's past builds declare keys that aren't live.
+  if (replay) return;
   if (!changedMods) {
     changedMods = new Set();
     setTimeout(() => {
@@ -479,6 +481,8 @@ function use(name: string) {
 /** Mods load one at a time in the order the server sent them, so a slow import never lands an old version over a newer one. */
 let loading = Promise.resolve();
 const queue = (load: () => Promise<unknown>) => (loading = loading.then(load).then(() => {}, (e) => console.error(e)));
+/** The client builds the server has live; a timelapse puts them back when it ends. */
+let live = new Map<string, string>();
 
 async function loadMod(name: string, url: string | null, rebuild = true) {
   const old = mods.get(name);
@@ -488,7 +492,7 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
     try {
       mod = (await import(url)).default ?? {};
     } catch (e: any) {
-      send({ t: "error", mod: name, text: `import: ${e?.stack ?? e}` });
+      if (!replay) send({ t: "error", mod: name, text: `import: ${e?.stack ?? e}` });
       return;
     }
   }
@@ -673,7 +677,9 @@ function connect() {
         showBuilders();
         $("menu-talk").replaceChildren();
         for (const line of msg.talk) addTalk(line.from, line.text);
+        leaveReplay();
         const wanted = new Map<string, string>(msg.mods.map((m: any) => [m.name, m.url]));
+        live = wanted;
         // Every mod downloads at once; they still start in order, and entities are rebuilt once for all of them.
         queue(() => Promise.allSettled([...wanted.values()].map((url) => import(url))));
         const modMs: [string, number][] = [];
@@ -710,7 +716,9 @@ function connect() {
         if (!replay) applyTick(msg);
         return;
       case "mod":
-        return queue(() => loadMod(msg.name, msg.url));
+        if (msg.url) live.set(msg.name, msg.url);
+        else live.delete(msg.name);
+        return !replay && queue(() => loadMod(msg.name, msg.url));
       case "shot":
         return send({ t: "shot", id: msg.id, data: await screenshot() });
       case "feed":
@@ -906,8 +914,30 @@ function leaveReplay() {
   scene.fog = r.fog;
   camera.far = r.far;
   camera.updateProjectionMatrix();
+  syncMods();
   send({ t: "resync" });
   nextBanner();
+}
+
+/** Swaps in the client builds that were live at the replay's moment, or the live ones once it ends; seeks while it loads coalesce into one swap. */
+let syncing = false;
+function syncMods() {
+  if (syncing) return;
+  syncing = true;
+  queue(async () => {
+    syncing = false;
+    const wanted = new Map<string, string | null>(replay ? [] : live);
+    if (replay) for (const f of replay.frames.slice(0, replay.at + 1)) for (const [name, url] of Object.entries(f.mods ?? {})) wanted.set(name, url);
+    let rebuild = false;
+    for (const name of new Set([...mods.keys(), ...wanted.keys()])) {
+      const url = wanted.get(name) ?? null;
+      if ((mods.get(name)?.url ?? null) === url) continue;
+      rebuild ||= !!mods.get(name)?.mod.object;
+      await loadMod(name, url, false);
+      rebuild ||= !!mods.get(name)?.mod.object;
+    }
+    if (rebuild) rebuildAll();
+  });
 }
 
 /** Jumps to a moment: the world as it was then, rebuilt from the nearest checkpoint, with what was said just before. */
@@ -920,6 +950,7 @@ function seek(tick: number) {
   for (const t of trails.values()) t.past.length = 0;
   $("replay-feed").replaceChildren();
   for (const f of r.frames.slice(Math.max(0, r.at - 3), r.at + 1)) happen(f.activity, false);
+  syncMods();
   director.shot = null;
   showFrame();
   showControls();
@@ -936,6 +967,7 @@ function advance(dt: number, now: number) {
     const frame = r.frames[++r.at]!;
     applyTick(structuredClone(frame));
     happen(frame.activity, true);
+    if (frame.mods) syncMods();
     showFrame();
   }
   if (r.at === r.frames.length - 1) {

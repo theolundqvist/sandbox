@@ -320,7 +320,7 @@ self.onmessage = async ({ data: msg }) => {
       const ticks: Tick[] = [];
       let slice = performance.now();
       for (const t of p ? (msg.ticks as Tick[]) : []) {
-        const out: Tick = { at: t.at, reset: t.reset, set: {}, unset: {}, removed: [], activity: t.activity };
+        const out: Tick = { at: t.at, reset: t.reset, set: {}, unset: {}, removed: [], activity: t.activity, mods: t.mods };
         for (const id of t.removed) {
           whole.delete(String(id));
           if (shown.delete(String(id))) out.removed.push(id);

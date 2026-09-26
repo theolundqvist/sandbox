@@ -260,7 +260,10 @@ const inWorker = <T>(msg: object) =>
 /** Viewers opening the timelapse within a few seconds of each other share one build. */
 let built: { at: number; ticks: Promise<Tick[]> } | null = null;
 async function timelapseFor(who: string) {
-  if (!built || Date.now() - built.at > 10_000) built = { at: Date.now(), ticks: inWorker<{ ticks: Tick[] }>({ t: "build", path: join(DATA, "world.sqlite"), limit: 900, older: olderReloads() }).then((r) => r.ticks) };
+  if (!built || Date.now() - built.at > 10_000) {
+    const live = Object.fromEntries([...mods.running].map(([name, m]) => [name, m.build.client]));
+    built = { at: Date.now(), ticks: inWorker<{ ticks: Tick[] }>({ t: "build", path: join(DATA, "world.sqlite"), limit: 900, older: olderReloads(), builds: BUILD, live }).then((r) => r.ticks) };
+  }
   const seen = await sim.visibleTo(who, await built.ticks);
   return (await inWorker<{ gz: Uint8Array<ArrayBuffer> }>({ t: "encode", ticks: seen })).gz;
 }

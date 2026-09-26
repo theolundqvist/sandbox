@@ -5,7 +5,7 @@ export type Activity = { at: number } & (
   | { t: "chat"; from: string; text: string; spoken?: boolean }
   | { t: "announce"; mod: string; by: string; title: string; text: string; color: string }
 );
-export type Tick = { at: number; reset?: true; set: Record<string, Entity>; unset: Record<string, string[]>; removed: number[]; activity?: Activity[] };
+export type Tick = { at: number; reset?: true; set: Record<string, Entity>; unset: Record<string, string[]>; removed: number[]; activity?: Activity[]; mods?: Record<string, string | null> };
 type Vec = [number, number, number];
 /** A stretch of the replay from tick `from` up to `to`: what it shows (`target` only when the changes have positions) and `marks`, building spots as flat xyz. */
 export type Shot = { from: number; to: number; kind: "place" | "overview" | "follow"; target?: Vec; radius: number; ids: number[]; mod?: string; player?: string; caption: string; marks: number[] };

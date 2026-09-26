@@ -226,7 +226,8 @@ export function openStore(path: string) {
 
 /** Changed components per entity, the components they lost, and removed entities. */
 export type Moment = { set: Record<string, Entity>; unset: Record<string, string[]>; removed: number[] };
-export type Tick = Moment & { at: number; reset?: true; activity?: Activity[] };
+/** `mods`: client builds that went live (a url) or away (null) by this tick; the first tick lists every live one. */
+export type Tick = Moment & { at: number; reset?: true; activity?: Activity[]; mods?: Record<string, string | null> };
 /** What players saw happen: feed lines, chat (typed or spoken) and mod banners. */
 export type Activity = { at: number } & (
   | { t: "feed"; text: string; kind: string }
