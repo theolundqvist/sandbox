@@ -253,7 +253,7 @@ describe("hosting and joining", () => {
     assert.deepEqual(await install.boundingBox(), box);
     assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), await game.textContent("#claude-install"));
     await game.locator("[data-copy=claude-command]").click();
-    await until("the command copied", async () => /codex --/.test(await app.evaluate(({ clipboard }) => clipboard.readText())));
+    await until("the command copied", async () => /codex -C /.test(await app.evaluate(({ clipboard }) => clipboard.readText())));
     await game.reload();
     await game.locator("#join").waitFor({ state: "hidden" });
     await game.locator("#menu-button").dispatchEvent("click");
