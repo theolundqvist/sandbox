@@ -540,7 +540,10 @@ const server = Bun.serve<Conn>({
       if (body.invite !== config.invite && body.invite !== config.hostKey) return Response.json({ error: "You need an invite link from the host." }, { status: 403 });
       const name = String(body.name ?? "").trim().toLowerCase();
       if (!/^[a-z0-9][a-z0-9_-]{1,15}$/.test(name)) return Response.json({ error: "Names are 2–16 letters, digits, - or _." }, { status: 400 });
-      if (Object.values(keys).includes(name)) return Response.json({ error: "That name is taken. If it's you, ask the host for your personal link from their main menu." }, { status: 409 });
+      // A name is someone's only while they play as it or their Claude works under it; claimed from another device, the old key stops working.
+      if (sockets.has(name) || (claudes.get(name)?.state ?? "offline") !== "offline")
+        return Response.json({ error: "Someone is playing as that name right now. If it's you, close the game there first." }, { status: 409 });
+      for (const [old, owner] of Object.entries(keys)) if (owner === name) delete keys[old];
       const key = token() + token();
       keys[key] = name;
       writeJson("keys.json", keys);
@@ -557,7 +560,8 @@ const server = Bun.serve<Conn>({
         return server.upgrade(req, { data: { name: `~${token()}`, ua: "", at: Date.now(), spectator: true } }) ? undefined : new Response("upgrade failed", { status: 400 });
       }
       const name = nameByKey(url.searchParams.get("key"));
-      if (!name) return new Response("unknown key", { status: 401 });
+      // A game whose name was claimed from another device reloads into the join screen.
+      if (!name) return server.upgrade(req, { data: { name: "", ua: "", at: Date.now() } }) ? undefined : new Response("unknown key", { status: 401 });
       return server.upgrade(req, { data: { name, ua: req.headers.get("user-agent") ?? "", at: Date.now() } }) ? undefined : new Response("upgrade failed", { status: 400 });
     }
     return new Response("not found", { status: 404 });
@@ -565,6 +569,7 @@ const server = Bun.serve<Conn>({
   websocket: {
     open(ws) {
       const { name } = ws.data;
+      if (!name) return ws.close(4001, "You joined from another device");
       if (ws.data.spectator) {
         spectators.set(name, ws);
         sim.send({ t: "watch", id: name });

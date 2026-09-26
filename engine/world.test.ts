@@ -198,3 +198,35 @@ test("perf shows how long a player waited to join and which mods held them up", 
   await Bun.sleep(100);
   expect((await json("perf")).joins.builder).toEqual({ firstFrameMs: 27470, slowestMods: { factory: 9206 } });
 });
+
+test("a name is someone's only while they or their Claude are on; claimed from another device, the old key stops working and its game goes back to the join screen", async () => {
+  const joinAs = (name: string) => fetch(`${BASE}/api/join`, { method: "POST", body: JSON.stringify({ invite: "test-invite", name }) });
+  const first = (await (await joinAs("roamer")).json()).key;
+  const laptop = new WebSocket(`ws://127.0.0.1:${PORT}/ws?key=${first}`);
+  await new Promise((resolve) => (laptop.onopen = resolve));
+  const refused = await joinAs("roamer");
+  expect(refused.status).toBe(409);
+  expect((await refused.json()).error).toBe("Someone is playing as that name right now. If it's you, close the game there first.");
+  laptop.close();
+  await new Promise((resolve) => (laptop.onclose = resolve));
+
+  // The laptop's Claude still waits for chat under the name.
+  const form = new FormData();
+  form.append("seconds", "30");
+  const listening = new AbortController();
+  const waiting = fetch(`${BASE}/cli/wait_for_chat`, { method: "POST", headers: { authorization: `Bearer ${first}` }, body: form, signal: listening.signal }).catch(() => null);
+  await Bun.sleep(300);
+  expect((await joinAs("roamer")).status).toBe(409);
+  listening.abort();
+  await waiting;
+  await Bun.sleep(100);
+
+  const phone = await (await joinAs("roamer")).json();
+  expect(phone.name).toBe("roamer");
+  expect(phone.key).not.toBe(first);
+  const status = await fetch(`${BASE}/cli/status`, { method: "POST", headers: { authorization: `Bearer ${first}` } });
+  expect(status.status).toBe(401);
+  const stale = new WebSocket(`ws://127.0.0.1:${PORT}/ws?key=${first}`);
+  const closed = await new Promise<CloseEvent>((resolve) => (stale.onclose = resolve));
+  expect([closed.code, closed.reason]).toEqual([4001, "You joined from another device"]);
+});
