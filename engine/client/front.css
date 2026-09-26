@@ -34,6 +34,12 @@
 .item.danger:focus { color: var(--err); }
 .gap { height: 24px; flex: none; }
 
+/* Back, above a screen's title, for mouse and touch; Esc does the same. */
+.back { align-self: flex-start; display: flex; align-items: center; gap: 12px; margin: 0 0 24px; padding: 8px 0; background: none; border: 0; border-radius: 0; color: var(--dim); font: 700 14px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; cursor: pointer; outline: none; }
+.back:hover, .back:focus-visible { color: var(--text); background: none; }
+.back kbd { font: inherit; font-size: 11px; border: 1px solid rgba(255,255,255,.35); padding: 3px 6px; color: var(--text); }
+@media (pointer: coarse) { .back { padding: 14px 0; } .back kbd { display: none; } }
+
 /* A setting: its name on the left, its value on the right, changed with the arrows. */
 .field { display: flex; align-items: center; gap: 24px; width: 100%; min-height: 64px; padding: 0 0 0 32px; position: relative; border-bottom: 1px solid var(--line); }
 .field::before { content: ""; position: absolute; left: 0; top: 50%; width: 14px; height: 14px; translate: 0 -50%; background: var(--accent); scale: 0; transition: scale .12s ease-out; }

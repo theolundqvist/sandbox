@@ -24,6 +24,7 @@
 <body>
 <div id="backdrop" class="backdrop"></div>
 <main class="front">
+  <button class="back" id="back" hidden>Back<kbd>Esc</kbd></button>
   <section id="title" class="screen" data-nav hidden>
     <svg class="logo" id="logo"></svg>
     <p id="waiting" class="status" hidden>Waiting for the host</p>
@@ -94,7 +95,7 @@
 
   <div id="error" class="error"></div>
 </main>
-<div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span id="back-hint"><kbd>Esc</kbd>Back</span></div>
+<div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span></div>
 <div class="corner" id="app-offer" hidden><button class="quiet" id="app-get">Desktop app</button></div>
 <script type="module">
   import { backdrop, logo, pick } from "/front.js";
@@ -139,7 +140,7 @@
     const { id, focus } = current();
     for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== id;
     $("error").textContent = "";
-    $("back-hint").hidden = stack.length < 2;
+    $("back").hidden = stack.length < 2;
     const target = focus?.isConnected && !focus.disabled && focus.getClientRects().length ? focus : $(id).querySelector(".item:not([hidden]):not(:disabled), .field input, .pick, .copy-row button");
     target?.focus();
   }
@@ -158,6 +159,7 @@
     }
   });
   for (const b of document.querySelectorAll("[data-to]")) b.onclick = () => show(b.dataset.to);
+  $("back").onclick = () => (current()?.id === "ask" ? answer(false) : back());
 
   /** A yes-or-no question as its own screen. */
   let answer = () => {};

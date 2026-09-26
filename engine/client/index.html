@@ -157,7 +157,6 @@
   #leave { flex: none; margin-top: auto; }
   #pages { position: absolute; top: 0; bottom: 0; left: 400px; width: min(760px, calc(100vw - 440px)); padding: 72px 56px 40px; background: var(--pane); overflow-y: auto; }
   #pages .screen-title { font-size: 44px; margin-bottom: 28px; }
-  #page-back { display: none; }
   #pages:focus { outline: none; }
   body:has(#menu:not([hidden])) :is(#top, #feed, #hint, #builders, #chat, #empty) { visibility: hidden; }
   #gm-state { color: var(--ok); margin-left: 6px; }
@@ -174,7 +173,6 @@
     #rail .screen-title { font-size: 32px; margin-bottom: 20px; }
     #pages { left: 0; width: 100%; padding: 24px 16px 32px; }
     #menu.paging #rail { display: none; }
-    #page-back { display: block; margin: 0 0 12px; padding-left: 0; }
     #pages .screen-title { font-size: 32px; }
     #menu .copy-row > span { width: 88px; }
   }
@@ -343,7 +341,7 @@
     <button id="leave" class="item">Leave</button>
   </nav>
   <div id="pages" data-nav hidden>
-    <button id="page-back" class="quiet">Back</button>
+    <button id="page-back" class="back">Back<kbd>Esc</kbd></button>
     <h1 id="page-title" class="screen-title"></h1>
     <section data-tab="claude" hidden>
       <div class="via"><button data-via="cli">Command line</button><button data-via="mcp">MCP</button></div>
