@@ -46,6 +46,9 @@
     <div class="items"><button class="item" id="go-browse" data-to="browse">Browse</button></div>
     <div class="items" id="world-list"></div>
     <p id="no-worlds" class="status" hidden>No worlds yet</p>
+    <div class="gap"></div>
+    <div class="items"><button class="item" id="import-world">Import world</button></div>
+    <input type="file" id="import-file" accept=".zip,application/zip" hidden>
   </section>
 
   <section id="browse" class="screen" data-nav hidden>
@@ -68,6 +71,7 @@
       <button class="item" id="world-timelapse">Timelapse</button>
       <button class="item" id="world-rewind" data-to="rewind">Rewind</button>
       <button class="item" id="world-settings" data-to="configure">Settings</button>
+      <button class="item" id="world-export">Export</button>
       <button class="item" id="world-stop">Stop</button>
       <button class="item danger" id="world-delete">Delete</button>
     </div>
@@ -138,9 +142,11 @@
   let state = null;
   let selected = null;
 
+  const request = (action, body) => fetch(`/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body instanceof Blob ? body : body && JSON.stringify(body) });
   async function api(action, body) {
-    const res = await fetch(`/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) });
-    const data = await res.json();
+    const res = await request(action, body);
+    // The relay turns away uploads over 25 MB before the host sees them.
+    const data = await res.json().catch(() => ({ error: res.status === 413 ? "Too big to send through the relay. Import it from the menu on the host's own computer." : `The host answered ${res.status}.` }));
     if (!res.ok) throw new Error(data.error);
     render((state = data));
     return data;
@@ -364,6 +370,38 @@
     const w = state.worlds.find((x) => x.id === selected);
     if (await ask(`Delete ${w.name}?`, "Delete")) await attempt(() => api("delete", { id: w.id }));
   };
+  /** Fetched with the host key, then saved like any download; the desktop app asks where. */
+  $("world-export").onclick = () =>
+    attempt(async () => {
+      $("world-export").textContent = "Exporting…";
+      try {
+        const res = await request("export", { id: selected });
+        if (!res.ok) throw new Error((await res.json()).error);
+        const link = el("a", { href: URL.createObjectURL(await res.blob()), download: res.headers.get("content-disposition")?.match(/filename="(.+)"/)?.[1] ?? "world.zip" });
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
+      } finally {
+        $("world-export").textContent = "Export";
+      }
+    });
+  /** Someone's exported world becomes a new world here, opened at its own screen. */
+  $("import-world").onclick = () => $("import-file").click();
+  $("import-file").onchange = () =>
+    attempt(async () => {
+      const file = $("import-file").files[0];
+      $("import-file").value = "";
+      if (!file) return;
+      const before = new Set(state.worlds.map((w) => w.id));
+      $("import-world").textContent = "Importing…";
+      try {
+        selected = (await api("import", file)).worlds.find((w) => !before.has(w.id))?.id ?? null;
+      } finally {
+        $("import-world").textContent = "Import world";
+      }
+      if (!selected) return;
+      renderWorld();
+      show("world");
+    });
   const configure = () => attempt(() => api("configure", { id: selected, name: $("configure-name").value, rules: $("configure-rules").dataset.value }));
   pick($("configure-rules"), configure);
   $("configure-name").onchange = configure;

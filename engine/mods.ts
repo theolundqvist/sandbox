@@ -1,6 +1,6 @@
 import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import type { RunningMod, SimHost } from "./simhost";
 
 type Build = { server: string | null; client: string | null };
@@ -76,7 +76,10 @@ export class Mods {
   /** Restores exactly the builds that were live at shutdown; a fresh world builds its seed mods. */
   async loadAll(owners: Record<string, string>) {
     if (existsSync(this.statePath)) {
-      this.running = new Map(Object.entries(JSON.parse(readFileSync(this.statePath, "utf8"))));
+      // An imported world names its server builds relative to build/, wherever it was exported from.
+      const here = (b: Build) => ({ ...b, server: b.server && resolve(this.buildDir, b.server) });
+      const saved: Record<string, Mod> = JSON.parse(readFileSync(this.statePath, "utf8"));
+      this.running = new Map(Object.entries(saved).map(([name, m]) => [name, { ...m, build: here(m.build), previous: m.previous.map(here) }]));
       this.nextId = Math.max(0, ...[...this.running.values()].map((m) => m.id)) + 1;
       return;
     }

@@ -62,6 +62,8 @@ writeJson("seeded.json", seeded);
 cpSync(join(ENGINE, "api.ts"), join(ROOT, "api.ts"));
 writeFileSync(join(ROOT, ".gitignore"), "node_modules\n");
 if (!existsSync(join(ROOT, "package.json"))) writeFileSync(join(ROOT, "package.json"), JSON.stringify({ private: true }, null, 2));
+// An imported world comes without the packages its mods added; its lockfile brings back the same ones, so mods that use them reload.
+if (existsSync(join(ROOT, "bun.lock")) && !existsSync(join(ROOT, "node_modules"))) Bun.spawnSync([process.execPath, "install"], { cwd: ROOT, env: { ...process.env, BUN_BE_BUN: "1" } });
 cpSync(join(ENGINE, "GUIDE.md"), join(ROOT, "GUIDE.md"));
 writeFileSync(
   join(ROOT, "tsconfig.json"),

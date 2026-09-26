@@ -382,6 +382,8 @@ app.whenReady().then(() => {
     if (permission === "media" && "mediaTypes" in details && details.mediaTypes?.every((t) => t === "audio")) return void askMic(new URL(details.requestingUrl).origin).then(grant);
     grant(false);
   });
+  // A world exported from the main menu: ask where it goes, starting in Downloads.
+  session.defaultSession.on("will-download", (_event, item) => item.setSaveDialogOptions({ title: "Save world", defaultPath: join(app.getPath("downloads"), item.getFilename()) }));
 
   const fromShell = (event) => event.sender === shell.webContents;
   ipcMain.handle("state", (event) => (fromShell(event) ? games() : null));

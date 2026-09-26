@@ -146,7 +146,9 @@ function freshName() {
   return free.length ? free[Math.floor(Math.random() * free.length)]! : `World ${taken.size + 1}`;
 }
 
-const newId = (name: string) => `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "world"}-${token().slice(0, 4)}`;
+const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "world";
+const newId = (name: string) => `${slug(name)}-${token().slice(0, 4)}`;
+const exists = (id: unknown): id is string => typeof id === "string" && /^[a-z0-9-]+$/.test(id) && existsSync(join(WORLDS, id, "config.json"));
 
 function create(body: any) {
   const name = String(body.name ?? "").trim().slice(0, 40) || freshName();
@@ -155,6 +157,36 @@ function create(body: any) {
   mkdirSync(join(WORLDS, id));
   writeFileSync(join(WORLDS, id, "config.json"), JSON.stringify(world, null, 2));
   return id;
+}
+
+/** Packs or unpacks a world in a worker of its own, so the game this launcher proxies keeps flowing meanwhile. */
+function archive(msg: object, transfer: Transferable[] = []): Promise<any> {
+  const worker = new Worker(new URL("./archive.ts", import.meta.url));
+  return new Promise((resolve, reject) => {
+    worker.onmessage = ({ data }) => (data.error ? reject(new Error(data.error)) : resolve(data));
+    worker.onerror = (e) => reject(new Error(e.message));
+    worker.postMessage(msg, transfer);
+  }).finally(() => worker.terminate());
+}
+
+/** The whole game as one zip, running or not, without the secrets that let anyone into it here. */
+async function packWorld(id: unknown) {
+  if (!exists(id)) throw new Error("That game doesn't exist.");
+  const { zip } = await archive({ t: "pack", dir: join(WORLDS, id) });
+  return new Response(zip, { headers: { "content-type": "application/zip", "content-disposition": `attachment; filename="${slug(config(id).name)}.zip"` } });
+}
+
+/** A world exported elsewhere, as a new world here with its own id, invite and host key. */
+async function unpackWorld(zip: Uint8Array) {
+  const staging = join(DATA, `importing-${token()}`);
+  try {
+    const { world } = await archive({ t: "unpack", zip, into: staging }, [zip.buffer]);
+    const id = create(world);
+    for (const part of readdirSync(staging)) if (part !== "config.json") renameSync(join(staging, part), join(WORLDS, id, part));
+    return id;
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
 }
 
 /** Set by this launcher on everything it forwards from the relay, whatever the player sent, so relayed requests never pass as local. */
@@ -328,7 +360,7 @@ async function menuState() {
 
 async function menuApi(req: Request, action: string) {
   if (req.headers.get("authorization") !== `Bearer ${state.hostKey}`) return Response.json({ error: "Only the host can open this menu, on their own computer." }, { status: 401 });
-  const body = req.method === "POST" ? await req.json() : {};
+  const body = req.method === "POST" && action !== "import" ? await req.json() : {};
   try {
     if (action === "browse") return Response.json(await market());
     if (action === "check") {
@@ -338,6 +370,8 @@ async function menuApi(req: Request, action: string) {
     }
     if (action === "create") await host(create(body));
     else if (action === "install") await host(await install(body.repo, body.trust === true));
+    else if (action === "export") return await packWorld(body.id);
+    else if (action === "import") await unpackWorld(await req.bytes());
     else if (action === "host") await host(String(body.id));
     else if (action === "stop") {
       await stop();
@@ -350,7 +384,7 @@ async function menuApi(req: Request, action: string) {
       rmSync(join(WORLDS, body.id), { recursive: true, force: true });
     } else if (action === "configure") {
       if (running?.id === body.id) throw new Error("Stop the game before changing it.");
-      if (!/^[a-z0-9-]+$/.test(body.id ?? "") || !existsSync(join(WORLDS, body.id, "config.json"))) throw new Error("That game doesn't exist.");
+      if (!exists(body.id)) throw new Error("That game doesn't exist.");
       const current = config(body.id);
       const name = String(body.name ?? current.name).trim().slice(0, 40) || current.name;
       writeFileSync(join(WORLDS, body.id, "config.json"), JSON.stringify({ ...current, name, rules: body.rules === "additive" ? "additive" : body.rules === "open" ? "open" : current.rules }, null, 2));
@@ -427,6 +461,8 @@ const page = (file: string) => new Response(Bun.file(join(ENGINE, "client", file
 Bun.serve<Pipe>({
   port: PORT,
   idleTimeout: 255,
+  // Bun's default of 128 MB is less than a long-played world's zip.
+  maxRequestBodySize: 2 ** 30,
   async fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname === "/menu") return page("menu.html");

@@ -8,6 +8,7 @@
     "desktop": "cd desktop && bun install --frozen-lockfile && bun run start"
   },
   "dependencies": {
+    "fflate": "^0.8.3",
     "html-to-image": "^1.11.13",
     "three": "^0.186.0"
   },

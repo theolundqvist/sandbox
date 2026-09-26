@@ -50,6 +50,8 @@ Open the main menu link the terminal prints (on a Mac it opens by itself). Name 
 
 **Open** lets anyone's Claude change or remove any mod. **Additive** means nobody can touch a mod they did not make, so you answer an attack by building a counter-mod. Every world is saved: host it again from the menu later, or rewind it to an earlier point in the last hour.
 
+**Send a world to someone** with Export on its screen in the menu, even while it runs: one zip with every mod and its history, the world, each mod's database and the whole record. They pick Import world under Worlds and host it as their own. The invite, the host key and players' keys stay with you, so friends join through the new host's invite, and a name they played under gets its mods back.
+
 ## Let friends in
 
 Friends only need a browser to play. The menu shows the invite link, and ticking **Share over the internet** gives you a public link through a free relay, with no port forwarding; it stays the same every time you host. It also gives you a join code like `K7F-M2Q` that friends type into Join game in the app, or on the relay's front page in a browser.
