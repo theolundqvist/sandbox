@@ -4,19 +4,37 @@ import type { ClientCtx, ClientHooks, ClientMod, Entity, ReplayShot } from "../a
 import { clock, extent, isAvatar, plan, position, type Activity, type Plan, type Tick as Moment, type Shot } from "./director";
 import { PhysicsIndex } from "../physics";
 
-/** The engine's own UI (HUD, chat, votes, menus) lives in a shadow root, where no stylesheet a mod adds to the page can hide or restyle it. Mods' HUD stays in the page, slotted in, so their CSS still applies; their menu pages are inside, styled inline. */
+/** The engine's own UI (HUD, chat, votes, menus) lives in a closed shadow root only this file holds, so no mod's CSS or script can reach, hide or remove it. Mods' HUD stays in the page, slotted in, so their CSS still applies; their menu pages are inside, styled inline. */
 const ui = document.getElementById("ui")!;
-const uiRoot = ui.attachShadow({ mode: "open" });
+const uiRoot = ui.attachShadow({ mode: "closed" });
 uiRoot.adoptedStyleSheets = [...document.styleSheets].map((sheet) => {
   const copy = new CSSStyleSheet();
   copy.replaceSync([...sheet.cssRules].map((rule) => rule.cssText).join("\n"));
   return copy;
 });
 uiRoot.append(...document.querySelectorAll("#hud, #join, #howto, #palette, #menu"));
-new MutationObserver(() => (ui.className = document.body.className)).observe(document.body, { attributes: true, attributeFilter: ["class"] });
+const SHOWN = { display: "block", visibility: "visible", opacity: "1" };
+/** Undoes whatever a mod does to #ui or to the page around it: puts it back in the page, drops its attributes, and keeps the page shown. */
+function keepUi() {
+  if (ui.parentNode !== document.body) document.body.append(ui);
+  for (const name of ui.getAttributeNames()) if (name !== "id" && name !== "class") ui.removeAttribute(name);
+  if (ui.className !== document.body.className) ui.className = document.body.className;
+  for (const el of [document.documentElement, document.body])
+    for (const [property, value] of Object.entries(SHOWN)) if (el.style.getPropertyValue(property) !== value || !el.style.getPropertyPriority(property)) el.style.setProperty(property, value, "important");
+}
+keepUi();
+const guard = new MutationObserver(keepUi);
+guard.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
+guard.observe(document.body, { childList: true, attributes: true, attributeFilter: ["style", "class"] });
+guard.observe(ui, { attributes: true });
 const $ = <T extends HTMLElement>(id: string) => (uiRoot.getElementById(id) ?? document.getElementById(id)) as T;
+const pageFocus = Object.getOwnPropertyDescriptor(Document.prototype, "activeElement")!.get!;
 /** The focused element, inside the engine's UI too. */
-const focused = () => uiRoot.activeElement ?? document.activeElement;
+const focused = () => uiRoot.activeElement ?? (pageFocus.call(document) as Element | null);
+// Mods tell typing from playing by document.activeElement, which shows only #ui while a field in here has the focus: a stand-in field says "typing" without handing them the engine's own.
+const typingStandIn = document.createElement("input");
+Object.defineProperty(document, "activeElement", { get: () => (uiRoot.activeElement?.matches("input, textarea, [contenteditable]") ? typingStandIn : pageFocus.call(document)) });
+(await import(["/front.js"][0]!)).navigateIn(uiRoot);
 const hashParams = new URLSearchParams(location.hash.slice(1));
 
 // Through the relay the game lives at /r/<room>/; its own requests reach the room by cookie, but links and Claude need the full address.
@@ -84,7 +102,6 @@ async function start() {
       key = null;
     }
   }
-  await import(["/front.js"][0]!);
   $("join-world").textContent = info.name;
   $("join-online").textContent = info.online ? `${info.online} playing` : "";
   $("join").hidden = false;
@@ -1623,7 +1640,9 @@ document.addEventListener("pointerlockchange", () => {
 // Coming back to the window takes mouse-look straight back where the page may lock without a click (the desktop app); browsers refuse quietly.
 addEventListener("focus", capture);
 // Right-click belongs to the game, so no browser menu except over text fields.
-addEventListener("contextmenu", (e) => (e.composedPath()[0] as Element).closest("input, textarea, [contenteditable]") || e.preventDefault());
+addEventListener("contextmenu", (e) => (e.target as Element).closest("input, textarea, [contenteditable]") || e.preventDefault());
+// Outside the engine's UI a right-click in it looks like one on #ui, so its text fields are let through from in here.
+uiRoot.addEventListener("contextmenu", (e) => (e.target as Element).closest("input, textarea, [contenteditable]") && e.stopPropagation());
 const ideas = ["add a scoreboard", "make it harder every round", "let us play in teams", "add sound effects", "add a timer and a winner", "give everyone a secret role", "surprise us with a twist"];
 function openChat() {
   chat.placeholder = `Chat, or ask your Claude: "${ideas[Math.floor(Math.random() * ideas.length)]}"`;

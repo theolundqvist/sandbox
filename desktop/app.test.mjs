@@ -84,6 +84,14 @@ after(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+/** The game's own UI is a closed shadow root, out of mods' reach; the tests open it so their selectors reach in. */
+const OPEN_UI = () => {
+  const attach = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function (init) {
+    return attach.call(this, { ...init, mode: "open" });
+  };
+};
+
 /** Opens the app with its own settings folder; the same name reopens the same install. */
 async function launch(name, env = {}) {
   const app = await _electron.launch({
@@ -91,6 +99,7 @@ async function launch(name, env = {}) {
     args: [DESKTOP, "--no-sandbox", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
     env: { ...ownEnv, SANDBOX_ELEVENLABS: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_UPDATE_EVERY: "500", ...env },
   });
+  await app.context().addInitScript(OPEN_UI);
   const shell = await until("the start screen", async () => app.windows().find((w) => w.url().startsWith("sandbox://app/shell.html")));
   await shell.locator("#title").waitFor();
   const saved = join(dir, name, "Sandbox", "state.json");
@@ -525,6 +534,7 @@ describe("in a browser", () => {
   before(async () => {
     browser = await chromium.launch({ args: ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"] });
     page = await browser.newPage();
+    await page.addInitScript(OPEN_UI);
   });
   after(() => browser?.close());
 
@@ -553,25 +563,61 @@ describe("in a browser", () => {
     assert.ok(page.url().startsWith(other.url));
   });
 
-  test("a mod that hides everything on the page leaves the vote bar and the chat usable", async () => {
-    const { key } = await (await fetch(`${other.url}/api/join`, { method: "POST", body: JSON.stringify({ invite: other.invite, name: "blackout" }) })).json();
+  test("a mod's CSS and script can't reach, hide or remove the vote bar or the chat, and still see the player typing", async () => {
+    const join = async (name) => (await (await fetch(`${other.url}/api/join`, { method: "POST", body: JSON.stringify({ invite: other.invite, name }) })).json()).key;
+    const key = await join("blackout");
     const tool = async (name, args) => {
       const form = new FormData();
       for (const [k, v] of Object.entries(args)) form.append(k, typeof v === "string" ? v : JSON.stringify(v));
       return (await fetch(`${other.url}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form })).text();
     };
     const content = `import type { ClientMod } from "../../api";
-export default { init(ctx) { if (ctx.playerId === "browser") document.head.append(Object.assign(document.createElement("style"), { textContent: "* { display: none !important; }" })); } } satisfies ClientMod;`;
+function blackout() {
+  document.head.append(Object.assign(document.createElement("style"), { textContent: "* { display: none !important; }" }));
+  for (const el of document.querySelectorAll<HTMLElement>("*")) el.style.setProperty("display", "none", "important");
+  for (const el of document.querySelectorAll("#react, #chat, #feed")) el.remove();
+  const ui = document.getElementById("ui")!;
+  ui.shadowRoot?.querySelector("#react")?.remove();
+  ui.shadowRoot?.querySelector("#chat")?.remove();
+  ui.inert = true;
+  ui.remove();
+}
+export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(blackout, 500); } } satisfies ClientMod;`;
+    // This player's UI stays closed, as it is for everyone; the test keeps its own handle to look inside.
+    const closed = await browser.newPage();
+    await closed.addInitScript(() => {
+      const attach = Element.prototype.attachShadow;
+      Element.prototype.attachShadow = function (init) {
+        const root = attach.call(this, init);
+        if (this.id === "ui") window.uiForTest = root;
+        return root;
+      };
+    });
+    await closed.goto(`${other.url}/#key=${await join("closed")}`);
+    // Shown and on top where it is, so it takes the clicks.
+    const shown = (id) => closed.evaluate((id) => {
+      const el = window.uiForTest.getElementById(id);
+      const box = el?.getBoundingClientRect();
+      return !!box && el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && el.contains(window.uiForTest.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+    }, id);
+    await until("the how-to", () => shown("howto-play"));
+    await closed.keyboard.press("Enter");
     await tool("write_file", { path: "mods/blackout/client.ts", content });
     assert.match(await tool("reload", { mod: "blackout", announce: { title: "Blackout", text: "Lights out" } }), /^blackout v1 is live/);
-    await page.click("#howto-play");
-    await page.locator("#react").waitFor();
-    await page.keyboard.press("1");
-    assert.match(await page.getAttribute("#react [data-kind=love]", "class"), /picked/);
-    await page.keyboard.press("Enter");
-    await page.keyboard.type("still here");
-    await page.keyboard.press("Enter");
-    await until("the chat line", async () => (await page.textContent("#feed")).includes("browser: still here"));
+    await sleep(1500);
+    await until("the vote bar", () => shown("react"));
+    await closed.keyboard.press("1");
+    assert.match(await closed.evaluate(() => window.uiForTest.querySelector("#react [data-kind=love]").className), /picked/);
+    await closed.keyboard.press("Enter");
+    assert.ok(await shown("chat"));
+    assert.equal(await closed.evaluate(() => document.activeElement?.tagName), "INPUT");
+    await closed.keyboard.type("still here");
+    await closed.keyboard.press("Enter");
+    await until("the chat line", () => closed.evaluate(() => {
+      const feed = window.uiForTest.getElementById("feed");
+      return feed.textContent.includes("closed: still here") && feed.checkVisibility({ opacityProperty: true, visibilityProperty: true });
+    }));
+    await closed.close();
   });
 });
 
