@@ -321,7 +321,7 @@ const status = () => ({
   controls: { engineKeys: ENGINE_KEYS, ...mods.controls() },
   entities: sim.entities.size,
   recent: feedLog.slice(-15).map((f) => f.text),
-  voice: voiceKey() ? "on: players hold T to talk, and what they say arrives as chat" : `off: ${config.host ?? "the host"} turns it on by clicking Turn on voice in the game and pasting a speech key (Groq's is free)`,
+  voice: voiceKey() ? "on: what players say arrives as chat" : "off",
 });
 
 const perf = () => ({

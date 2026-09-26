@@ -248,7 +248,7 @@ test("the host pastes a speech key from any provider: recognised by its shape or
 
   expect((await (await menu("voice", { key: "" })).json()).voiceKey).toBeNull();
   expect(await next("voice")).toEqual({ t: "voice", on: false });
-  expect(await status()).toStartWith("off: talker turns it on");
+  expect(await status()).toBe("off");
   ws.close();
   launcher.kill();
   stt.server.stop(true);
