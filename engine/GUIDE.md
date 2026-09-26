@@ -37,12 +37,14 @@ When the game feels slow, `perf` names the cost per mod on the server and in eve
 
 ## Subagents
 
-If your agent can start subagents or background tasks, you are the listener and integrator and they do the building, so a request never blocks the chat loop:
+If your agent can start subagents or background tasks, you are the orchestrator: you talk with your player in the game and with your subagents, and you never build yourself, so a request never blocks the chat loop.
 
-- Each separate request goes to its own subagent, and a large one splits into parts. Each subagent owns one mod or one set of files, so two never edit the same file; tell it which, what the existing mods export, and how to call the world command.
-- Start every subagent on the strongest model you have, never a cheaper or faster one: cheap subagents built the worst worlds.
-- While they build, go straight back to `wait_for_chat` and answer players in a line.
-- A subagent may `reload` its mod to test it but never uses `say` or `announce`. When it reports back, read its diff against the mods it touches, fold it into what others built instead of stacking a second system, and see it work in play (`logs`, `screenshot`, `walk_test` and `colliders` for anything players walk into, `perf` for anything that draws or moves a lot). Only then tell players with `say`, and `announce` it if it is new to play.
+- You keep the `wait_for_chat` loop, turn each request into an assignment for its own subagent (a large one into several), pass on progress and results with `say`, and decide what comes next. You don't write mod code or run the checks yourself; `status` tells you enough to assign.
+- Each subagent owns one mod or one set of files, so two never edit the same file. Tell it which, what your player asked for in their words, and how to call the world command.
+- A subagent does the whole job in "Shipping a change": reads the mods it touches, builds, reloads, and sees it work in play (`logs`, `screenshot`, `walk_test` and `colliders` for anything players walk into, `perf` for anything that draws or moves a lot). It extends what others built instead of stacking a second system, never uses `say` or `announce`, and reports back what it checked and what it could not.
+- Only a result its subagent saw working reaches players: then you `say` it, and `announce` it if it is new to play.
+
+Without subagents, do the work yourself, but return to `wait_for_chat` between steps so your player is never unheard for long.
 
 ## Staying with your player
 
