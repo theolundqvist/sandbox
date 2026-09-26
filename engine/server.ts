@@ -99,6 +99,8 @@ if (hasGit) {
 const record = openRecord(join(DATA, "record.sqlite"));
 const logs: { at: number; mod: string; level: string; text: string; player?: string }[] = [];
 const clientPerf = new Map<string, { at: number } & Record<string, unknown>>();
+/** Each player's last join: ms until their first frame and the mods that took longest to start. */
+const joins = new Map<string, { firstFrameMs: number; slowestMods: Record<string, number> }>();
 const feedLog: { at: number; text: string; kind: string }[] = [];
 const chatLog: { seq: number; from: string; text: string; spoken?: boolean; claudes?: boolean }[] = [];
 const chatWaiters = new Set<() => void>();
@@ -301,6 +303,7 @@ const perf = () => ({
   server: { ...sim.perf, budget: "a tick is due every 50 ms; mods is each mod's average ms per tick, modTicks its p95 and slowest tick hook over the last 2 s" },
   entities: sim.entities.size,
   players: Object.fromEntries([...clientPerf].map(([name, { at, ...p }]) => [name, { ...p, secondsOld: Math.round((Date.now() - at) / 1000) }])),
+  joins: Object.fromEntries(joins),
 });
 
 /** Every 10 s: simulation tick times, how long the main thread stalled, process CPU and memory, and each player's websocket traffic. */
@@ -612,8 +615,10 @@ const server = Bun.serve<Conn>({
         clientPerf.set(ws.data.name, { ...report, at: Date.now() });
         ws.send(JSON.stringify({ t: "pong", at }));
         samplePlayer(ws.data.name, report);
-      } else if (msg.t === "loaded") record.add("session", ws.data.name, { loaded: true, firstFrameMs: msg.firstFrameMs, modsMs: msg.modsMs, slowestMods: msg.slowestMods, screen: msg.screen });
-      else if (msg.t === "act") record.add("action", ws.data.name, { what: String(msg.what).slice(0, 40), detail: String(msg.detail ?? "").slice(0, 120) });
+      } else if (msg.t === "loaded") {
+        joins.set(ws.data.name, { firstFrameMs: msg.firstFrameMs, slowestMods: msg.slowestMods });
+        record.add("session", ws.data.name, { loaded: true, firstFrameMs: msg.firstFrameMs, modsMs: msg.modsMs, slowestMods: msg.slowestMods, screen: msg.screen });
+      } else if (msg.t === "act") record.add("action", ws.data.name, { what: String(msg.what).slice(0, 40), detail: String(msg.detail ?? "").slice(0, 120) });
     },
     close(ws) {
       if (ws.data.spectator) {

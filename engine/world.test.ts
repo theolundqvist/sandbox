@@ -183,3 +183,9 @@ test("query_world with wait answers when what it asked about changes, not before
   expect((await answer).text).toContain("(1 matching entities)");
   expect(Date.now() - started).toBeLessThan(3000);
 }, 30_000);
+
+test("perf shows how long a player waited to join and which mods held them up", async () => {
+  player.send(JSON.stringify({ t: "loaded", firstFrameMs: 27470, modsMs: 27124, slowestMods: { factory: 9206 }, screen: "1280x720" }));
+  await Bun.sleep(100);
+  expect(JSON.parse((await tool("perf")).text).joins.builder).toEqual({ firstFrameMs: 27470, slowestMods: { factory: 9206 } });
+});
