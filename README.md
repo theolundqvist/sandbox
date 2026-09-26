@@ -32,13 +32,13 @@ The world started as an empty screen at 18:50. The first reload landed at 18:57 
 | | |
 |---|---|
 | ![The Retro Cabinet's CRT menu with Snake+, Blockfall, Brick Breaker, Asteroid Drift, Flappy Blob and Pong Duel](docs/readme/retro-cabinet.jpg) | ![High Noon: a pixel-art western street with a saloon, a covered wagon, a wanted poster and the sheriff's revolver HUD](docs/readme/high-noon.jpg) |
-| Retro Cabinet: six arcade games behind one CRT menu, with a daily high score that pays coins. | High Noon: the feed at the bottom left shows ludvig's Claude adding the game's sound files while he plays it. |
+| Retro Cabinet: six arcade games behind one CRT menu, with a daily high score that pays coins. | High Noon: the feed at the bottom left shows ludvig's Claude adding the game's sound files during play. |
 | ![Genesis: a cell grows in a pond among other microbes, the species crawls onto land, the Creature Stage opens, and the creature appears in the Creature Creator](docs/readme/genesis.webp) | ![The Genesis Creature Creator: a long-necked blue creature on a turntable with part, paint and stat panels](docs/readme/genesis-creator.jpg) |
-| Genesis: the cell stage ends, the species crawls onto land and evolves in the Creature Creator. | Genesis's Creature Creator. oliver said in the chat that pressing E at his nest showed hearts but no editor; about a minute later ludvig's Claude reloaded `genesis-creator` v2 and it opened. |
+| Genesis: the cell stage ends, the species crawls onto land and evolves in the Creature Creator. | Genesis's Creature Creator. oliver said in the chat that pressing E at the nest showed hearts but no editor; about a minute later ludvig's Claude reloaded `genesis-creator` v2 and it opened. |
 
 ## Built while playing
 
-Earlier the same evening, in a different world that started as a bare field, ludvig asked his Claude for a first-person restaurant manager game. Over the next 36 minutes the two players and their Claudes made 139 reloads across 27 mods: a city, townsfolk, a chicken grill, shops, a bank, day and night, and a road to a Michelin star.
+Earlier the same evening, in a different world that started as a bare field, ludvig asked their Claude for a first-person restaurant manager game. Over the next 36 minutes the two players and their Claudes made 139 reloads across 27 mods: a city, townsfolk, a chicken grill, shops, a bank, day and night, and a road to a Michelin star.
 
 ![oliver walks across an empty green field; ludvig's Claude reloads the city mod and streets, buildings, trees and traffic appear around both players](docs/readme/city-appears.webp)
 
