@@ -32,6 +32,8 @@ export type McpContext = {
   record: Recorder;
 };
 
+/** Longest chat line a Claude may show players: 95% of what Claudes said to players in a busy session fit. */
+const SAY_MAX = 400;
 const hash = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex").slice(0, 12);
 
 const tools = [
@@ -196,7 +198,7 @@ const tools = [
   {
     name: "say",
     description:
-      "Post a short message in the in-game chat, shown as your player's Claude: what you just built, or an answer to someone. To coordinate with other Claudes (API contracts, hashes, who builds what), pass to: \"claudes\" instead: players don't see it in chat, other Claudes get it with their chat and it wakes their wait_for_chat when it names their player, claudes or everyone.",
+      "Post a short message (at most 400 characters) in the in-game chat, shown as your player's Claude: what you just built, or an answer to someone. To coordinate with other Claudes (API contracts, hashes, who builds what), pass to: \"claudes\" instead, with no length limit: players don't see it in chat, other Claudes get it with their chat and it wakes their wait_for_chat when it names their player, claudes or everyone.",
     inputSchema: {
       type: "object",
       properties: { text: { type: "string" }, to: { type: "string", enum: ["claudes"], description: "claudes: only other Claudes read it (and players who open the Builders tab)." } },
@@ -348,19 +350,21 @@ export function createMcp(ctx: McpContext) {
       }
       case "reload": {
         const mod = String(args.mod);
+        const a = args.announce;
+        for (const [field, max] of [["title", 40], ["text", 160]] as const)
+          if (String(a?.[field] ?? "").length > max) throw new ToolError(`announce.${field} is ${String(a[field]).length} characters and the banner shows at most ${max}. Shorten it; nothing was reloaded.`);
         const owner = ctx.owners[mod];
         if (ctx.rules() === "additive" && owner && owner !== who && owner !== "world") throw new ToolError(`This world is additive: ${mod} belongs to ${owner}.`);
         claim(mod, who);
         const isNew = !ctx.mods.running.has(mod);
         const result = await ctx.mods.reload(mod, who, ctx.owners[mod]!, args.force === true);
         if (!result.ok) throw new ToolError(result.report);
-        const a = args.announce;
         if (a || isNew)
           ctx.announce({
             mod,
             by: who,
-            title: String(a?.title ?? mod).slice(0, 40),
-            text: String(a?.text ?? "").slice(0, 160),
+            title: String(a?.title ?? mod),
+            text: String(a?.text ?? ""),
             color: /^#[0-9a-f]{3,8}$/i.test(a?.color) ? a.color : "#ffb547",
           });
         return result.report;
@@ -431,10 +435,14 @@ export function createMcp(ctx: McpContext) {
         while (!forMe() && Date.now() < until) await Promise.race([ctx.nextChat(), Bun.sleep(until - Date.now())]);
         return forMe() ? "New chat:" : who === GAME_MASTER ? "Nobody called for the game master. Check how play feels and tune one small thing if it needs it." : `Nothing for you from ${who} yet.`;
       }
-      case "say":
+      case "say": {
         if (args.to !== undefined && args.to !== "claudes") throw new ToolError(`to can only be "claudes"; leave it out to talk in the players' chat.`);
-        ctx.chat(speaker(who), String(args.text).slice(0, 300), args.to);
+        const text = String(args.text);
+        if (!args.to && text.length > SAY_MAX)
+          throw new ToolError(`That is ${text.length} characters; a chat line for players holds at most ${SAY_MAX}. Nothing was said: shorten it or split it into several says, and send details for other Claudes with to: "claudes", which has no limit.`);
+        ctx.chat(speaker(who), text, args.to);
         return args.to ? "Sent to the other Claudes." : "Said.";
+      }
       case "task": {
         const state = ["done", "blocked"].includes(args.state) ? args.state : "working";
         const percent = Number.isFinite(args.percent) ? Math.max(0, Math.min(100, Math.round(args.percent))) : undefined;

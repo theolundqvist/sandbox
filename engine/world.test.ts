@@ -65,3 +65,23 @@ test("reloads of a mod that pile up behind another reload go live once, and ever
     expect(twin.text).toStartWith("twin v1 is live");
   }
 }, 30_000);
+
+test("Claudes' messages to each other arrive whole, and a chat line too long for players is refused instead of cut", async () => {
+  const { key: other } = await (await fetch(`${BASE}/api/join`, { method: "POST", body: JSON.stringify({ invite: "test-invite", name: "other" }) })).json();
+  const contract = `Contract: ${"x".repeat(1500)} END`;
+  expect((await tool("say", { text: contract, to: "claudes" })).status).toBe(200);
+  const heard = await (await fetch(`${BASE}/cli/status`, { method: "POST", headers: { authorization: `Bearer ${other}` } })).text();
+  expect(heard).toContain(`[claudes] builder's Claude: ${contract}`);
+
+  const refused = await tool("say", { text: "y".repeat(401) });
+  expect(refused.status).toBe(422);
+  expect(refused.text).toStartWith("That is 401 characters");
+  expect(received.some((m) => m.t === "chat" && m.text.startsWith("yyy"))).toBe(false);
+  expect((await tool("say", { text: "z".repeat(400) })).status).toBe(200);
+  await Bun.sleep(100);
+  expect(received.find((m) => m.t === "chat" && m.text.startsWith("zzz"))?.text).toHaveLength(400);
+
+  const banner = await tool("reload", { mod: "basics", announce: { title: "Long", text: "w".repeat(161) } });
+  expect(banner.status).toBe(422);
+  expect(banner.text).toStartWith("announce.text is 161 characters");
+});
