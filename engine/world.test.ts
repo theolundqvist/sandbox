@@ -65,20 +65,24 @@ test("a mod reloads again at once, and a reload that leaves its client or its se
 }, 60_000);
 
 test("reloads asked for while one of the same mod runs become one follow-up of the latest files, and another mod reloads alongside", async () => {
-  const holding = (id: string) => serverMod(`{ load(world) { Bun.sleepSync(600); world.spawn({ pos: [0, 0, 0], twin: "${id}" }); } }`);
-  await write("mods/twin/server.ts", holding("first"));
+  // twin's first version holds the simulation in each load for as long as it can without the 2 s hang check stopping it, so quick has time to spare on a busy machine.
+  const holding = (id: string, ms: number) => serverMod(`{ load(world) { Bun.sleepSync(${ms}); world.spawn({ pos: [0, 0, 0], twin: "${id}" }); } }`);
+  await write("mods/twin/server.ts", holding("first", 1200));
   await write("mods/quick/server.ts", serverMod(`{ tick() {} }`));
   const first = tool("reload", { mod: "twin" });
   const firstDone = first.then(() => performance.now());
   await Bun.sleep(100);
-  edit("mods/twin/server.ts", holding("latest"));
+  edit("mods/twin/server.ts", holding("latest", 0));
   const later = [tool("reload", { mod: "twin" }), tool("reload", { mod: "twin" })];
   const quick = await tool("reload", { mod: "quick" });
   expect(quick.text).toStartWith("quick v1 is live");
   expect(performance.now()).toBeLessThan(await firstDone);
   expect((await first).text).toStartWith("twin v1 is live");
   for (const twin of await Promise.all(later)) expect(twin.text).toStartWith("twin v2 is live");
-  expect((await tool("query_world", { components: ["twin"] })).text).toContain('"latest"');
+  // The spawn reaches query_world with the next tick.
+  const twins = async () => (await tool("query_world", { components: ["twin"] })).text;
+  for (let i = 0; i < 20 && !(await twins()).includes('"latest"'); i++) await Bun.sleep(100);
+  expect(await twins()).toContain('"latest"');
 }, 30_000);
 
 test("a mod that claims a system another live mod owns is told whose it is, and status lists what each mod owns", async () => {
