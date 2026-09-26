@@ -352,6 +352,7 @@ let joinCode: string | null = null;
 let lanUrl: string | null = null;
 const shots = new Map<string, (data: string) => void>();
 const cli = createCli({
+  data: DATA,
   root: ROOT,
   dbDir: DB,
   rules: () => config.rules,

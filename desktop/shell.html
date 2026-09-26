@@ -63,6 +63,7 @@
 
   <section id="saved" class="screen" data-nav hidden>
     <h1>Worlds</h1>
+    <div class="items"><button class="item" id="go-browse">Browse</button></div>
     <div class="items" id="games"></div>
     <p id="no-games" class="status" hidden>Worlds you host or join show up here</p>
   </section>
@@ -163,6 +164,7 @@
   }
   const open = (url) => busy(url.startsWith("local:") ? "Starting your server…" : "", () => shell.open(url));
   $("go-new").onclick = () => open("local:new");
+  $("go-browse").onclick = () => open("local:browse");
 
   // ---------- saved games: the ones this computer hosts and the ones joined, most recent first ----------
   let selected = null;

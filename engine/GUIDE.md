@@ -192,3 +192,13 @@ Hooks must return quickly. `world.later(ms, (world) => ...)` runs something late
 - A client mod that keeps throwing is switched off in that player's game, and the error shows up in `logs`.
 - A reload test-runs your mod together with every live mod, so a mod that depends on another's exports is tested for real. Only errors in your mod fail the test.
 - Every accepted reload is committed. Use `history` and `restore` to go back.
+
+## Publishing this world
+
+When your player wants to share the world, it goes to GitHub as a repository anyone can play from Sandbox's Browse screen.
+
+1. `publish handle=<their GitHub user name> description="<one line on the world>"` saves the world into a folder and prints its path: `world.json`, a README, the live mods, the packages they use, the entities and the mods' databases. Keys, recordings, chat, the player list and every entity or database row that names a player stay on the host's computer, and a file holding anything that looks like a key stops the publish.
+2. Mod code and banners keep what builders wrote. Search the folder for every player's name, show your player each hit, and change the mod before publishing again if they want it gone.
+3. Add `cover.jpg`: a 16:9 `screenshot` of the world with chat closed and nobody's name on screen.
+4. Push it with `gh`: in the folder, `git init -b main && git add -A && git commit -m "<world name>" && gh repo create <handle>/<repo> --public --source . --push`. To update it later, publish again and copy the new folder over your clone, keeping its `.git`.
+5. Anyone plays it by pasting the repository's link in Worlds, Browse. To list it there for everyone, open a pull request on theolundqvist/sandbox that adds `{ "repo": "<handle>/<repo>", "name": "<world name>", "description": "<one line>" }` to `worlds.json`.

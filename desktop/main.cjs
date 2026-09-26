@@ -208,7 +208,8 @@ async function hostGame(target) {
   // Offline, the relay never answers; the game still opens here, without a public link.
   for (const until = Date.now() + 8000; !s.tunnel?.code && Date.now() < until; await new Promise((r) => setTimeout(r, 250))) s = await menu("state");
   const share = s.tunnel?.url ?? base;
-  return play(`${share}/menu#key=${key}&${target === "new" ? "screen=create" : `world=${target}`}`);
+  const screen = { new: "screen=create", browse: "screen=browse" }[target] ?? `world=${target}`;
+  return play(`${share}/menu#key=${key}&${screen}`);
 }
 
 /** Starts this app's server again after a restart: the launcher brings back the world it hosted and shares it again, under the same code. */

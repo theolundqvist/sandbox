@@ -5,6 +5,7 @@ import type { Server, ServerWebSocket, Subprocess } from "bun";
 import { frontFile } from "./front";
 import { latencies, openRecord, route, type Recorder } from "./record";
 import type { Config } from "./server";
+import { importWorld, readTarball } from "./share";
 
 const ENGINE = import.meta.dir;
 const DATA = process.env.SANDBOX_DATA ?? join(ENGINE, "../data");
@@ -145,9 +146,11 @@ function freshName() {
   return free.length ? free[Math.floor(Math.random() * free.length)]! : `World ${taken.size + 1}`;
 }
 
+const newId = (name: string) => `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "world"}-${token().slice(0, 4)}`;
+
 function create(body: any) {
   const name = String(body.name ?? "").trim().slice(0, 40) || freshName();
-  const id = `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "world"}-${token().slice(0, 4)}`;
+  const id = newId(name);
   const world: Config = { name, rules: body.rules === "additive" ? "additive" : "open", start: ["hills", "blank"].includes(body.start) ? body.start : "basics", invite: token(), hostKey: token() };
   mkdirSync(join(WORLDS, id));
   writeFileSync(join(WORLDS, id, "config.json"), JSON.stringify(world, null, 2));
@@ -327,7 +330,14 @@ async function menuApi(req: Request, action: string) {
   if (req.headers.get("authorization") !== `Bearer ${state.hostKey}`) return Response.json({ error: "Only the host can open this menu, on their own computer." }, { status: 401 });
   const body = req.method === "POST" ? await req.json() : {};
   try {
+    if (action === "browse") return Response.json(await market());
+    if (action === "check") {
+      const repo = repoOf(body.repo);
+      const listed = (await market().catch(() => [])).some((w) => w.repo.toLowerCase() === repo.toLowerCase());
+      return Response.json({ repo, owner: repo.split("/")[0], listed });
+    }
     if (action === "create") await host(create(body));
+    else if (action === "install") await host(await install(body.repo, body.trust === true));
     else if (action === "host") await host(String(body.id));
     else if (action === "stop") {
       await stop();
@@ -364,6 +374,52 @@ async function menuApi(req: Request, action: string) {
   } catch (e: any) {
     return Response.json({ error: e.message }, { status: 400 });
   }
+}
+
+/** The worlds anyone can play from Browse: a list in the main repository, which only its maintainers change. */
+const MARKET = process.env.SANDBOX_MARKET ?? "https://raw.githubusercontent.com/theolundqvist/sandbox/master/worlds.json";
+const RAW = process.env.SANDBOX_RAW ?? "https://raw.githubusercontent.com";
+const CODELOAD = process.env.SANDBOX_CODELOAD ?? "https://codeload.github.com";
+
+/** owner/name from a GitHub link however it was pasted: github.com/o/r, a URL into the repo, or o/r. */
+function repoOf(link: unknown) {
+  const m = String(link ?? "").trim().match(/^(?:(?:https?:\/\/)?(?:www\.)?github\.com\/)?([A-Za-z0-9-]{1,39})\/([\w.-]{1,100}?)(?:\.git)?\/?(?:[/?#].*)?$/i);
+  if (!m) throw new Error("Paste a GitHub link, like github.com/someone/their-world.");
+  return `${m[1]}/${m[2]}`;
+}
+
+async function market() {
+  const res = await fetch(MARKET, { signal: AbortSignal.timeout(10_000) }).catch(() => null);
+  if (!res?.ok) throw new Error("Can't reach GitHub. Check your connection.");
+  const list: { repo: string; name: string; description: string }[] = await res.json();
+  return list.flatMap((w) => {
+    try {
+      const repo = repoOf(w.repo);
+      return [{ repo, name: String(w.name), description: String(w.description ?? ""), cover: `${RAW}/${repo}/HEAD/cover.jpg` }];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** Downloads a world from GitHub as a tarball, so hosting one needs no git, and makes it a new world here. */
+async function install(link: unknown, trust: boolean) {
+  const repo = repoOf(link);
+  const listed = (await market().catch(() => [])).some((w) => w.repo.toLowerCase() === repo.toLowerCase());
+  if (!listed && !trust) throw new Error(`This world runs code from ${repo.split("/")[0]}. Only play worlds from people you trust.`);
+  const res = await fetch(`${CODELOAD}/${repo}/tar.gz/HEAD`).catch(() => null);
+  if (!res) throw new Error("Can't reach GitHub. Check your connection.");
+  if (!res.ok) throw new Error(res.status === 404 ? `There is no public world at github.com/${repo}.` : `GitHub answered ${res.status}. Try again.`);
+  const files = await readTarball(await res.bytes());
+  const name = String((await files.get("world.json")?.json().catch(() => null))?.name ?? "");
+  const id = newId(name);
+  try {
+    await importWorld(files, join(WORLDS, id), token);
+  } catch (e) {
+    rmSync(join(WORLDS, id), { recursive: true, force: true });
+    throw e;
+  }
+  return id;
 }
 
 const page = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });

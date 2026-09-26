@@ -136,13 +136,23 @@ export function modDb(db: Database): ModDb {
 
 type Persisted = { entities: Map<number, Entity>; nextId: number };
 
+const WORLD_TABLE = "create table if not exists world (id integer primary key check (id = 1), next_id integer, entities text)";
+
+/** A new world's starting entities, which the server loads the way it loads a rewind. */
+export function seedStore(path: string, nextId: number, entities: Record<string, Entity>) {
+  const db = new Database(path, { create: true });
+  db.run(WORLD_TABLE);
+  db.run("insert or replace into world values (1, ?, ?)", [nextId, JSON.stringify(entities)]);
+  db.close();
+}
+
 export function openStore(path: string) {
   const db = new Database(path, { create: true });
   db.run("pragma busy_timeout = 5000");
   // Saves and timelapse moments commit on the server's main thread every few seconds; without WAL each waits on a disk flush and the timelapse reader blocks them.
   db.run("pragma journal_mode = wal");
   db.run("pragma synchronous = normal");
-  db.run("create table if not exists world (id integer primary key check (id = 1), next_id integer, entities text)");
+  db.run(WORLD_TABLE);
   db.run("create table if not exists entity (id integer primary key, data text not null)");
   db.run("create table if not exists snapshots (at integer primary key, next_id integer, entities text)");
   db.run("create table if not exists timelapse (at integer primary key, full integer, data blob, activity text)");

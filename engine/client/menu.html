@@ -19,6 +19,11 @@
   .copy-row b { flex: 1; min-width: 0; font: 700 18px/1.2 var(--display); overflow: hidden; text-overflow: ellipsis; }
   .dot { width: 8px; height: 8px; background: #55524c; flex: none; } .dot.on { background: var(--ok); }
   #app .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
+  .item.market { align-items: center; white-space: normal; }
+  .market img { width: 160px; aspect-ratio: 16 / 9; object-fit: cover; flex: none; background: #1b1c1f; }
+  .market .what { flex: 1; min-width: 0; }
+  .market small { display: block; margin-top: 6px; color: var(--dim); font: 600 15px/1.3 system-ui, sans-serif; letter-spacing: normal; text-transform: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 760px) { .market img { width: 96px; } }
 </style>
 </head>
 <body>
@@ -38,8 +43,16 @@
 
   <section id="worlds" class="screen" data-nav hidden>
     <h1>Worlds</h1>
+    <div class="items"><button class="item" id="go-browse" data-to="browse">Browse</button></div>
     <div class="items" id="world-list"></div>
     <p id="no-worlds" class="status" hidden>No worlds yet</p>
+  </section>
+
+  <section id="browse" class="screen" data-nav hidden>
+    <h1>Browse</h1>
+    <div class="items" id="market"></div>
+    <label class="item entry"><input type="text" id="repo-link" placeholder="GitHub link" autocomplete="off" spellcheck="false"></label>
+    <p id="market-status" class="status" hidden></p>
   </section>
 
   <section id="join" class="screen" data-nav hidden>
@@ -92,6 +105,7 @@
 
   <section id="ask" class="screen" data-nav hidden>
     <h1 id="ask-title"></h1>
+    <p class="lead" id="ask-note" hidden></p>
     <div class="items"><button class="item danger" id="ask-yes"></button><button class="item" id="ask-no">Cancel</button></div>
   </section>
 
@@ -169,6 +183,7 @@
       document.activeElement.blur();
       if (current()?.id === "create") $("create-go").focus();
       if (current()?.id === "join") joinGame();
+      if (current()?.id === "browse") playLink($("repo-link").value);
     }
   });
   for (const b of document.querySelectorAll("[data-to]")) b.onclick = () => show(b.dataset.to);
@@ -176,8 +191,10 @@
 
   /** A yes-or-no question as its own screen. */
   let answer = () => {};
-  function ask(title, yes) {
+  function ask(title, yes, note = "") {
     $("ask-title").textContent = title;
+    $("ask-note").textContent = note;
+    $("ask-note").hidden = !note;
     $("ask-yes").textContent = yes;
     show("ask");
     return new Promise((resolve) => {
@@ -258,6 +275,10 @@
         renderWorld();
         show("world");
       } else if (jump.get("screen") === "create") show("create");
+      else if (jump.get("screen") === "browse") {
+        show("worlds");
+        $("go-browse").click();
+      }
     }
     else if (!$(current().id).querySelector(":focus")) enter();
   }
@@ -293,6 +314,43 @@
     if (copied && !$("join-link").value && joinable(copied)) $("join-link").set(copied);
   });
   $("world-play").onclick = () => hostWorld(selected);
+
+  /** Browse and pasted GitHub links answer with data, not the menu's state. */
+  async function lookup(action, body) {
+    const res = await fetch(`/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    return data;
+  }
+  const marketStatus = (text) => {
+    $("market-status").textContent = text;
+    $("market-status").hidden = !text;
+  };
+  $("go-browse").addEventListener("click", () => {
+    marketStatus($("market").children.length ? "" : "Loading");
+    attempt(async () => {
+      const listed = await lookup("browse");
+      marketStatus("");
+      rebuild($("market"), listed.map((w) => {
+        const b = el("button", { className: "item market" }, el("img", { src: w.cover, alt: "" }), el("span", { className: "what", textContent: w.name }, el("small", { textContent: w.description })), el("span", { className: "value", textContent: "Play" }));
+        b.dataset.key = w.repo;
+        b.onclick = () => install(w.repo);
+        return b;
+      }));
+    }).finally(() => $("market-status").textContent === "Loading" && marketStatus(""));
+  });
+  /** Worlds that aren't on the list in Browse run code from someone the host has to trust. */
+  const playLink = (link) =>
+    attempt(async () => {
+      const { repo, owner, listed } = await lookup("check", { repo: link });
+      if (listed || (await ask(repo.split("/")[1], "Play", `This world runs code from ${owner}. Only play worlds from people you trust.`))) await install(repo);
+    });
+  async function install(repo) {
+    if (state.running && !(await ask(`Stop ${state.running.name}?`, "Stop and play"))) return;
+    marketStatus("Downloading");
+    await attempt(async () => play(await api("install", { repo, trust: true })));
+    marketStatus("");
+  }
   /** The timelapse plays from the world's own server, so a world that isn't running is hosted first. */
   $("world-timelapse").onclick = async () => {
     if (state.running && state.running.id !== selected && !(await ask(`Stop ${state.running.name}?`, "Stop and watch"))) return;

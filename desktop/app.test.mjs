@@ -1,5 +1,5 @@
 // The real Electron app on a throwaway relay and launcher and a stand-in GitHub; run with `xvfb-run -a node --test desktop/app.test.mjs`.
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -36,10 +36,25 @@ function bun(script, env) {
 const ownEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY")));
 const VOICE_KEY = "sk_test_voice_key";
 
-/** GitHub as the app sees it: the latest release, and the installer script the app runs to update; and ElevenLabs, which knows one key. */
+/** A world published to GitHub, as the tarball GitHub serves: its files inside one folder named after the repo. */
+function publishedWorld() {
+  const root = join(dir, "published", "maker-tiny-isle-abc1234");
+  mkdirSync(join(root, "mods/isle"), { recursive: true });
+  mkdirSync(join(root, "state"));
+  writeFileSync(join(root, "world.json"), JSON.stringify({ name: "Tiny Isle", description: "One small island.", author: "maker", engine: "test", start: "blank", rules: "open" }));
+  writeFileSync(join(root, "mods/isle/server.ts"), `export default { load() {} };`);
+  writeFileSync(join(root, "state/entities.json"), JSON.stringify({ nextId: 2, entities: { 1: { pos: [0, 0, 0], mesh: { shape: "box", size: [4, 1, 4], color: "#c9b27c" } } } }));
+  execFileSync("tar", ["czf", join(dir, "published", "tiny-isle.tgz"), "-C", join(dir, "published"), "maker-tiny-isle-abc1234"]);
+  return readFileSync(join(dir, "published", "tiny-isle.tgz"));
+}
+const tinyIsle = publishedWorld();
+
+/** GitHub as the app sees it: the latest release, the installer script the app runs to update, the worlds in Browse and their tarballs; and ElevenLabs, which knows one key. */
 const releases = { latest: VERSION, installer: null };
 const RELEASES = port();
 const github = createServer((req, res) => {
+  if (req.url === "/worlds.json") return res.end(JSON.stringify([{ repo: "maker/tiny-isle", name: "Tiny Isle", description: "One small island." }]));
+  if (/^\/codeload\/(maker|stranger)\/tiny-isle\/tar\.gz\/HEAD$/.test(req.url)) return res.end(tinyIsle);
   if (req.url === "/latest") return res.end(JSON.stringify({ tag_name: `v${releases.latest}` }));
   if (req.url === "/hang") return;
   if (req.url === "/install" && releases.installer) return res.end(releases.installer);
@@ -97,7 +112,7 @@ async function launch(name, env = {}) {
   const app = await _electron.launch({
     executablePath: ELECTRON,
     args: [DESKTOP, "--no-sandbox", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
-    env: { ...ownEnv, SANDBOX_ELEVENLABS: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_UPDATE_EVERY: "500", ...env },
+    env: { ...ownEnv, SANDBOX_ELEVENLABS: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_MARKET: `http://127.0.0.1:${RELEASES}/worlds.json`, SANDBOX_RAW: `http://127.0.0.1:${RELEASES}/raw`, SANDBOX_CODELOAD: `http://127.0.0.1:${RELEASES}/codeload`, ...env },
   });
   await app.context().addInitScript(OPEN_UI);
   const shell = await until("the start screen", async () => app.windows().find((w) => w.url().startsWith("sandbox://app/shell.html")));
@@ -327,6 +342,26 @@ describe("hosting and joining", () => {
     }
     assert.equal(error, "Too many tries. Wait a minute.");
     await shell.keyboard.press("Escape");
+  });
+
+  test("Browse plays a listed world after one download, and a pasted link to another asks for trust first", async () => {
+    await shell.click("text=Worlds");
+    await shell.click("#go-browse");
+    const game = await gamePage(app);
+    const listed = game.locator("#market .item");
+    await until("the listed world", async () => (await listed.count()) === 1);
+    assert.equal(await listed.textContent(), "Tiny IsleOne small island.Play");
+    assert.equal(await listed.locator("img").getAttribute("src"), `http://127.0.0.1:${RELEASES}/raw/maker/tiny-isle/HEAD/cover.jpg`);
+    await game.fill("#repo-link", "https://github.com/stranger/tiny-isle");
+    await game.press("#repo-link", "Enter");
+    await until("the trust question", async () => (await game.textContent("#ask-note")) === "This world runs code from stranger. Only play worlds from people you trust.");
+    await game.click("#ask-no");
+    await listed.click();
+    await until("Stop the hosted world?", async () => /^Stop .+\?$/.test(await game.textContent("#ask-title")));
+    await game.click("#ask-yes");
+    await until("Tiny Isle's join screen", async () => (await game.textContent("#join-world")) === "Tiny Isle");
+    await joinAs(game, "islander");
+    await shell.click("#leave");
   });
 
   test("quitting stops the game server", async () => {

@@ -3,12 +3,15 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { dirname, join, relative, resolve } from "node:path";
 import { hasGit, type Mods } from "./mods";
 import { brief, type Recorder } from "./record";
+import { exportWorld } from "./share";
 import type { SimHost } from "./simhost";
 
 export type Task = { title: string; status: string; percent?: number; state: "working" | "done" | "blocked"; at: number };
 const speaker = (who: string) => `${who}'s Claude`;
 
 export type CliContext = {
+  /** The world's folder: its config, players, mods' databases and the tree under root. */
+  data: string;
   root: string;
   dbDir: string;
   rules: () => "open" | "additive";
@@ -228,6 +231,19 @@ const tools = [
     },
   },
   {
+    name: "publish",
+    description:
+      "Package this world to share on GitHub: saves it into a folder and prints the folder's path. It holds world.json, the live mods, the packages they use, the entities and the mods' databases, never keys, recordings, chat or anything that names a player. GUIDE.md, Publishing this world, says how to put it on GitHub.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        handle: { type: "string", description: "Your player's GitHub user name, credited as the world's author." },
+        description: { type: "string", description: "One line on what the world is, shown under its name in Browse." },
+      },
+      required: ["handle", "description"],
+    },
+  },
+  {
     name: "say",
     description:
       "Post a short message (at most 400 characters) in the in-game chat, shown as your player's Claude: one or two lines on what is there now that you have seen it work, or an answer to someone. To coordinate with other Claudes (who owns what, the exact export you need, who builds what), pass to: \"claudes\" instead, with no length limit: players don't see it in chat, other Claudes get it with their chat and it wakes their wait_for_chat when it names their player, claudes or everyone.",
@@ -306,7 +322,7 @@ export function createCli(ctx: CliContext) {
   /** Runs a tool and records who called it, how long it took, how much it returned and any error. */
   async function call(name: string, args: any, who: string) {
     const started = performance.now();
-    let result: string | { image: string } | undefined;
+    let result: string | { image: string } | { archive: Blob } | undefined;
     let error: string | undefined;
     try {
       return (result = await run(name, args, who));
@@ -314,11 +330,11 @@ export function createCli(ctx: CliContext) {
       error = String(e.message).slice(0, 300);
       throw e;
     } finally {
-      ctx.record.add("tool", who, { tool: name, args: brief(args), ms: Math.round(performance.now() - started), bytes: typeof result === "string" ? result.length : result?.image.length, error });
+      ctx.record.add("tool", who, { tool: name, args: brief(args), ms: Math.round(performance.now() - started), bytes: typeof result === "string" ? result.length : result && "image" in result ? result.image.length : result?.archive.size, error });
     }
   }
 
-  async function run(name: string, args: any, who: string): Promise<string | { image: string }> {
+  async function run(name: string, args: any, who: string): Promise<string | { image: string } | { archive: Blob }> {
     switch (name) {
       case "status":
         return JSON.stringify(ctx.status(), null, 2);
@@ -469,6 +485,13 @@ export function createCli(ctx: CliContext) {
             throw new ToolError(e.message);
           }),
         };
+      case "publish":
+        try {
+          const files = exportWorld({ data: ctx.data, entities: ctx.sim.entities, nextId: ctx.sim.nextId }, String(args.handle ?? ""), String(args.description ?? ""));
+          return { archive: await new Bun.Archive(files, { compress: "gzip" }).blob() };
+        } catch (e: any) {
+          throw new ToolError(e.message);
+        }
       case "add_package": {
         const spec = String(args.name);
         if (!/^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(@[\w.^~<>=*-]+)?$/.test(spec)) throw new ToolError("Give an npm package name, optionally with @version.");
@@ -561,10 +584,11 @@ export function createCli(ctx: CliContext) {
     const listening = command === "wait_for_chat";
     ctx.presence(who, listening ? "listening" : "working");
     if (listening) req.signal.addEventListener("abort", () => ctx.presence(who, "offline"));
-    const answer = async (): Promise<{ status: number; body: string | Blob; image?: boolean }> => {
+    const answer = async (): Promise<{ status: number; body: string | Blob; type?: string }> => {
       try {
         const result = await call(command, args, who);
-        if (typeof result !== "string") return { status: 200, body: new Blob([Buffer.from(result.image, "base64")]), image: true };
+        if (typeof result !== "string" && "archive" in result) return { status: 200, body: result.archive, type: "application/gzip" };
+        if (typeof result !== "string") return { status: 200, body: new Blob([Buffer.from(result.image, "base64")]), type: "image/jpeg" };
         return { status: 200, body: [result, ...takeChat(who), KEEP_LISTENING].join("\n\n") + "\n" };
       } catch (e: any) {
         if (!(e instanceof ToolError)) console.error(e);
@@ -574,8 +598,8 @@ export function createCli(ctx: CliContext) {
       }
     };
     if (!listening) {
-      const { status, body, image } = await answer();
-      return new Response(body, { status, headers: { "content-type": image ? "image/jpeg" : "text/plain; charset=utf-8" } });
+      const { status, body, type } = await answer();
+      return new Response(body, { status, headers: { "content-type": type ?? "text/plain; charset=utf-8" } });
     }
     // Tunnels drop responses that stay silent for about 100 s, so a long wait sends newlines until it has an answer.
     let keepalive: Timer | undefined;
@@ -623,6 +647,12 @@ for arg do
     *) set -- "$@" --form-string "$name=$value" ;;
   esac
 done
+if [ "$tool" = publish ]; then
+  out="\${TMPDIR:-/tmp}/${name}-world"
+  curl -sS --fail-with-body -X POST -H "$auth" "$@" -o "$out.tar.gz" "$URL/cli/publish" || { cat "$out.tar.gz"; rm -f "$out.tar.gz"; exit 1; }
+  rm -rf "$out" && mkdir -p "$out" && tar xzf "$out.tar.gz" -C "$out" && rm "$out.tar.gz" && echo "$out"
+  exit
+fi
 if [ "$tool" = screenshot ]; then
   out="\${TMPDIR:-/tmp}/${name}-screenshot.jpg"
   curl -sS --fail-with-body -X POST -H "$auth" "$@" -o "$out" "$URL/cli/screenshot" && echo "$out"
