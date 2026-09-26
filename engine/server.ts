@@ -104,6 +104,8 @@ const logs: { at: number; mod: string; level: string; text: string; player?: str
 const clientPerf = new Map<string, { at: number } & Record<string, unknown>>();
 /** Each player's last join: ms until their first frame and the mods that took longest to start. */
 const joins = new Map<string, { firstFrameMs: number; slowestMods: Record<string, number> }>();
+/** Mod versions already named in the feed for starting slowly, so each is named once. */
+const slowStarts = new Set<string>();
 const feedLog: { at: number; text: string; kind: string }[] = [];
 const chatLog: { seq: number; from: string; text: string; spoken?: boolean; claudes?: boolean }[] = [];
 const chatWaiters = new Set<() => void>();
@@ -628,6 +630,13 @@ const server = Bun.serve<Conn>({
         samplePlayer(ws.data.name, report);
       } else if (msg.t === "loaded") {
         joins.set(ws.data.name, { firstFrameMs: msg.firstFrameMs, slowestMods: msg.slowestMods });
+        for (const [mod, ms] of Object.entries<number>(msg.slowestMods ?? {})) {
+          const live = mods.running.get(mod);
+          const version = `${mod} v${live?.version}`;
+          if (ms <= 500 || !live || slowStarts.has(version)) continue;
+          slowStarts.add(version);
+          feed(`${mod} took ${(ms / 1000).toFixed(1)} s to start in ${ws.data.name}'s game`);
+        }
         record.add("session", ws.data.name, { loaded: true, firstFrameMs: msg.firstFrameMs, modsMs: msg.modsMs, slowestMods: msg.slowestMods, screen: msg.screen });
       } else if (msg.t === "act") record.add("action", ws.data.name, { what: String(msg.what).slice(0, 40), detail: String(msg.detail ?? "").slice(0, 120) });
     },

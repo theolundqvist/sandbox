@@ -207,7 +207,8 @@ resize();
 const entities = new Map<number, Entity>();
 const objects = new Map<number, THREE.Object3D>();
 const looks = new Map<number, string>();
-const custom = new Set<THREE.Object3D>();
+/** Objects a mod's object hook made, by that mod. */
+const claimed = new Map<THREE.Object3D, Loaded>();
 const physics = new PhysicsIndex();
 
 const geometries = new Map<string, { geometry: THREE.BufferGeometry; users: number }>();
@@ -270,7 +271,7 @@ function build(id: number, e: Entity) {
     if (!m.mod.object) continue;
     const made: THREE.Object3D | null | undefined = call(m, "object", id, e);
     if (made) {
-      custom.add(made);
+      claimed.set(made, m);
       return made;
     }
   }
@@ -305,7 +306,7 @@ function defaultObject(e: Entity) {
 // Objects from a mod's object hook may share geometry and materials, so only the mod may free them.
 function dispose(obj: THREE.Object3D) {
   scene.remove(obj);
-  if (custom.delete(obj)) return;
+  if (claimed.delete(obj)) return;
   obj.traverse((o: any) => {
     if (o.geometry) releaseGeometry(o.geometry);
     o.material?.map?.dispose();
@@ -332,6 +333,28 @@ function syncObject(id: number, e: Entity | undefined, snap: boolean) {
     looks.set(id, look);
   }
   if (snap) obj.position.fromArray(e.pos);
+}
+
+/** After a mod starts or changes while the world loads: the entities its old version drew are built again, and it takes over those it outranks the drawer of. */
+function reclaim(name: string) {
+  const m = mods.get(name);
+  const rank = m ? ordered.indexOf(m) : -1;
+  for (const [id, obj] of objects) {
+    const owner = claimed.get(obj);
+    if (owner?.name === name && owner !== m) {
+      looks.delete(id);
+      syncObject(id, entities.get(id), true);
+      continue;
+    }
+    if (!m?.mod.object || (owner && ordered.indexOf(owner) >= rank)) continue;
+    const made: THREE.Object3D | null | undefined = call(m, "object", id, entities.get(id));
+    if (!made) continue;
+    dispose(obj);
+    claimed.set(made, m);
+    made.position.copy(obj.position);
+    scene.add(made);
+    objects.set(id, made);
+  }
 }
 
 function rebuildAll() {
@@ -785,21 +808,22 @@ function showAction() {
 $("interact").onclick = runAction;
 
 // ---------- network ----------
-/** Loads the server's live client builds and unloads the rest. Every mod downloads at once; they still start in order, and entities are rebuilt once for all of them. */
-async function loadLive(list: { name: string; url: string }[]) {
+/** Loads the server's live client builds and unloads the rest. Every mod downloads at once, then they start in order, each import a task of its own so frames draw in between, and each mod draws the entities it takes over as it starts. */
+async function loadLive(list: { name: string; url: string }[], progress?: (started: number, total: number) => void) {
   const wanted = new Map(list.map((m) => [m.name, m.url]));
   live = wanted;
   queue(() => Promise.allSettled([...wanted.values()].map((url) => import(url))));
   const modMs: [string, number][] = [];
-  for (const name of mods.keys()) if (!wanted.has(name)) queue(() => loadMod(name, null, false));
+  for (const name of mods.keys()) if (!wanted.has(name)) queue(() => loadMod(name, null, false).then(() => reclaim(name)));
   for (const [name, url] of wanted)
     queue(async () => {
       const started = performance.now();
       await loadMod(name, url, false);
+      reclaim(name);
       modMs.push([name, Math.round(performance.now() - started)]);
+      progress?.(modMs.length, wanted.size);
     });
   await loading;
-  rebuildAll();
   return modMs;
 }
 
@@ -826,27 +850,29 @@ function connect() {
         $("world-name").textContent = world;
         $("rules").textContent = msg.rules === "additive" ? "additive" : "open";
         $("rules").hidden = false;
-        $<HTMLButtonElement>("howto-play").disabled = false;
         $("status").hidden = true;
         welcomedAt = performance.now();
+        let firstFrameMs = 0;
+        requestAnimationFrame(() => (firstFrameMs = Math.round(performance.now())));
         showClaude(msg.claudes[me]?.state ?? "offline");
         claudes = new Map(Object.entries(msg.claudes));
         showBuilders();
         $("menu-talk").replaceChildren();
         for (const line of msg.talk) addTalk(line.from, line.text);
         leaveReplay();
-        const modMs = await loadLive(msg.mods);
         for (const f of msg.feed) addLine(f.text, f.kind);
-        const modsMs = Math.round(performance.now() - welcomedAt);
-        requestAnimationFrame(() =>
-          send({
-            t: "loaded",
-            firstFrameMs: Math.round(performance.now()),
-            modsMs,
-            slowestMods: Object.fromEntries(modMs.sort((a, b) => b[1] - a[1]).slice(0, 5)),
-            screen: `${innerWidth}x${innerHeight}`,
-          }),
-        );
+        const go = $<HTMLButtonElement>("howto-play");
+        go.disabled = true;
+        const modMs = await loadLive(msg.mods, (started, total) => (go.textContent = `Starting ${started} of ${total}`));
+        go.textContent = "Play";
+        go.disabled = false;
+        send({
+          t: "loaded",
+          firstFrameMs,
+          modsMs: Math.round(performance.now() - welcomedAt),
+          slowestMods: Object.fromEntries(modMs.sort((a, b) => b[1] - a[1]).slice(0, 5)),
+          screen: `${innerWidth}x${innerHeight}`,
+        });
         return;
       }
       case "voice":
@@ -1891,7 +1917,7 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     return palette.hidden ? openPalette() : closePalette();
   }
   if (!howto.hidden) {
-    if (e.code === "Enter" || e.code === "Space") play();
+    if ((e.code === "Enter" || e.code === "Space") && !$<HTMLButtonElement>("howto-play").disabled) play();
     return;
   }
   if (replay && !typing()) return replayKey(e);

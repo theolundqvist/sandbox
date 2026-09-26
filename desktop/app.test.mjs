@@ -819,6 +819,40 @@ export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(() => bla
     await until("the player gone", async () => (await shot()).status === 422);
     assert.match((await shot()).text, /^shooter doesn't have the game open.*query_world and logs/);
   });
+
+  test("joining draws the world before mods start and between slow ones, counts them in on Play, and names a slow one in the feed", async () => {
+    const key = await join("slow");
+    for (const mod of ["slowpoke", "sluggard"]) {
+      const content = `import type { ClientMod } from "../../api";
+export default { init() { const until = performance.now() + 600; while (performance.now() < until); (window as any).slow = ((window as any).slow ?? 0) + 1; } } satisfies ClientMod;`;
+      await tool(key, "write_file", { path: `mods/${mod}/client.ts`, content });
+      assert.match(await tool(key, "reload", { mod }), new RegExp(`^${mod} v1 is live`));
+    }
+    const late = await browser.newPage();
+    await late.addInitScript(() => {
+      const seen = (window.seen = []);
+      const raf = requestAnimationFrame;
+      window.requestAnimationFrame = (fn) => raf((t) => (seen.at(-1) !== "frame" && seen.push("frame"), fn(t)));
+      new MutationObserver(() => {
+        const text = document.getElementById("howto-play")?.textContent;
+        if (!text?.startsWith("Starting") || text === window.lastCount) return;
+        window.lastCount = text;
+        seen.push(window.slow > (window.counted ?? 0) ? `${text} (slow)` : text);
+        window.counted = window.slow;
+      }).observe(document, { subtree: true, childList: true, characterData: true });
+    });
+    await late.goto(`${other.url}/#key=${await join("late")}`);
+    await late.locator("#howto-play:not([disabled])").waitFor();
+    assert.equal(await late.textContent("#howto-play"), "Play");
+    const seen = await late.evaluate(() => window.seen);
+    const counts = seen.filter((s) => s !== "frame");
+    assert.deepEqual(counts.map((s) => s.replace(" (slow)", "")), counts.map((_, i) => `Starting ${i + 1} of ${counts.length}`));
+    assert.equal(seen[seen.indexOf(counts[0]) - 1], "frame", "a frame before the first mod starts");
+    const [first, second] = counts.filter((s) => s.endsWith("(slow)")).map((s) => seen.indexOf(s));
+    assert.ok(seen.slice(first, second).includes("frame"), "a frame between the slow mods");
+    await until("the slow mods named in the feed", async () => /slowpoke took \d+\.\d s to start in late's game/.test(await late.textContent("#feed")));
+    await late.close();
+  });
 });
 
 describe("the host closes the game", () => {

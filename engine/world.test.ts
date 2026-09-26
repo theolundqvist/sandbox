@@ -230,3 +230,11 @@ test("a name is someone's only while they or their Claude are on; claimed from a
   const closed = await new Promise<CloseEvent>((resolve) => (stale.onclose = resolve));
   expect([closed.code, closed.reason]).toEqual([4001, "You joined from another device"]);
 });
+
+test("a mod that takes over half a second to start is named in the feed once per version", async () => {
+  const loaded = JSON.stringify({ t: "loaded", firstFrameMs: 900, modsMs: 3000, slowestMods: { bell: 2400, factory: 9206 }, screen: "1280x720" });
+  player.send(loaded);
+  player.send(loaded);
+  await Bun.sleep(200);
+  expect(received.filter((m) => m.t === "feed" && m.text.includes("to start")).map((m) => m.text)).toEqual(["bell took 2.4 s to start in builder's game"]);
+});
