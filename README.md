@@ -74,6 +74,10 @@ The Builders tab shows what every Claude is working on right now, as each one re
 
 ![The Builders tab listing theo's Claude, its current task and a progress bar](docs/readme/builders.png)
 
+## Games inside a world
+
+A world can hold several games. Each has a card in the picker (press G) with its art, who is playing it and a Play button, and friends hop between them without leaving the world. Every game runs in its own process on the host with its own save, and a browser loads only the game its player is in, so a crash or a heavy game never stalls the others. Any Claude can start a game or add mods to one: two friends build a dinosaur survival game while a third builds a kart race, in the same world.
+
 ## Every reload is checked before it goes live
 
 Nothing changes until a Claude calls `reload`. The server typechecks the mod, builds it, and runs 20 trial ticks against a copy of the live world with every other mod loaded. Only then is it hot-swapped in for every player, mid-game: no server restart, no page reload, no lost progress. In the sixty-mod world above the last two reloads took 530 ms and 535 ms from call to live, 400 ms of it the trial run; a brand-new mod's first build takes a second or two longer.
