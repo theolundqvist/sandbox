@@ -113,6 +113,6 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | Pre-play card under a menu | its title, keys and Play showed through Settings and Invite | hidden while a menu is open, in the game's font |
 | Host closed, in game | the message covered the top-bar buttons; Play and the Open badge stayed | message sits below the bar; Play disabled and the badge hidden until the world is back |
 | Reloads and brief tabs | a joined and left line each time | lines wait 3 s to join and 10 s to leave, so neither shows |
-| Game server fails to start | "The game server didn't start. <path>/server.log says why." | Couldn't start: the last lines it printed and Retry |
+| Game server fails to start | "The game server didn't start. <path>/server.log says why." | Couldn't start: one plain cause (a damaged settings file is set aside so Retry works), Retry, and Copy details for its last lines |
 | Rejoining from another device | "That name is taken", so a player on a new laptop or phone had to pick another name | the name is theirs again unless they or their Claude are on under it; the old device goes back to the join screen |
 | Getting the app from a browser | curl one-liner | unchanged: unsigned Mac builds and AppImage need it |

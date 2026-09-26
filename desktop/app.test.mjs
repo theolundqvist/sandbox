@@ -458,7 +458,7 @@ describe("starting up", () => {
     await close(app);
   });
 
-  test("a game server that can't start shows what it said, and Retry starts it once it can", async () => {
+  test("a damaged settings file stops the game server with a plain cause, details to copy, and Retry starts it fresh", async () => {
     const data = join(dir, "broken", "Sandbox", "data");
     mkdirSync(data, { recursive: true });
     writeFileSync(join(data, "launcher.json"), "{");
@@ -467,9 +467,11 @@ describe("starting up", () => {
     await shell.click("#go-new");
     await shell.locator("#down").waitFor();
     assert.equal(await shell.textContent("#down-title"), "Couldn't start");
-    assert.equal(await shell.textContent("#down-text"), "Your game server stopped while starting. The last thing it said:");
-    assert.match(await shell.textContent("#down-log"), /JSON Parse error/);
-    rmSync(join(data, "launcher.json"));
+    assert.equal(await shell.textContent("#down-text"), "A saved settings file is damaged. Retry starts with fresh settings.");
+    await shell.click("#copy-details");
+    await until("Copied", async () => (await shell.textContent("#copy-details")) === "Copied");
+    assert.match(await app.evaluate(({ clipboard }) => clipboard.readText()), /JSON Parse error/);
+    assert.equal(readFileSync(join(data, "launcher.json.damaged"), "utf8"), "{");
     await shell.click("#retry");
     await gamePage(app);
     await close(app);

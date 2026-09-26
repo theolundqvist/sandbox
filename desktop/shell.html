@@ -13,7 +13,6 @@
   .front { top: 36px; bottom: 96px; padding-top: 60px; padding-bottom: 0; }
   .status { margin: 0; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .16em; text-transform: uppercase; }
   #down .lead { margin: -16px 0 32px; }
-  #down-log { max-width: 900px; margin: -8px 0 32px; color: var(--dim); font: 13px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
   .hints span { white-space: nowrap; }
   @media (max-width: 1000px), (max-height: 640px) {
     .front { bottom: 64px; padding: 28px 48px 0; }
@@ -85,9 +84,9 @@
   <section id="down" class="screen" data-nav hidden>
     <h1 id="down-title"></h1>
     <p class="lead" id="down-text"></p>
-    <pre id="down-log" hidden></pre>
     <div class="items">
       <button class="item" id="retry">Retry</button>
+      <button class="item" id="copy-details" hidden>Copy details</button>
       <button class="item" data-to="saved">Worlds</button>
       <button class="item" data-to="join">Join game</button>
     </div>
@@ -225,12 +224,14 @@
       refresh();
     }
   });
-  shell.on("down", ({ url, name, why, log }) => {
+  $("copy-details").onclick = () => navigator.clipboard.writeText($("copy-details").dataset.log).then(() => ($("copy-details").textContent = "Copied"));
+  shell.on("down", ({ url, name, why, cause, log }) => {
     const world = name ?? "The game";
     $("down-title").textContent = why === "server" ? "Couldn't start" : "Can't reach";
-    $("down-text").textContent = { offline: "You're offline. Check your internet, then retry.", closed: `${world} is closed. Ask the host to open it, then retry.`, silent: `${world} isn't answering. Ask the host if it's running, then retry.`, server: log?.length ? "Your game server stopped while starting. The last thing it said:" : "Your game server didn't answer in time. Retry, or restart your computer if it keeps happening." }[why];
-    $("down-log").textContent = log?.join("\n") ?? "";
-    $("down-log").hidden = !log?.length;
+    $("down-text").textContent = { offline: "You're offline. Check your internet, then retry.", closed: `${world} is closed. Ask the host to open it, then retry.`, silent: `${world} isn't answering. Ask the host if it's running, then retry.`, server: cause ?? "Your game server didn't answer in time. Retry, or restart your computer if it keeps happening." }[why];
+    $("copy-details").dataset.log = log?.join("\n") ?? "";
+    $("copy-details").textContent = "Copy details";
+    $("copy-details").hidden = !log?.length;
     $("retry").dataset.url = url;
     show("title", { reset: true });
     show("down");

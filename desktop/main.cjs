@@ -1,7 +1,7 @@
 // A thin shell around the web client: one window, a trusted launch screen and title bar, and the game in a view with no extra powers.
 const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, session, shell: desktop } = require("electron");
 const { spawn } = require("node:child_process");
-const { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } = require("node:fs");
+const { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } = require("node:fs");
 const { createServer } = require("node:net");
 const { join, normalize } = require("node:path");
 const { pathToFileURL } = require("node:url");
@@ -175,6 +175,18 @@ function lastLines(path, from) {
   return bytes.toString().split("\n").map((l) => l.trimEnd()).filter(Boolean).slice(-5);
 }
 
+/** Why a game server didn't start, in one sentence anyone can act on, setting aside what Retry would trip over again. */
+function startFailure() {
+  const settings = join(DATA, "launcher.json");
+  try {
+    if (existsSync(settings)) JSON.parse(readFileSync(settings, "utf8"));
+  } catch {
+    renameSync(settings, `${settings}.damaged`);
+    return "A saved settings file is damaged. Retry starts with fresh settings.";
+  }
+  return "Something went wrong starting the game.";
+}
+
 /** Starts this app's game server the first time it's needed, on the port it used before when that is still free. */
 function startServer() {
   if (server) return Promise.resolve(server);
@@ -206,7 +218,7 @@ function startServer() {
       return server;
     }
     proc.kill();
-    throw Object.assign(new Error("The game server didn't start."), { log: failed ? [failed.message] : lastLines(logPath, from) });
+    throw Object.assign(new Error("The game server didn't start."), { log: failed ? [failed.message] : lastLines(logPath, from), cause: startFailure() });
   })().finally(() => (starting = null));
   return starting;
 }
@@ -404,8 +416,8 @@ app.whenReady().then(() => {
   ipcMain.handle("open", (event, url) => {
     if (!fromShell(event)) return null;
     const own = String(url).match(/^local:(.+)$/)?.[1];
-    // A server that didn't start gets a screen with what it said and Retry; other failures are a line under the menu.
-    return own ? hostGame(own).catch((e) => (e.log ? void shell.webContents.send("down", { url, name: null, why: "server", log: e.log }) : e.message)) : play(String(url));
+    // A server that didn't start gets a screen saying why, Retry, and its last words to copy; other failures are a line under the menu.
+    return own ? hostGame(own).catch((e) => (e.log ? void shell.webContents.send("down", { url, name: null, why: "server", cause: e.cause, log: e.log }) : e.message)) : play(String(url));
   });
   ipcMain.handle("forget", (event, url) => {
     if (!fromShell(event)) return;
