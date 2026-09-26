@@ -118,6 +118,10 @@
   #replay-chapters li span { color: var(--accent); flex-shrink: 0; }
   #replay-chapters li b { font-weight: 600; }
   body.replaying .hud-area > * { pointer-events: none; }
+  /* Mods' HUD, layers and whatever they add to the page stay hidden in a replay until H; a 2D world drawn in a layer instead of the 3D scene stays. */
+  body.replaying:not(.replay-hud) > :not(canvas:first-child, #layers, #hud, #join, #howto, #palette, #menu),
+  body.replaying:not(.replay-hud) .hud-area,
+  body.replaying:not(.replay-hud) > canvas:not([hidden]) ~ #layers { display: none !important; }
   body.replaying #interact, body.replaying #react, body.replaying #feed, body.replaying #hint, body.replaying #builders, body.replaying #top, body.replaying #chat, body.replaying #stick, body.replaying #jump, body.replaying #empty { display: none !important; }
   @media (max-width: 760px) {
     body.replaying { --deck: 112px; }
@@ -262,6 +266,7 @@
     <div id="replay-track"><canvas></canvas><div id="replay-marks"></div><i id="replay-head"></i><div id="replay-tip" class="caps" hidden></div></div>
     <button id="replay-chapters-button">Chapters<kbd class="desk">C</kbd></button>
     <button id="replay-free">Free camera<kbd class="desk">F</kbd></button>
+    <button id="replay-hud">HUD<kbd class="desk">H</kbd></button>
     <button id="replay-leave">Leave<kbd class="desk">Esc</kbd></button>
   </div>
   <div id="hud-left" class="hud-area"></div>

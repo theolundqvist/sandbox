@@ -865,6 +865,7 @@ function startReplay(frames: Moment[]) {
   const step = Math.min(400, Math.max(50, 70_000 / frames.length));
   const planned = plan(frames, Math.max(1, Math.round(4000 / step)));
   keys.clear();
+  document.body.classList.remove("replay-hud");
   replay = { frames, plan: planned, at: 0, clock: 0, step, speed: 1, playing: true, free: false, ended: 0, fog: scene.fog, far: camera.far };
   document.body.classList.add("replaying");
   dispatchEvent(new Event("resize"));
@@ -1000,6 +1001,11 @@ function showControls() {
   $("replay-free").classList.toggle("on", r.free);
   $<HTMLButtonElement>("replay-free").disabled = !r.free && !director.orbiting;
   $("replay-chapters-button").classList.toggle("on", !$("replay-chapters").hidden);
+  $("replay-hud").classList.toggle("on", document.body.classList.contains("replay-hud"));
+}
+function toggleHud() {
+  document.body.classList.toggle("replay-hud");
+  showControls();
 }
 
 function togglePlay() {
@@ -1065,6 +1071,7 @@ function replayKey(e: KeyboardEvent) {
     ArrowDown: () => setSpeed(-1),
     KeyC: toggleChapters,
     KeyF: toggleFree,
+    KeyH: toggleHud,
   };
   if (!act[e.code]) return replayKeys.add(e.code);
   e.preventDefault();
@@ -1074,6 +1081,7 @@ function replayKey(e: KeyboardEvent) {
 $("replay-play").onclick = togglePlay;
 $("replay-speed").onclick = cycleSpeed;
 $("replay-free").onclick = toggleFree;
+$("replay-hud").onclick = toggleHud;
 $("replay-chapters-button").onclick = toggleChapters;
 $("replay-chapters").onclick = (e) => e.target === e.currentTarget && toggleChapters();
 $("replay-leave").onclick = () => {
