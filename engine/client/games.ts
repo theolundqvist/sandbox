@@ -28,6 +28,13 @@ export function mountPicker(root: ShadowRoot | HTMLElement, opts: { me: string; 
   cover.append(coverTitle, coverSub, bar);
   // First in the root, so the Tab menu and anything else the engine adds later stays on top.
   root.prepend(style, el, cover);
+  // Both go in the top layer while shown, over a mod's panel whatever its z-index, and leave it once faded out.
+  for (const layer of [el, cover]) {
+    layer.popover = "manual";
+    layer.addEventListener("transitionend", (e) => e.target === layer && e.propertyName === "opacity" && getComputedStyle(layer).opacity === "0" && layer.matches(":popover-open") && layer.hidePopover());
+  }
+  // From the start rather than on open, so the picker sees its keys ahead of the engine's own Esc for a mod's panel and of any listener a mod adds later.
+  addEventListener("keydown", onKey, true);
 
   type Card = { game: Game; el: HTMLDivElement; tilt: HTMLDivElement; canvas: HTMLCanvasElement; painter: Painter | null; t: number; tx: number; ty: number; px: number; py: number; who: string };
   let games: Game[] = [];
@@ -206,6 +213,7 @@ export function mountPicker(root: ShadowRoot | HTMLElement, opts: { me: string; 
     switchingTo = key;
     cover.classList.remove("slow");
     cover.classList.add("on");
+    toTop(cover);
     // The picker goes once the cover is opaque, so the world never shows between them.
     clearTimeout(timers.close);
     timers.close = window.setTimeout(close, FADE_MS);
@@ -318,12 +326,12 @@ export function mountPicker(root: ShadowRoot | HTMLElement, opts: { me: string; 
     setFocus(Math.max(0, cards.findIndex((c) => c.game.id === current())), false);
     document.exitPointerLock?.();
     el.classList.add("open");
+    toTop(el);
     el.focus({ preventScroll: true });
     el.scrollTop = 0;
     cards[focus]?.el.scrollIntoView({ block: "nearest" });
     requestAnimationFrame(() => requestAnimationFrame(() => opened && el.classList.add("in")));
     held = new Set(["a", "b", "l", "r", "u", "d"]);
-    addEventListener("keydown", onKey, true);
     last = 0;
     frame = requestAnimationFrame(tick);
   }
@@ -333,7 +341,6 @@ export function mountPicker(root: ShadowRoot | HTMLElement, opts: { me: string; 
     opened = false;
     clearTimeout(timers.close);
     cancelAnimationFrame(frame);
-    removeEventListener("keydown", onKey, true);
     el.classList.remove("open", "in");
     opts.onClose?.();
     const active = (root instanceof ShadowRoot ? root.activeElement : null) ?? document.activeElement;
@@ -376,6 +383,13 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: s
 function colors(el: HTMLElement, g: Game | undefined) {
   el.style.setProperty("--c", g?.color || "#ffb547");
   el.style.setProperty("--a", g?.accent || g?.color || "#ffffff");
+}
+
+/** Into the top layer, above everything shown there before, including when it is already there. */
+function toTop(el: HTMLElement) {
+  if (!el.isConnected) return;
+  if (el.matches(":popover-open")) el.hidePopover();
+  el.showPopover();
 }
 
 
@@ -648,6 +662,7 @@ function paint(canvas: HTMLCanvasElement, t: number, g: Game, px: number, py: nu
 // ---------------------------------------------------------------- styles (the arcade's look; rules beat the menu's own `button` rules they share the shadow root with)
 
 const CSS = `
+.gp, .gp-cover { margin: 0; padding: 0; border: 0; width: auto; height: auto; max-width: none; max-height: none; overflow: hidden; }
 .gp { position: fixed; inset: 0; z-index: 1001; display: flex; flex-direction: column; overflow: hidden auto; outline: none; color: #fff;
   background: radial-gradient(ellipse at 50% 115%, rgba(40,50,90,.9), transparent 60%), #06070c;
   font: 14px/1.4 "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif; letter-spacing: normal; text-transform: none;

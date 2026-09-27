@@ -883,7 +883,8 @@ const picker = mountPicker(uiRoot, {
     return me;
   },
   onPlay: (id) => send({ t: "enterGame", game: id }),
-  onClose: () => capture(),
+  // Back to a mod's panel the picker opened over, else to mouse-look.
+  onClose: () => (panel ? panel.el.focus({ preventScroll: true }) : capture()),
   paintArt(id) {
     const art = gameList.find((g) => g.id === id)?.art;
     const m = art ? mods.get(art) : undefined;
@@ -2041,12 +2042,12 @@ addEventListener("keydown", (e: KeyboardEvent) => {
     (focused() as HTMLElement).blur();
     return menu.hidden ? openMenu() : closeMenu();
   }
-  if (e.code === "Escape" && panel && menu.hidden && chat.hidden && palette.hidden) {
+  if (e.code === "Escape" && panel && !picker.isOpen() && menu.hidden && chat.hidden && palette.hidden) {
     e.stopImmediatePropagation();
     return closePanel();
   }
-  // Ahead of mods' bindings: in a world with games, G is the engine's.
-  if (e.code === "KeyG" && engineOwns("KeyG") && !replay && !spectator && !e.repeat && !typing() && !panel && menu.hidden && chat.hidden && howto.hidden && palette.hidden) {
+  // Ahead of mods' bindings: in a world with games, G is the engine's, over a mod's panel too.
+  if (e.code === "KeyG" && engineOwns("KeyG") && !replay && !spectator && !e.repeat && !typing() && menu.hidden && chat.hidden && howto.hidden && palette.hidden) {
     e.preventDefault();
     e.stopImmediatePropagation();
     return picker.isOpen() ? picker.close() : openPicker();
