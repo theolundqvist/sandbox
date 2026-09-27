@@ -546,7 +546,7 @@ async function install() {
   if (!update || installing) return null;
   const hosting = await guests();
   if (game || hosting?.count) {
-    const detail = hosting?.count ? `${hosting.count === 1 ? "1 player is" : `${hosting.count} players are`} in ${hosting.name}. Updating ends the world for them.` : `You're in ${game.name}. Sandbox restarts to update.`;
+    const detail = hosting?.count ? `${hosting.count === 1 ? "1 player is" : `${hosting.count} players are`} in ${hosting.name}. Updating ends the world for them.` : `You're in ${game.name}. Sandbox restarts to update, then takes you back in.`;
     const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Update", "Not now"], defaultId: 0, cancelId: 1, message: `Update to Sandbox ${update}?`, detail });
     if (response !== 0) return null;
   }

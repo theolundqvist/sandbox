@@ -726,6 +726,31 @@ describe("updates", () => {
     assert.equal(state().reopen, undefined);
     assert.equal(await shown(shell, "#go-update"), false);
   });
+
+  test("an update while in a friend's world brings the player back into it", async () => {
+    await shell.click("#leave");
+    await shell.click("text=Join world");
+    await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
+    await shell.press("#join-link", "Enter");
+    game = await until("the friend's world", async () => app.windows().find((w) => w.url().startsWith(other.url)));
+    await playing(game);
+    const marker = join(dir, "installed-joined");
+    releases.installer = installer(marker);
+    releases.latest = "9.9.9";
+    await until("Update in the game", () => game.locator("#menu-update").evaluate((b) => !b.hidden));
+    await answer(app, 0);
+    const closed = new Promise((r) => app.once("close", r));
+    await game.locator("#menu-update").evaluate((b) => b.click());
+    await closed;
+    await until("the installer", async () => existsSync(marker));
+    assert.equal(state().reopen.url.startsWith(`${other.url}/`), true);
+    releases.latest = VERSION;
+    ({ app, shell, state } = await launch("update"));
+    game = await gamePage(app);
+    await playing(game);
+    assert.equal(game.url().startsWith(`${other.url}/`), true);
+    assert.equal(await game.locator("#join").isHidden(), true);
+  });
 });
 
 describe("in a browser", () => {
