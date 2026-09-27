@@ -3,54 +3,37 @@ import type { Entity, ModDb, Player, World } from "./api";
 
 export type Diff = { set: Record<number, Entity>; unset: Record<number, string[]>; removed: number[] };
 
-/** Records which entities mods reach, so a tick only diffs what could have changed. */
-class TrackedMap extends Map<number, Entity> {
-  touched = new Set<number>();
-  deleted = new Set<number>();
-  private tracking = false;
+/** Whether two JSON values are equal, the way JSON.stringify would see them, without building strings. */
+function same(a: any, b: any): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return a !== a && b !== b;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!same(a[i], b[i])) return false;
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  let n = 0;
+  for (const k in a) {
+    if (a[k] === undefined) continue;
+    if (!same(a[k], b[k])) return false;
+    n++;
+  }
+  for (const k in b) if (b[k] !== undefined) n--;
+  return n === 0;
+}
 
-  track() {
-    this.tracking = true;
-    return this;
-  }
-  override get(id: number) {
-    if (this.tracking) this.touched.add(id);
-    return super.get(id);
-  }
-  override set(id: number, e: Entity) {
-    if (this.tracking) this.touched.add(id);
-    return super.set(id, e);
-  }
+/** Plain map iteration, so mods scan the world at full speed; only removals are noted. */
+class Entities extends Map<number, Entity> {
+  removed = new Set<number>();
   override delete(id: number) {
-    if (this.tracking) this.deleted.add(id);
+    this.removed.add(id);
     return super.delete(id);
-  }
-  override forEach(fn: (e: Entity, id: number, map: Map<number, Entity>) => void) {
-    for (const [id, e] of this) fn(e, id, this);
-  }
-  override *entries(): MapIterator<[number, Entity]> {
-    for (const pair of super.entries()) {
-      if (this.tracking) this.touched.add(pair[0]);
-      yield pair;
-    }
-  }
-  override *values(): MapIterator<Entity> {
-    for (const [, e] of this.entries()) yield e;
-  }
-  override [Symbol.iterator]() {
-    return this.entries();
-  }
-  /** Reads without marking anything touched. */
-  raw() {
-    return super.entries();
-  }
-  peek(id: number) {
-    return super.get(id);
   }
 }
 
 export class GameWorld implements World {
-  entities = new TrackedMap().track();
+  entities = new Entities();
   players = new Map<string, Player>();
   nextId = 1;
   declare db: ModDb;
@@ -62,9 +45,8 @@ export class GameWorld implements World {
   async!: World["async"];
   physics!: World["physics"];
   enter!: World["enter"];
-  /** What players last received of each entity, as JSON. */
-  private sent = new Map<number, string>();
-  private cursor: number[] = [];
+  /** A copy of what players last received of each entity. */
+  private sent = new Map<number, Entity>();
 
   spawn(entity: Entity) {
     const id = this.nextId++;
@@ -83,50 +65,37 @@ export class GameWorld implements World {
 
   query(...components: string[]): [number, Entity][] {
     const found: [number, Entity][] = [];
-    outer: for (const [id, e] of this.entities.raw()) {
+    outer: for (const [id, e] of this.entities) {
       for (const c of components) if (!(c in e)) continue outer;
-      this.entities.touched.add(id);
       found.push([id, e]);
     }
     return found;
   }
 
   snapshot() {
-    return Object.fromEntries(this.entities.raw());
+    return Object.fromEntries(this.entities);
   }
 
   /**
-   * Component-level changes since the last call. Entities mods reached this tick are diffed; a rolling 5% scan
-   * catches mutations through references a mod kept from an earlier tick, so those arrive within a second.
+   * Component-level changes since the last call. Every entity is compared with what players last got, so a change
+   * arrives on the next tick however a mod made it, including through a reference it kept from an earlier tick.
    */
   delta(): Diff {
-    const { touched, deleted } = this.entities;
-    if (!this.cursor.length) this.cursor = [...new Set([...this.sent.keys(), ...[...this.entities.raw()].map(([id]) => id)])];
-    const scan = this.cursor.splice(0, Math.max(64, Math.ceil(this.entities.size / 20)));
     const diff: Diff = { set: {}, unset: {}, removed: [] };
-    for (const id of deleted) touched.add(id);
-    for (const id of scan) touched.add(id);
-    for (const id of touched) {
-      const e = this.entities.peek(id);
+    for (const [id, e] of this.entities) {
       const prev = this.sent.get(id);
-      if (!e) {
-        if (prev !== undefined) {
-          diff.removed.push(id);
-          this.sent.delete(id);
-        }
-        continue;
-      }
-      const json = JSON.stringify(e);
-      if (prev === json) continue;
-      this.sent.set(id, json);
-      const old: Entity = prev === undefined ? {} : JSON.parse(prev);
+      if (prev && same(e, prev)) continue;
       let changed: Entity | undefined;
-      for (const key in e) if (!(key in old) || JSON.stringify(e[key]) !== JSON.stringify(old[key])) (changed ??= {})[key] = e[key];
+      for (const key in e) if (e[key] !== undefined && (!prev || !same(e[key], prev[key]))) (changed ??= {})[key] = e[key];
       if (changed) diff.set[id] = changed;
-      for (const key in old) if (!(key in e)) (diff.unset[id] ??= []).push(key);
+      if (prev) for (const key in prev) if (prev[key] !== undefined && e[key] === undefined) (diff.unset[id] ??= []).push(key);
+      this.sent.set(id, JSON.parse(JSON.stringify(e)));
     }
-    touched.clear();
-    deleted.clear();
+    for (const id of this.entities.removed) {
+      if (this.entities.has(id) || !this.sent.delete(id)) continue;
+      diff.removed.push(id);
+    }
+    this.entities.removed.clear();
     return diff;
   }
 }

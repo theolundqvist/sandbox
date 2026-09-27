@@ -221,7 +221,7 @@ const SELF = "the player's own game";
 
 function findAvatars() {
   avatars = new Map();
-  for (const [id, e] of world.entities.raw()) {
+  for (const [id, e] of world.entities) {
     if (typeof e.player === "string" && world.players.has(e.player)) avatars.set(id, e.player);
     else for (const k in e) if (typeof e[k]?.player === "string" && world.players.has(e[k].player)) avatars.set(id, e[k].player);
   }
@@ -232,7 +232,7 @@ const apart = (a: Vec, b: Vec) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[
 
 function placeAvatars() {
   const at = new Map<number, Vec | null>();
-  for (const id of avatars.keys()) at.set(id, vec(world.entities.peek(id)?.pos));
+  for (const id of avatars.keys()) at.set(id, vec(world.entities.get(id)?.pos));
   return at;
 }
 
@@ -240,7 +240,7 @@ function placeAvatars() {
 function checkMoves(m: Loaded, hook: string, before: Map<number, Vec | null>, args: any[] | null) {
   const wanted = args ? (vec(args[1]?.p) ?? vec(args[1]?.pos)) : null;
   for (const [id, from] of before) {
-    const to = vec(world.entities.peek(id)?.pos);
+    const to = vec(world.entities.get(id)?.pos);
     if (!from || !to || !apart(from, to)) continue;
     const player = avatars.get(id)!;
     const mine = args?.[0]?.id === player;
@@ -303,7 +303,7 @@ function arrive(p: Player, switched: boolean, at: Vec | undefined) {
 
 /** A player's body is any entity whose `player` is their id: whichever mod made it, it goes with them, so no game keeps someone who isn't in it. */
 function removeBodies(gone: (player: string) => boolean) {
-  for (const [id, e] of world.entities.raw()) if (typeof e.player === "string" && gone(e.player)) world.remove(id);
+  for (const [id, e] of world.entities) if (typeof e.player === "string" && gone(e.player)) world.remove(id);
 }
 
 function depart(p: Player, switched: boolean) {
@@ -312,6 +312,7 @@ function depart(p: Player, switched: boolean) {
   removeBodies((player) => player === p.id);
   world.players.delete(p.id);
   known.delete(p.id);
+  behind.delete(p.id);
 }
 
 // ---------- per-player streams ----------
@@ -320,43 +321,129 @@ const resync = new Set<string>();
 let fullPass = true;
 let tickCount = 0;
 
-function visible(p: Player, id: number, e: Entity) {
-  if (Array.isArray(e.only) && !e.only.includes(p.id)) return false;
+/** The entities in `list` that player p may not see: an `only` list without them, or a mod's see hook saying no. */
+function hiddenFrom(p: Player, list: Iterable<[number, Entity]>) {
+  const hidden = new Set<number>();
+  const entries = [...list];
+  for (const [id, e] of entries) if (Array.isArray(e.only) && !e.only.includes(p.id)) hidden.add(id);
   spectating = watchers.has(p.id) || !world.players.has(p.id);
   try {
-    for (const m of seers) if (call(m, "see", p, id, e) === false) return false;
-  } catch {
-    return false;
+    // One mod at a time over every entity, so each mod's see is timed once per pass instead of once per entity.
+    for (const m of seers) {
+      const started = performance.now();
+      if (wrappers.some((w) => w !== m && w.mod.wrap?.[m.name]?.see)) {
+        for (const [id, e] of entries) {
+          try {
+            if (!hidden.has(id) && call(m, "see", p, id, e) === false) hidden.add(id);
+          } catch {
+            hidden.add(id);
+          }
+        }
+        continue;
+      }
+      const [prev, prevBeat] = [current, Atomics.load(beat, 1)];
+      current = m;
+      Atomics.store(beat, 1, m.id);
+      try {
+        for (const [id, e] of entries) {
+          if (hidden.has(id)) continue;
+          try {
+            if (m.mod.see!(world, p, id, e) === false) hidden.add(id);
+          } catch (err: any) {
+            if (spectating) hidden.add(id);
+            else {
+              m.lastError = `see: ${err?.stack ?? err}`;
+              fault(m, m.lastError, ++m.errors >= 10);
+            }
+          }
+        }
+      } finally {
+        Atomics.store(beat, 1, prevBeat);
+        current = prev;
+        m.ms += performance.now() - started;
+      }
+    }
   } finally {
     spectating = false;
   }
-  return true;
+  return hidden;
 }
+
+const visible = (p: Player, id: number, e: Entity) => !hiddenFrom(p, [[id, e]]).size;
 
 type Out = { reset?: true; set: Record<number, Entity>; unset: Record<number, string[]>; removed: number[]; events?: Omit<Event, "to">[]; makers?: Record<number, string> };
 
-function stream(p: Player, d: Diff, full: boolean): Out {
+/** Changes to entities farther than this from a player's avatar reach that player every 2 s instead of every tick. */
+const NEAR = 150;
+const CATCH_UP_TICKS = 40;
+/** Per player, the far entities that changed since the player last got them, and which components. */
+const behind = new Map<string, Map<number, Set<string>>>();
+
+/** Where each player's avatar stands, for interest management. */
+function eyes() {
+  const at = new Map<string, Vec>();
+  for (const [id, player] of avatars) {
+    const e = world.entities.get(id);
+    const pos = vec(e?.pos);
+    if (pos && (e!.player === player || !at.has(player))) at.set(player, pos);
+  }
+  return at;
+}
+
+function stream(p: Player, d: Diff, full: boolean, eye: Vec | undefined, catchUp: boolean): Out {
   const out: Out = { set: {}, unset: {}, removed: [] };
   let seen = known.get(p.id);
   if (!seen || resync.has(p.id)) {
     known.set(p.id, (seen = new Set()));
+    behind.delete(p.id);
     full = out.reset = true;
   }
-  const show = (id: number, e: Entity) => {
-    if (!visible(p, id, e)) {
+  let late = behind.get(p.id);
+  if (!late) behind.set(p.id, (late = new Map()));
+  const near = (id: number, e: Entity) => {
+    if (!eye || e.far === true || typeof e.player === "string" || avatars.has(id)) return true;
+    const pos = vec(e.pos);
+    return !pos || Math.hypot(pos[0] - eye[0], pos[2] - eye[2]) <= NEAR;
+  };
+  /** Sends the components of a far entity that changed while it was far, as they are now. */
+  const catchUpOn = (id: number, e: Entity) => {
+    const keys = late.get(id);
+    if (!keys) return;
+    late.delete(id);
+    for (const k of keys) {
+      if (e[k] !== undefined) out.set[id] = { ...out.set[id], [k]: e[k] };
+      else if (!out.unset[id]?.includes(k)) (out.unset[id] ??= []).push(k);
+    }
+  };
+  const list = full ? world.entities : [...new Set([...Object.keys(d.set), ...Object.keys(d.unset)].map(Number))].map((id) => [id, world.entities.get(id)!] as [number, Entity]);
+  const hidden = hiddenFrom(p, list);
+  for (const [id, e] of list) {
+    if (hidden.has(id)) {
+      late.delete(id);
       if (seen.delete(id)) out.removed.push(id);
     } else if (!seen.has(id)) {
       seen.add(id);
       out.set[id] = e;
       // A solid with nothing drawn shows as a wireframe named after the mod that made it.
       if (e.solid && !e.mesh && creators.has(id)) (out.makers ??= {})[id] = creators.get(id)!;
-    } else {
-      if (d.set[id]) out.set[id] = d.set[id];
-      if (d.unset[id]) out.unset[id] = d.unset[id];
+    } else if (d.set[id] || d.unset[id]) {
+      if (near(id, e)) {
+        if (d.set[id]) out.set[id] = d.set[id];
+        if (d.unset[id]) out.unset[id] = d.unset[id];
+        catchUpOn(id, e);
+      } else {
+        let keys = late.get(id);
+        if (!keys) late.set(id, (keys = new Set()));
+        for (const k in d.set[id]) keys.add(k);
+        for (const k of d.unset[id] ?? []) keys.add(k);
+      }
     }
-  };
-  if (full) for (const [id, e] of world.entities.raw()) show(id, e);
-  else for (const id of new Set([...Object.keys(d.set), ...Object.keys(d.unset)].map(Number))) show(id, world.entities.peek(id)!);
+  }
+  for (const id of late.keys()) {
+    const e = world.entities.get(id);
+    if (!e || !seen.has(id)) late.delete(id);
+    else if (catchUp || near(id, e)) catchUpOn(id, e);
+  }
   for (const id of full ? [...seen].filter((id) => !world.entities.has(id)) : d.removed) if (seen.delete(id)) out.removed.push(id);
   const mine = events.filter((ev) => !ev.to || ev.to.includes(p.id)).map(({ from, name, data }) => ({ from, name, data }));
   if (mine.length) out.events = mine;
@@ -365,8 +452,8 @@ function stream(p: Player, d: Diff, full: boolean): Out {
 
 function flush() {
   const d = world.delta();
-  for (const id in d.set) physics.update(+id, world.entities.peek(+id));
-  for (const id in d.unset) physics.update(+id, world.entities.peek(+id));
+  for (const id in d.set) physics.update(+id, world.entities.get(+id));
+  for (const id in d.unset) physics.update(+id, world.entities.get(+id));
   for (const id of d.removed) {
     physics.update(id, undefined);
     creators.delete(id);
@@ -374,8 +461,9 @@ function flush() {
   const outs: Record<string, string> = {};
   // Each player gets a full visibility pass every 5th tick, on a different tick from the others so the passes don't pile up.
   let i = 0;
+  const at = eyes();
   for (const p of [...world.players.values(), ...watchers.values()]) {
-    const out = stream(p, d, fullPass || (seers.length > 0 && (tickCount + i++) % 5 === 0));
+    const out = stream(p, d, fullPass || (seers.length > 0 && (tickCount + i) % 5 === 0), at.get(p.id), (tickCount + i++ * 7) % CATCH_UP_TICKS === 0);
     if (out.reset || Object.keys(out.set).length || Object.keys(out.unset).length || out.removed.length || out.events) outs[p.id] = JSON.stringify({ t: "tick", ...out });
   }
   fullPass = false;
@@ -414,7 +502,7 @@ const receive = async (msg: any) => {
       world.delta();
       // Bodies from a save or a crashed process whose players aren't in this simulation go before any mod loads; the first tick tells the world process.
       removeBodies((player) => !world.players.has(player));
-      for (const [id, e] of world.entities.raw()) physics.update(id, e);
+      for (const [id, e] of world.entities) physics.update(id, e);
       for (const m of msg.mods) {
         try {
           await setMod(m.name, m.id, m.server, m.game ?? null);
@@ -470,6 +558,7 @@ const receive = async (msg: any) => {
       return void watchers.set(msg.id, { id: msg.id, name: msg.id, game });
     case "unwatch":
       watchers.delete(msg.id);
+      behind.delete(msg.id);
       return void known.delete(msg.id);
     case "resync":
       return void resync.add(msg.id);
@@ -566,7 +655,7 @@ function blocker(pos: number[], dir: [number, number], radius: number, height: n
   const [x, y, z] = [pos[0]! + dir[0] * (radius + 0.3), pos[1]!, pos[2]! + dir[1] * (radius + 0.3)];
   for (const b of physics.boxes(x, z, radius)) {
     if (b.y + b.hy <= y + step || b.y - b.hy >= y + height) continue;
-    const e = world.entities.peek(b.id);
+    const e = world.entities.get(b.id);
     return {
       entity: b.id,
       box: { center: [b.x, b.y, b.z].map((n) => +n.toFixed(2)), size: [b.hx * 2, b.hy * 2, b.hz * 2].map((n) => +n.toFixed(2)) },
