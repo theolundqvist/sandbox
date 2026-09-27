@@ -27,10 +27,32 @@ async function until(what, check, ms = 20000) {
 }
 
 function bun(script, env) {
-  const proc = spawn("bun", [join(ROOT, script)], { env: { ...ownEnv, ...env }, stdio: "ignore" });
+  const proc = spawn("bun", [script], { env: { ...ownEnv, ...env }, stdio: "ignore", detached: true });
   children.push(proc);
   return proc;
 }
+
+/** Each server leads its own process group, so killing the group also takes the worlds it started, even when the run itself is killed. */
+function cleanUp() {
+  for (const c of children) {
+    try {
+      process.kill(-c.pid, "SIGKILL");
+    } catch (e) {
+      if (e.code !== "ESRCH") throw e;
+    }
+  }
+  rmSync(dir, { recursive: true, force: true });
+}
+process.on("exit", cleanUp);
+for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) process.on(signal, () => process.exit(code));
+// The runner reads results from stdout, so a broken stdout means the runner is gone.
+process.stdout.on("error", () => process.exit(1));
+
+/** Closes a browser page, failing by name if it hangs. */
+const closePage = (page) => {
+  const url = page.url();
+  return Promise.race([page.close(), sleep(10000).then(() => { throw new Error(`Timed out closing the page at ${url}`); })]);
+};
 
 /** This machine's own service keys never reach the app under test. */
 const ownEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY")));
@@ -77,7 +99,7 @@ const relayUrl = `http://127.0.0.1:${RELAY}`;
 const OTHER = port();
 let other;
 let otherLauncher;
-const startOther = () => bun("engine/launcher.ts", { PORT: String(OTHER), SANDBOX_DATA: join(dir, "other"), SANDBOX_RELAY: relayUrl, SANDBOX_NO_OPEN: "1" });
+const startOther = () => bun(join(ROOT, "engine/launcher.ts"), { PORT: String(OTHER), SANDBOX_DATA: join(dir, "other"), SANDBOX_RELAY: relayUrl, SANDBOX_NO_OPEN: "1" });
 
 async function menu(base, key, action, body) {
   const res = await fetch(`${base}/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) });
@@ -85,7 +107,7 @@ async function menu(base, key, action, body) {
 }
 
 before(async () => {
-  bun("relay/relay.ts", { PORT: String(RELAY), RELAY_CLAIMS: join(dir, "claims.json") });
+  bun(join(ROOT, "relay/relay.ts"), { PORT: String(RELAY), RELAY_CLAIMS: join(dir, "claims.json") });
   otherLauncher = startOther();
   const base = `http://127.0.0.1:${OTHER}`;
   const { key } = await until("the other launcher", async () => (await fetch(`${base}/api/local-key`)).json());
@@ -98,10 +120,9 @@ before(async () => {
 });
 
 after(() => {
-  for (const c of children) c.kill();
+  cleanUp();
   github.closeAllConnections();
   github.close();
-  rmSync(dir, { recursive: true, force: true });
 });
 
 /** The game's menu is a closed shadow root, out of mods' reach; the tests open it so their selectors reach in. */
@@ -480,7 +501,7 @@ describe("a friend in a browser", () => {
 
   test("sam's name on a new computer, while sam is offline, asks the host, who can say no or let them in", async () => {
     const base = page.url().replace(/\/(#.*)?$/, "");
-    await page.close();
+    await closePage(page);
     await until("sam offline", async () => (await (await fetch(`${base}/api/info`)).json()).online === 1);
     page = await friend();
     await page.goto(link);
@@ -519,7 +540,7 @@ describe("a friend in a browser", () => {
     const base = page.url().replace(/\/(#.*)?$/, "");
     await until("agents off", async () => (await (await fetch(`${base}/api/info`)).json()).agents === false);
     const back = await page.context().newPage();
-    await page.close();
+    await closePage(page);
     page = back;
     await page.goto(base);
     await playing(page);
@@ -946,7 +967,7 @@ export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(() => bla
     await closed.keyboard.press("Enter");
     await until("the undo vote by keyboard", async () => { const v = await votes(); return v.undo === 1 && v.love === 0; });
     assert.ok(await removed());
-    await closed.close();
+    await closePage(closed);
     witness.close();
   });
 
@@ -1043,7 +1064,7 @@ export default { init() { const until = performance.now() + 600; while (performa
     const [first, second] = counts.filter((s) => s.endsWith("(slow)")).map((s) => seen.indexOf(s));
     assert.ok(seen.slice(first, second).includes("frame"), "a frame between the slow mods");
     await until("the slow mods named in the feed", async () => /slowpoke took \d+\.\d s to start in late's game/.test(await late.textContent("#feed")));
-    await late.close();
+    await closePage(late);
   });
 });
 
@@ -1133,8 +1154,7 @@ describe("the host closes the game", () => {
     symlinkSync(join(ROOT, "node_modules"), join(updated, "node_modules"));
     appendFileSync(join(updated, "engine", "client", "main.ts"), '\nconsole.debug("updated");\n');
     await game.evaluate(() => (window.before = true));
-    const launcher = spawn("bun", [join(updated, "engine", "launcher.ts")], { env: { ...ownEnv, PORT: String(OTHER), SANDBOX_DATA: join(dir, "other"), SANDBOX_RELAY: relayUrl, SANDBOX_NO_OPEN: "1" }, stdio: "ignore" });
-    children.push(launcher);
+    const launcher = bun(join(updated, "engine", "launcher.ts"), { PORT: String(OTHER), SANDBOX_DATA: join(dir, "other"), SANDBOX_RELAY: relayUrl, SANDBOX_NO_OPEN: "1" });
     try {
       await until("the reload", async () => !(await game.evaluate(() => window.before).catch(() => true)), 30000);
       await playing(game);
