@@ -328,6 +328,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const)
 const clientBuild = await Bun.build({ entrypoints: [join(ENGINE, "client/main.ts")], target: "browser", external: ["three", "three/*"] });
 if (!clientBuild.success) throw new AggregateError(clientBuild.logs, "client build failed");
 const clientJs = await clientBuild.outputs[0]!.text();
+const build = Bun.hash(clientJs).toString(36);
 
 const status = () => ({
   world: config.name,
@@ -594,7 +595,7 @@ const server = Bun.serve<Conn>({
       );
       return new Response(null, { status: 204 });
     }
-    if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size, publicUrl, password: !!config.password, agents: config.agents !== false });
+    if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size, build, publicUrl, password: !!config.password, agents: config.agents !== false });
     if (path === "/api/join" && req.method === "POST") {
       const body = await req.json();
       const known = nameByKey(body.key);

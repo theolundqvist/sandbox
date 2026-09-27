@@ -1076,7 +1076,9 @@ async function reconnect() {
   const res = await fetch("/api/info").catch(() => null);
   if (res?.status === 503) $("status").textContent = "The host closed the world. You're back in when they open it.";
   if (!res?.ok) return void setTimeout(reconnect, 2000);
-  if ((await res.json()).id !== info.id) return location.reload();
+  const now = await res.json();
+  // A host that updated serves a new client, so the page reloads to run it.
+  if (now.id !== info.id || now.build !== info.build) return location.reload();
   connect();
 }
 

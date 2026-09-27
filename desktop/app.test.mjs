@@ -1,6 +1,6 @@
 // The real Electron app on a throwaway relay and launcher and a stand-in GitHub; run with `xvfb-run -a node --test desktop/app.test.mjs`.
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir, userInfo } from "node:os";
@@ -1085,6 +1085,23 @@ describe("the host closes the game", () => {
     }
     assert.equal(await game.isDisabled("#howto-play"), true);
     assert.equal(await shown(game, "#rules"), false);
+  });
+
+  test("when the host comes back with an updated game, players reload into it", async () => {
+    const updated = join(dir, "updated");
+    for (const f of ["engine", "package.json", "tsconfig.json", "worlds.json"]) cpSync(join(ROOT, f), join(updated, f), { recursive: true });
+    symlinkSync(join(ROOT, "node_modules"), join(updated, "node_modules"));
+    appendFileSync(join(updated, "engine", "client", "main.ts"), '\nconsole.debug("updated");\n');
+    await game.evaluate(() => (window.before = true));
+    const launcher = spawn("bun", [join(updated, "engine", "launcher.ts")], { env: { ...ownEnv, PORT: String(OTHER), SANDBOX_DATA: join(dir, "other"), SANDBOX_RELAY: relayUrl, SANDBOX_NO_OPEN: "1" }, stdio: "ignore" });
+    children.push(launcher);
+    try {
+      await until("the reload", async () => !(await game.evaluate(() => window.before).catch(() => true)), 30000);
+      await playing(game);
+    } finally {
+      launcher.kill();
+      await until("the world gone", async () => !(await fetch(`${other.url}/api/info`)).ok);
+    }
   });
 
   test("opening it again from Worlds waits for the host, keeps its name, and goes back in by itself once the host is back", async () => {
