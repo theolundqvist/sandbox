@@ -16,7 +16,7 @@ The game shows this command, with your link filled in, under **Settings** and on
 
 ## Play
 
-The start screen lists your **Worlds**: the ones this computer hosts and the ones you've joined. **Join world** takes a six-letter code or an invite link; one you've copied is filled in for you. **Host world** starts a world on this computer through the app's own game server and shares it through the relay, so the code and link it shows work for anyone.
+The start screen starts on **Continue**, which takes you back into the world you played last, hosted or joined, even after the app restarts; it isn't there before you've played one, or once that world is gone from Worlds. **Worlds** lists the ones this computer hosts and the ones you've joined. **Join world** takes a six-letter code or an invite link; one you've copied is filled in for you. **Host world** starts a world on this computer through the app's own game server and shares it through the relay, so the code and link it shows work for anyone.
 
 - **Full screen:** F11, or Ctrl+Cmd+F on a Mac. The app remembers it.
 - **Reload:** Cmd+R on a Mac, Ctrl+Shift+R elsewhere.

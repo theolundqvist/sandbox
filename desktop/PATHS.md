@@ -10,7 +10,8 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | --- | --- | --- | --- |
 | One-liner | `curl …/desktop/install \| bash` | download release, extract to `~/.local/share/sandbox`, link `~/.local/bin/sandbox`, open | update: installs 0.2.0 |
 | Release file | AppImage / Mac zip from Releases | opens directly | manual |
-| First launch | app opens | title: Worlds, Join world, Host world, Quit; Worlds empty | app: first launch |
+| First launch | app opens | title: Worlds, Join world, Host world, Settings, Quit; Worlds empty | app: first launch |
+| Launch after playing | app opens | title starts on Continue, naming the world last played, above Worlds | app: the title starts on Continue |
 
 ## Updates
 
@@ -40,6 +41,9 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | Joined, host unreachable | Worlds, Continue | "Snow Race isn't answering. Ask the host if it's running, then retry." | app: host closes the game (silent path shares the screen) |
 | Joined, this computer offline | Worlds, Continue | "You're offline. Check your internet, then retry." | manual |
 | Forget joined | Worlds, Forget | row removed | app: Forget removes it |
+| Continue, hosted | title, Continue (first item, focused) | the world last played is one this computer hosts; opens as from Worlds: Starting your server… when it isn't running, then the world | app: the title starts on Continue |
+| Continue, joined | title, Continue (first item, focused) | the world last played was joined; opens as from Worlds, with the saved key, so no name asked; a closed or unreachable host waits as from Worlds | app: the title starts on Continue |
+| Continue, world removed | Forget or Delete in Worlds | no Continue; title is Worlds, Join world, Host world, Settings, Quit | app: the title starts on Continue |
 
 ## Host world
 

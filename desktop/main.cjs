@@ -44,7 +44,7 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
 const STATE = join(app.getPath("userData"), "state.json");
-/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string }} The name this player joins every world as; joined worlds by shareable address; main menus opened, by host key; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed. */
+/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], last?: string, port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string }} The name this player joins every world as; joined worlds by shareable address; main menus opened, by host key; the world last played, as its address in Worlds; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed. */
 const state = { recents: [], hosts: {}, mic: [] };
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
@@ -91,10 +91,13 @@ function keys(event, input) {
 /** The world's address: the host's origin, plus /r/<room> when it is reached through the relay. */
 const worldBase = (url) => url.origin + (url.pathname.match(/^\/r\/[a-z0-9-]+/)?.[0] ?? "");
 
-async function remember(base) {
+/** Saves a world the player went into, and unless they only watch its timelapse, makes it the last one played: a world this computer hosts by its entry in Worlds, a joined one by its address. */
+async function remember(base, played = true) {
   const info = await session.defaultSession.fetch(`${base}/api/info`).then((r) => r.json()).catch(() => null);
   const name = info?.name ?? state.recents.find((r) => r.url === base)?.name ?? new URL(base).host;
   state.recents = [{ url: base, name, at: Date.now() }, ...state.recents.filter((r) => r.url !== base)].slice(0, 8);
+  const host = server?.base === base ? "local" : Object.entries(state.hosts).find(([key, b]) => b === base && key !== ownKey())?.[0];
+  if (played && (!host || info?.id)) state.last = host === "local" ? `local:${info.id}` : host ? `${base}/menu#key=${host}&world=${info.id}` : base;
   save();
   if (game) {
     game.name = name;
@@ -142,12 +145,13 @@ function play(raw) {
     clearTimeout(timer);
     if (status >= 400) return fail(`HTTP ${status}`, status === 503 ? "closed" : "silent");
     const u = new URL(to);
-    const key = new URLSearchParams(u.hash.slice(1)).get("key");
+    const hash = new URLSearchParams(u.hash.slice(1));
+    const key = hash.get("key");
     // The relay's own pages, like its join page, are not a world.
     const relayPage = u.origin === new URL(RELAY).origin && !u.pathname.startsWith("/r/");
     if (u.pathname.endsWith("/menu")) {
       if (key) hostSeen(key, worldBase(u));
-    } else if (!relayPage) void remember(worldBase(u));
+    } else if (!relayPage) void remember(worldBase(u), !hash.has("watch"));
   });
   wc.on("did-fail-load", (_, code, description, _url, mainFrame) => {
     // -106 is Chromium's ERR_INTERNET_DISCONNECTED.
@@ -313,7 +317,7 @@ function hostSeen(key, base) {
 
 const ask = (url, key, ms = 1500) => fetch(url, { headers: key ? { authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(ms) });
 
-/** The start screen's worlds: this app's own, each other launcher's whose main menu was opened here, through its relay address when it shares, and the worlds joined. */
+/** The start screen's worlds: this app's own, each other launcher's whose main menu was opened here, through its relay address when it shares, and the worlds joined; and the one last played. */
 async function games() {
   const own = ownKey();
   const ownState = server && (await ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null));
@@ -342,6 +346,7 @@ async function games() {
     hosted,
     joined: state.recents.filter((r) => !mine.has(r.url) && !(server && r.url === server.base)),
     copied,
+    last: state.last ?? null,
   };
 }
 
