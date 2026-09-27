@@ -1,4 +1,4 @@
-// Loaded into the game: only whether an update is out, and a way to ask the app to install it.
+// Loaded into the game: the player's name, whether an update is out, and a way to ask the app to install it.
 const { contextBridge, ipcRenderer } = require("electron");
 
 // The app says so as the page loads, before the game has set up its menu, so the last word is kept for it.
@@ -10,6 +10,7 @@ ipcRenderer.on("update", (_, v) => {
 });
 
 contextBridge.exposeInMainWorld("sandboxDesktop", {
+  name: ipcRenderer.sendSync("player-name"),
   update: () => ipcRenderer.invoke("update"),
   onUpdate: (fn) => {
     listeners.push(fn);

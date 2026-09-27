@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld("shell", {
   state: () => ipcRenderer.invoke("state"),
   open: (url) => ipcRenderer.invoke("open", url),
   forget: (url) => ipcRenderer.invoke("forget", url),
+  name: () => ipcRenderer.invoke("name"),
+  setName: (name) => ipcRenderer.invoke("set-name", name),
   leave: () => ipcRenderer.send("leave"),
   quit: () => ipcRenderer.send("quit"),
   update: () => ipcRenderer.invoke("update"),

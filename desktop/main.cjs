@@ -3,6 +3,7 @@ const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net,
 const { spawn } = require("node:child_process");
 const { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } = require("node:fs");
 const { createServer } = require("node:net");
+const { userInfo } = require("node:os");
 const { join, normalize } = require("node:path");
 const { pathToFileURL } = require("node:url");
 
@@ -43,12 +44,20 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
 const STATE = join(app.getPath("userData"), "state.json");
-/** @type {{ fullscreen?: boolean, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string }} Joined worlds by shareable address; main menus opened, by host key; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed. */
+/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string }} The name this player joins every world as; joined worlds by shareable address; main menus opened, by host key; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed. */
 const state = { recents: [], hosts: {}, mic: [] };
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
 } catch {}
 const save = () => writeFileSync(STATE, JSON.stringify(state, null, 2));
+
+/** Names are what worlds accept: 2–16 lowercase letters, digits, - or _. */
+const NAME = /^[a-z0-9][a-z0-9_-]{1,15}$/;
+/** The name asked for on first launch starts as this computer's user name. */
+const suggestedName = () => {
+  const name = userInfo().username.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "").slice(0, 16);
+  return NAME.test(name) ? name : "";
+};
 
 /** @type {BaseWindow} */ let win;
 /** @type {WebContentsView} */ let shell;
@@ -424,6 +433,17 @@ app.whenReady().then(() => {
     state.recents = state.recents.filter((r) => r.url !== url);
     save();
   });
+  ipcMain.handle("name", (event) => (fromShell(event) ? { name: state.name ?? null, suggested: suggestedName() } : null));
+  ipcMain.handle("set-name", (event, raw) => {
+    if (!fromShell(event)) return null;
+    const name = String(raw).trim().toLowerCase();
+    if (!NAME.test(name)) return "Names are 2–16 letters, digits, - or _.";
+    state.name = name;
+    save();
+    return null;
+  });
+  // The game joins every world as this name, without asking again.
+  ipcMain.on("player-name", (event) => (event.returnValue = event.sender === game?.view.webContents ? (state.name ?? null) : null));
   ipcMain.on("leave", (event) => fromShell(event) && leave());
   ipcMain.handle("update", (event) => (fromShell(event) || event.sender === game?.view.webContents) && install());
   ipcMain.on("quit", (event) => fromShell(event) && app.quit());

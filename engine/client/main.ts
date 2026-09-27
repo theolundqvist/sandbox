@@ -62,7 +62,7 @@ let lanUrl: string | null = null;
 async function join(body: object) {
   const res = await fetch("/api/join", { method: "POST", body: JSON.stringify({ ...body, host: hosting?.running?.hostKey }) });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error);
+  if (!res.ok) throw Object.assign(new Error(data.error), { password: !!data.password });
   localStorage.setItem(keyName, data.key);
   localStorage.setItem("sandbox-name", data.name);
   key = data.key;
@@ -105,6 +105,18 @@ async function start() {
       key = null;
     }
   }
+  const invited = hashParams.get("invite");
+  // The desktop app joins as the player's name without asking; a world with a password asks for it once.
+  const appName = (window as { sandboxDesktop?: { name: string | null } }).sandboxDesktop?.name;
+  let refused = "";
+  if (!left && invited && appName)
+    try {
+      return await join({ invite: invited, name: appName });
+    } catch (err: any) {
+      refused = err.password ? "" : err.message;
+    }
+  $("join-password-field").hidden = left || !info.password;
+  $("join-error").textContent = refused;
   $("join-world").textContent = info.name;
   $("join-online").textContent = info.online ? `${info.online} playing` : "";
   $("join").hidden = false;
@@ -113,7 +125,7 @@ async function start() {
   else if (!left) $("join-error").textContent = "Ask the host for an invite link.";
   offerApp(hashParams.get("invite") ? `${info.publicUrl ?? origin}/#invite=${hashParams.get("invite")}` : `${info.publicUrl ?? origin}/`);
   const name = $<HTMLInputElement>("join-name");
-  name.value = localStorage.getItem("sandbox-name") ?? "";
+  name.value = appName ?? localStorage.getItem("sandbox-name") ?? "";
   const named = () => ($<HTMLButtonElement>("join-go").disabled = !left && !name.value.trim());
   name.oninput = named;
   named();
@@ -122,7 +134,7 @@ async function start() {
     $("join-form").onsubmit = async (e) => {
       e.preventDefault();
       try {
-        await join(left ? { key } : { invite: hashParams.get("invite"), name: name.value });
+        await join(left ? { key } : { invite: invited, name: name.value, password: $<HTMLInputElement>("join-password").value });
         $("join").hidden = true;
         resolve();
       } catch (err: any) {
@@ -2140,6 +2152,12 @@ const claudeLabels = { listening: "Claude listening", working: "Claude workingâ€
 function showClaude(state: keyof typeof claudeLabels) {
   $("claude").textContent = claudeLabels[state];
   $("claude").dataset.state = state;
+}
+// A world whose host turned agents off has no prompt to hand out.
+if (info.agents === false) {
+  $("claude").hidden = true;
+  $("agents-off").hidden = false;
+  for (const el of all<HTMLElement>(".agents-on")) el.hidden = true;
 }
 $("claude").onclick = () => {
   if ($("claude").dataset.state !== "offline") return;

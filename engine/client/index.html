@@ -27,9 +27,9 @@
 
   #top { position: fixed; top: 20px; left: 24px; right: 24px; display: flex; gap: 20px; align-items: center; pointer-events: none; }
   #top > * { pointer-events: auto; white-space: nowrap; }
-  #world-name { font-weight: 800; font-size: 15px; letter-spacing: .12em; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  #world-name { flex: 1; font-weight: 800; font-size: 15px; letter-spacing: .12em; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   #rules { color: var(--accent); }
-  #claude { margin-left: auto; color: var(--claude); background: var(--glass); border-color: transparent; }
+  #claude { color: var(--claude); background: var(--glass); border-color: transparent; }
   #claude[data-state=listening]::before { content: ""; display: inline-block; width: 6px; height: 6px; background: var(--claude); margin-right: 8px; vertical-align: 1px; }
   #claude[data-state=offline] { color: var(--text); border-color: var(--claude); }
   #claude:not([data-state=offline]) { cursor: default; pointer-events: none; }
@@ -291,6 +291,7 @@
       <h1 id="join-world"></h1>
       <div class="items">
         <label class="item entry" id="join-name-field"><input type="text" id="join-name" placeholder="Your name" maxlength="16" autocomplete="off" spellcheck="false"></label>
+        <label class="item entry" id="join-password-field" hidden><input type="password" id="join-password" placeholder="Password" autocomplete="off"></label>
         <button class="item" type="submit" id="join-go">Join<span class="value" id="join-online"></span></button>
         <button class="item" type="button" id="join-app-go" hidden>Get the app</button>
       </div>
@@ -349,8 +350,9 @@
     <button id="page-back" class="back">Back<kbd>Esc</kbd></button>
     <h1 id="page-title" class="screen-title"></h1>
     <section data-tab="claude" hidden>
-      <div class="copy-row"><span>Prompt</span><code id="claude-prompt"></code><button data-copy="claude-prompt">Copy</button></div>
-      <p class="note">Works best with Opus 5.5. Paste it into Claude Code, Codex or OMP started with permissions off: <code>claude --dangerously-skip-permissions</code>, <code>codex --dangerously-bypass-approvals-and-sandbox</code> or <code>omp --approval-mode=yolo</code>.</p>
+      <p class="note" id="agents-off" hidden>The host turned agents off for this world.</p>
+      <div class="copy-row agents-on"><span>Prompt</span><code id="claude-prompt"></code><button data-copy="claude-prompt">Copy</button></div>
+      <p class="note agents-on">Works best with Opus 5.5. Paste it into Claude Code, Codex or OMP started with permissions off: <code>claude --dangerously-skip-permissions</code>, <code>codex --dangerously-bypass-approvals-and-sandbox</code> or <code>omp --approval-mode=yolo</code>.</p>
     </section>
     <section data-tab="invite" hidden>
       <div class="copy-row"><span id="invite-label">Link</span><code id="invite-link"></code><button data-copy="invite-link">Copy</button></div>

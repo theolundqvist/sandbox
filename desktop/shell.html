@@ -57,6 +57,7 @@
       <button class="item" data-to="join">Join world</button>
       <button class="item" id="go-new">Host world</button>
       <button class="item" id="go-update" hidden>Update<span class="value" id="update-version"></span></button>
+      <button class="item" data-to="settings">Settings</button>
       <button class="item" id="quit">Quit</button>
     </div>
   </section>
@@ -79,6 +80,19 @@
   <section id="join" class="screen" data-nav hidden>
     <h1>Join world</h1>
     <label class="item entry"><input type="text" id="join-link" placeholder="Code or invite link" autocomplete="off" spellcheck="false"></label>
+  </section>
+
+  <section id="name" class="screen" data-nav hidden>
+    <h1>Your name</h1>
+    <div class="items">
+      <label class="item entry"><input type="text" id="name-first" placeholder="Your name" maxlength="16" autocomplete="off" spellcheck="false"></label>
+      <button class="item" id="name-go">Play</button>
+    </div>
+  </section>
+
+  <section id="settings" class="screen" data-nav hidden>
+    <h1>Settings</h1>
+    <label class="field"><span>Name</span><input type="text" id="name-field" maxlength="16" autocomplete="off" spellcheck="false"></label>
   </section>
 
   <section id="down" class="screen" data-nav hidden>
@@ -139,7 +153,9 @@
     }
     if (e.key === "Enter" && typing) {
       e.preventDefault();
-      join();
+      if (current()?.id === "join") join();
+      else if (current()?.id === "name") $("name-go").click();
+      else document.activeElement.blur();
     }
   });
   for (const b of document.querySelectorAll("[data-to]")) b.onclick = () => show(b.dataset.to);
@@ -206,6 +222,16 @@
     }
   }
 
+  /** The name every world is joined as: asked once, on first launch, and changed in Settings. */
+  async function saveName(input) {
+    const error = await shell.setName(input.value);
+    $("error").textContent = error ?? "";
+    return !error;
+  }
+  $("name-go").onclick = async () => (await saveName($("name-first"))) && show("title", { reset: true });
+  $("name-field").onchange = async () => (await saveName($("name-field"))) || ($("name-field").value = (await shell.name()).name);
+  document.querySelector("[data-to=settings]").addEventListener("click", async () => ($("name-field").value = (await shell.name()).name));
+
   $("quit").onclick = () => shell.quit();
   $("go-update").onclick = () => busy("Downloading…", shell.update);
   shell.on("update", (version) => {
@@ -246,7 +272,12 @@
   refresh();
   await shell.ready();
   document.body.classList.remove("starting");
-  enter();
+  const { name, suggested } = await shell.name();
+  if (name) enter();
+  else {
+    $("name-first").value = suggested;
+    show("name", { reset: true });
+  }
 </script>
 </body>
 </html>

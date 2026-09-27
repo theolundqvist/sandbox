@@ -3,7 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -112,8 +112,13 @@ const OPEN_UI = () => {
   };
 };
 
-/** Opens the app with its own settings folder; the same name reopens the same install. */
-async function launch(name, env = {}) {
+/** Opens the app with its own settings folder; the same name reopens the same install. Its player is already named unless `player` is null. */
+async function launch(name, env = {}, player = "host") {
+  const saved = join(dir, name, "Sandbox", "state.json");
+  if (player && !existsSync(saved)) {
+    mkdirSync(join(dir, name, "Sandbox"), { recursive: true });
+    writeFileSync(saved, JSON.stringify({ recents: [], hosts: {}, mic: [], name: player }));
+  }
   const app = await _electron.launch({
     executablePath: ELECTRON,
     args: [DESKTOP, "--no-sandbox", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
@@ -121,8 +126,7 @@ async function launch(name, env = {}) {
   });
   await app.context().addInitScript(OPEN_UI);
   const shell = await until("the start screen", async () => app.windows().find((w) => w.url().startsWith("sandbox://app/shell.html")));
-  await shell.locator("#title").waitFor();
-  const saved = join(dir, name, "Sandbox", "state.json");
+  await shell.locator(player ? "#title" : "#name").waitFor();
   return { app, shell, state: () => (existsSync(saved) ? JSON.parse(readFileSync(saved, "utf8")) : {}) };
 }
 
@@ -139,6 +143,9 @@ const answer = (app, response) =>
     dialog.showMessageBox = async (_win, options) => (globalThis.asked.push(options), { response });
   }, response);
 const asked = (app) => app.evaluate(() => globalThis.asked);
+
+/** In the game: the app joins as its player's name without asking. */
+const playing = (page) => until("the game", () => page.locator("#hud").evaluate((hud) => !hud.hidden));
 
 async function joinAs(page, name) {
   await page.locator("#join-name").waitFor();
@@ -162,12 +169,27 @@ const portAnswers = (p) => fetch(`http://127.0.0.1:${p}/api/local-key`).then(() 
 
 describe("hosting and joining", () => {
   let app, shell, state;
-  before(async () => ({ app, shell, state } = await launch("host")));
+  before(async () => ({ app, shell, state } = await launch("host", {}, null)));
   after(() => close(app));
 
-  test("first launch: the title menu, no update, and no worlds yet", async () => {
+  test("first launch asks the player's name once, starting from this computer's user name", async () => {
+    await shell.locator("#name-first").waitFor();
+    assert.equal(await shell.inputValue("#name-first"), userInfo().username.toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 16));
+    await shell.fill("#name-first", "x");
+    await shell.click("#name-go");
+    assert.equal(await shell.textContent("#error"), "Names are 2–16 letters, digits, - or _.");
+    await shell.fill("#name-first", "Host");
+    await shell.press("#name-first", "Enter");
     await until("the menu", () => menuShown(shell));
-    assert.deepEqual(await shell.locator("#title .item:visible").allTextContents(), ["Worlds", "Join world", "Host world", "Quit"]);
+    assert.equal(state().name, "host");
+    await shell.click("text=Settings");
+    assert.equal(await shell.inputValue("#name-field"), "host");
+    await shell.keyboard.press("Escape");
+  });
+
+  test("the title menu, no update, and no worlds yet", async () => {
+    await until("the menu", () => menuShown(shell));
+    assert.deepEqual(await shell.locator("#title .item:visible").allTextContents(), ["Worlds", "Join world", "Host world", "Settings", "Quit"]);
     await shell.click("text=Worlds");
     assert.equal(await shown(shell, "#no-games"), true);
   });
@@ -228,13 +250,15 @@ describe("hosting and joining", () => {
     assert.match(game.url(), new RegExp(`^${relayUrl}/r/[a-z0-9-]+/menu`));
   });
 
-  test("an unnamed world gets a name of its own, and the host plays it", async () => {
+  test("Host untouched starts a new 3D field anyone may change, and the host plays it as their name", async () => {
     const game = await gamePage(app);
+    assert.deepEqual(await game.locator("#create .field:visible output").allTextContents(), ["New world", "3D field", "Allowed", "Anyone changes"]);
+    assert.equal(await game.inputValue("#create-password"), "");
     await game.click("#create-go");
     await game.waitForURL(/\/r\/[a-z0-9-]+\/(#.*)?$/);
-    await game.locator("#join-world").waitFor();
-    assert.notEqual(await game.textContent("#join-world"), "Sandbox");
-    await joinAs(game, "host");
+    await playing(game);
+    assert.notEqual(await game.textContent("#world-name"), "Sandbox");
+    assert.equal(await game.evaluate(() => localStorage.getItem("sandbox-name")), "host");
   });
 
   test("a friend online: quitting asks first, and Keep hosting keeps the game", async () => {
@@ -310,8 +334,8 @@ describe("hosting and joining", () => {
     const game = await gamePage(app);
     const clips = [];
     game.on("request", (r) => r.url().includes("/clips/") && clips.push(r.url()));
-    assert.equal(game.url(), `${other.url}/#invite=${other.invite}`);
-    await joinAs(game, "visitor");
+    await playing(game);
+    assert.equal(game.url(), `${other.url}/`);
     assert.equal(await game.textContent("#mic"), "Voice off: ask the host to turn it on");
     await game.reload();
     await game.locator("#join").waitFor({ state: "hidden" });
@@ -337,8 +361,7 @@ describe("hosting and joining", () => {
     await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.base}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
-    const game = await gamePage(app);
-    await game.locator("#join-name").waitFor();
+    await playing(await gamePage(app));
     await shell.click("#leave");
     const bare = await shell.evaluate(async () => (await import("/front.js")).joinLink("sandbox-relay.example.com/r/ab12cd/", "/relay"));
     assert.equal(bare, "https://sandbox-relay.example.com/r/ab12cd/");
@@ -373,11 +396,11 @@ describe("hosting and joining", () => {
     await listed.first().click();
     await until("Stop the hosted world?", async () => /^Stop .+\?$/.test(await game.textContent("#ask-title")));
     await game.click("#ask-yes");
-    await until("Tiny Isle's join screen", async () => (await game.textContent("#join-world")) === "Tiny Isle");
+    await playing(game);
+    assert.equal(await game.textContent("#world-name"), "Tiny Isle");
     const worlds = join(dir, "host", "Sandbox", "data", "worlds");
     const isle = readdirSync(worlds).find((id) => id.startsWith("tiny-isle-"));
     assert.deepEqual(readFileSync(join(worlds, isle, "cover.jpg")), COVER);
-    await joinAs(game, "islander");
     await shell.click("#leave");
     await until("the host's view of Tiny Isle", async () => readFileSync(join(worlds, isle, "cover.jpg")).length > COVER.length);
   });
@@ -387,6 +410,89 @@ describe("hosting and joining", () => {
     await answer(app, 0);
     await shell.click("#quit");
     await until("the server to stop", async () => !(await portAnswers(own)));
+  });
+});
+
+describe("a friend in a browser", () => {
+  let app, shell, game, browser, page, link;
+  before(async () => {
+    ({ app, shell } = await launch("friendly", {}, "alex"));
+    browser = await chromium.launch({ args: ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"] });
+  });
+  after(async () => {
+    await browser?.close();
+    await close(app);
+  });
+  /** A friend's own browser, which has never seen this world. */
+  const friend = async () => {
+    const context = await browser.newContext();
+    await context.addInitScript(OPEN_UI);
+    return context.newPage();
+  };
+  /** The host's Host screen with the world they're hosting picked, its settings changed, and hosted again. */
+  async function rehost(change) {
+    await shell.click("#leave");
+    await shell.click("text=Host world");
+    game = await until("the Host screen", async () => app.windows().find((w) => /\/menu(#.*)?$/.test(w.url())));
+    await game.locator("#create").waitFor();
+    await game.locator("#create-world i").nth(1).click();
+    await change();
+    await game.click("#create-go");
+    await playing(game);
+  }
+
+  test("the host hosts untouched, and a friend joins by the link in a browser with only a name", async () => {
+    await shell.click("text=Host world");
+    game = await gamePage(app);
+    await game.click("#create-go");
+    await playing(game);
+    await game.locator("#menu-button").dispatchEvent("click");
+    await game.click("#rail [data-tab=invite]");
+    link = await game.textContent("#invite-link");
+    page = await friend();
+    await page.goto(link);
+    await page.locator("#join-name").waitFor();
+    assert.equal(await shown(page, "#join-password-field"), false);
+    await joinAs(page, "sam");
+    await playing(page);
+  });
+
+  test("a password is asked once on each device, and a wrong one says so", async () => {
+    await rehost(() => game.fill("#create-password", "moon"));
+    assert.equal(await game.evaluate(() => localStorage.getItem("sandbox-name")), "alex");
+    page = await friend();
+    await page.goto(link);
+    await page.locator("#join-password").waitFor();
+    await page.fill("#join-name", "jo");
+    await page.fill("#join-password", "sun");
+    await page.click("#join-go");
+    await until("the refusal", async () => (await page.textContent("#join-error")) === "That password isn't right.");
+    await page.fill("#join-password", "moon");
+    await page.click("#join-go");
+    await playing(page);
+    await page.reload();
+    await playing(page);
+    assert.equal(await shown(page, "#join"), false);
+  });
+
+  test("with agents off, the agent page says so and the command refuses in plain words", async () => {
+    await rehost(() => game.locator("#create-agents i").nth(1).click());
+    const base = page.url().replace(/\/(#.*)?$/, "");
+    await until("agents off", async () => (await (await fetch(`${base}/api/info`)).json()).agents === false);
+    const back = await page.context().newPage();
+    await page.close();
+    page = back;
+    await page.goto(base);
+    await playing(page);
+    assert.equal(await shown(page, "#claude"), false);
+    await page.locator("#menu-button").dispatchEvent("click");
+    await page.click("#rail [data-tab=claude]");
+    assert.equal(await page.textContent("#agents-off"), "The host turned agents off for this world.");
+    assert.equal(await shown(page, "#claude-prompt"), false);
+    const { id } = await (await fetch(`${base}/api/info`)).json();
+    const key = await page.evaluate((id) => localStorage.getItem(`sandbox-key:${id}`), id);
+    const res = await fetch(`${base}/cli/status`, { method: "POST", headers: { authorization: `Bearer ${key}` } });
+    assert.deepEqual([res.status, await res.text()], [403, "The host turned agents off for this world.\n"]);
   });
 });
 
@@ -414,7 +520,7 @@ describe("the relay down", () => {
     const game = await gamePage(app);
     await game.fill("#create-name", "Home World");
     await game.click("#create-go");
-    await joinAs(game, "host");
+    await playing(game);
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#rail [data-tab=invite]");
     assert.equal(await game.textContent("#invite-label"), "Wi-Fi link");
@@ -536,7 +642,7 @@ describe("updates", () => {
     game = await gamePage(app);
     await game.fill("#create-name", "Update Test");
     await game.click("#create-go");
-    await joinAs(game, "host");
+    await playing(game);
     const own = state().port;
     const key = JSON.parse(readFileSync(join(dir, "update", "Sandbox", "data", "launcher.json"), "utf8")).hostKey;
     const s = await menu(`http://127.0.0.1:${own}`, key, "state");
@@ -875,7 +981,7 @@ export default { init() { const until = performance.now() + 600; while (performa
 
 describe("the host closes the game", () => {
   let app, shell, game;
-  before(async () => ({ app, shell } = await launch("closing")));
+  before(async () => ({ app, shell } = await launch("closing", {}, "stayer")));
   after(() => close(app));
 
   test("players in it are told, not left reconnecting", async () => {
@@ -883,7 +989,7 @@ describe("the host closes the game", () => {
     await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
     game = await gamePage(app);
-    await joinAs(game, "stayer");
+    await playing(game);
     assert.match(await game.locator("#howto h1").evaluate((el) => getComputedStyle(el).fontFamily), /^"Archivo Expanded"/);
     const peek = await guest(other.url, other.invite, "peek");
     peek.close();

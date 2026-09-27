@@ -16,7 +16,7 @@
    menu state                                                 # worlds, running world, tunnel url + join code
    ```
 
-   `rules` is `open` or `additive`; `start` is `blank`, `basics` (3D field) or `hills` (3D hills). Anything else falls back to `open` and `basics`.
+   `rules` is `open` or `additive`; `start` is `blank`, `basics` (3D field) or `hills` (3D hills). Anything else falls back to `open` and `basics`. `password` sets one players type once per device, and `"agents": false` turns agents off; `host` takes the same three for a saved world and restarts it when they change.
 4. **Use the hosted relay** (`https://sandbox-relay.lundqvistliss.com`, the default) for sharing over the internet. Don't set `SANDBOX_RELAY` or run `relay/relay.ts` unless asked. Sharing is remembered in `data/launcher.json`, so later launches reconnect by themselves.
 5. Invite link for friends: `<tunnel.url>/#invite=<running.invite>` from `menu state`, plus `tunnel.code` as the join code. `running.hostKey` is the host's own link; never share it or the menu key.
 

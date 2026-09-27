@@ -46,13 +46,15 @@ function worlds() {
     .filter((id) => existsSync(join(WORLDS, id, "config.json")))
     .map((id) => {
       const dir = join(WORLDS, id);
-      const { name, rules, start } = config(id);
+      const { name, rules, start, password, agents } = config(id);
       const saved = [join(dir, "world.sqlite"), join(dir, "config.json")].find(existsSync)!;
       return {
         id,
         name,
         rules,
         start,
+        password: password ?? "",
+        agents: agents !== false,
         mods: Object.keys(readJson(join(dir, "mods.json"))).length,
         players: Object.keys(readJson(join(dir, "keys.json"))).length,
         played: statSync(saved).mtimeMs,
@@ -174,10 +176,26 @@ const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").re
 const newId = (name: string) => `${slug(name)}-${token().slice(0, 4)}`;
 const exists = (id: unknown): id is string => typeof id === "string" && /^[a-z0-9-]+$/.test(id) && existsSync(join(WORLDS, id, "config.json"));
 
+/** What the Host screen sets on a world, each left as it was when not given: its house rules, an optional password, and whether agents may connect. */
+const settings = (body: any, current?: Config): Pick<Config, "rules" | "password" | "agents"> => ({
+  rules: body.rules === "additive" || body.rules === "open" ? body.rules : (current?.rules ?? "open"),
+  password: typeof body.password === "string" ? body.password.trim() || undefined : current?.password,
+  agents: body.agents === false ? false : body.agents === true ? undefined : current?.agents,
+});
+
+/** Saves a world's settings, and says whether they changed. */
+function configure(id: string, body: any) {
+  const current = config(id);
+  const next = { ...current, name: String(body.name ?? current.name).trim().slice(0, 40) || current.name, ...settings(body, current) };
+  if (JSON.stringify(next) === JSON.stringify(current)) return false;
+  writeFileSync(join(WORLDS, id, "config.json"), JSON.stringify(next, null, 2));
+  return true;
+}
+
 function create(body: any) {
   const name = String(body.name ?? "").trim().slice(0, 40) || freshName();
   const id = newId(name);
-  const world: Config = { name, rules: body.rules === "additive" ? "additive" : "open", start: ["hills", "blank"].includes(body.start) ? body.start : "basics", invite: token(), hostKey: token() };
+  const world: Config = { name, ...settings(body), start: ["hills", "blank"].includes(body.start) ? body.start : "basics", invite: token(), hostKey: token() };
   mkdirSync(join(WORLDS, id));
   writeFileSync(join(WORLDS, id, "config.json"), JSON.stringify(world, null, 2));
   return id;
@@ -399,7 +417,11 @@ async function menuApi(req: Request, action: string) {
     else if (action === "install") await host(await install(body.repo, body.trust === true));
     else if (action === "export") return await packWorld(body.id);
     else if (action === "import") await unpackWorld(await req.bytes());
-    else if (action === "host") await host(String(body.id));
+    else if (action === "host") {
+      // A world hosted with new settings starts again under them.
+      if (exists(body.id) && configure(body.id, body) && running?.id === body.id) await stop();
+      await host(String(body.id));
+    }
     else if (action === "stop") {
       await stop();
       state.hosting = null;
@@ -412,9 +434,7 @@ async function menuApi(req: Request, action: string) {
     } else if (action === "configure") {
       if (running?.id === body.id) throw new Error("Stop the world before changing it.");
       if (!exists(body.id)) throw new Error("That world doesn't exist.");
-      const current = config(body.id);
-      const name = String(body.name ?? current.name).trim().slice(0, 40) || current.name;
-      writeFileSync(join(WORLDS, body.id, "config.json"), JSON.stringify({ ...current, name, rules: body.rules === "additive" ? "additive" : body.rules === "open" ? "open" : current.rules }, null, 2));
+      configure(body.id, body);
     } else if (action === "code") {
       if (!tunnel?.url) throw new Error("Share the world first.");
       state.code = newCode();

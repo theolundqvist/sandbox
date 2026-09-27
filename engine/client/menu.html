@@ -75,16 +75,19 @@
   <section id="configure" class="screen" data-nav hidden>
     <h1>Settings</h1>
     <label class="field"><span>Name</span><input type="text" id="configure-name" maxlength="40" autocomplete="off" spellcheck="false"></label>
-    <div class="field"><span>House rules</span><div class="pick rules" id="configure-rules" data-options="open:Open,additive:Additive"></div></div>
+    <div class="field"><span>Mods</span><div class="pick rules" id="configure-rules" data-options="open:Anyone changes,additive:Add only"></div></div>
   </section>
 
   <section id="create" class="screen" data-nav hidden>
     <h1>Host world</h1>
-    <label class="field"><span>Name</span><input type="text" id="create-name" placeholder="Random" maxlength="40" autocomplete="off" spellcheck="false"></label>
-    <div class="field"><span>House rules</span><div class="pick rules" id="create-rules" data-options="open:Open,additive:Additive"></div></div>
-    <div class="field"><span>Start with</span><div class="pick" id="create-start" data-options="blank:Blank,basics:3D field,hills:3D hills"></div></div>
+    <div class="field"><span>World</span><div class="pick" id="create-world"></div></div>
+    <label class="field new-only"><span>Name</span><input type="text" id="create-name" placeholder="Random" maxlength="40" autocomplete="off" spellcheck="false"></label>
+    <div class="field new-only"><span>Start with</span><div class="pick" id="create-start" data-options="basics:3D field,hills:3D hills,blank:Blank"></div></div>
+    <label class="field"><span>Password</span><input type="text" id="create-password" placeholder="None" maxlength="40" autocomplete="off" spellcheck="false"></label>
+    <div class="field"><span>Agents</span><div class="pick" id="create-agents" data-options="on:Allowed,off:Not allowed"></div></div>
+    <div class="field"><span>Mods</span><div class="pick rules" id="create-rules" data-options="open:Anyone changes,additive:Add only"></div></div>
     <div class="gap"></div>
-    <div class="items"><button class="item" id="create-go">Create</button></div>
+    <div class="items"><button class="item" id="create-go">Host</button></div>
   </section>
 
   <section id="invite" class="screen" data-nav hidden>
@@ -256,6 +259,7 @@
       return b;
     }));
     if (selected) renderWorld();
+    hostChoices(s.worlds);
     if (r) {
       $("link-lan").textContent = `${s.lan ?? location.origin}/#invite=${r.invite}`;
       $("share").set(s.tunnel ? "on" : "off");
@@ -290,7 +294,10 @@
         selected = jump.get("world");
         renderWorld();
         show("world");
-      } else if (jump.get("screen") === "create") show("create");
+      } else if (jump.get("screen") === "create") {
+        pickWorld("new");
+        show("create");
+      }
       else if (jump.get("screen") === "browse") {
         show("worlds");
         $("go-browse").click();
@@ -317,9 +324,9 @@
   }
 
   const play = (s) => location.assign(`./#invite=${s.running.hostKey}`);
-  async function hostWorld(id) {
+  async function hostWorld(id, settings) {
     if (state.running && state.running.id !== id && !(await ask(`Stop ${state.running.name}?`, "Stop and host"))) return;
-    await attempt(async () => play(await api("host", { id })));
+    await attempt(async () => play(await api("host", { id, ...settings })));
   }
   joinEntry($("join-link"));
   const joinGame = () => attempt(async () => location.assign(await joinLink($("join-link").value, state.relay)));
@@ -329,6 +336,7 @@
     const copied = allowed ? (await navigator.clipboard.readText().catch(() => "")).trim() : "";
     if (copied && !$("join-link").value && joinable(copied)) $("join-link").set(copied);
   });
+  $("go-create").addEventListener("click", () => pickWorld("new"));
   $("world-play").onclick = () => hostWorld(selected);
 
   /** Browse and pasted GitHub links answer with data, not the menu's state. */
@@ -416,13 +424,33 @@
   pick($("configure-rules"), configure);
   $("configure-name").onchange = configure;
 
-  const rulesTip = "Open: any Claude can change any mod. Additive: Claudes only add, and answer an attack with a counter-mod.";
+  const rulesTip = "Anyone changes: any agent can change any mod. Add only: agents only add, and answer an attack with a counter-mod.";
   for (const p of document.querySelectorAll(".pick.rules")) p.closest(".field").title = rulesTip;
+  /** The Host screen: a new world or a saved one, and its settings, every one with a default so Host works untouched. */
+  function hostChoices(worlds) {
+    const choices = [["new", "New world"], ...worlds.map((w) => [w.id, w.name])];
+    if (JSON.stringify(choices) === JSON.stringify($("create-world").choices)) return;
+    $("create-world").choices = choices;
+    if (!choices.some(([id]) => id === $("create-world").dataset.value)) delete $("create-world").dataset.value;
+    pick($("create-world"), pickWorld);
+  }
+  function pickWorld(id) {
+    const w = state?.worlds.find((x) => x.id === id);
+    $("create-world").set(w ? id : "new");
+    for (const f of document.querySelectorAll("#create .new-only")) f.hidden = !!w;
+    $("create-password").value = w?.password ?? "";
+    $("create-agents").set(w?.agents === false ? "off" : "on");
+    $("create-rules").set(w?.rules ?? "open");
+  }
   pick($("create-rules"));
   pick($("create-start"));
+  pick($("create-agents"));
   $("create-go").onclick = async () => {
-    if (state.running && !(await ask(`Stop ${state.running.name}?`, "Stop and create"))) return;
-    await attempt(async () => play(await api("create", { name: $("create-name").value, rules: $("create-rules").dataset.value, start: $("create-start").dataset.value })));
+    const id = $("create-world").dataset.value;
+    const settings = { password: $("create-password").value, agents: $("create-agents").dataset.value === "on", rules: $("create-rules").dataset.value };
+    if (id !== "new") return hostWorld(id, settings);
+    if (state.running && !(await ask(`Stop ${state.running.name}?`, "Stop and host"))) return;
+    await attempt(async () => play(await api("create", { name: $("create-name").value, start: $("create-start").dataset.value, ...settings })));
   };
 
   $("new-code").onclick = async () => (await ask("Make a new code?", "New code")) && attempt(() => api("code", {}));

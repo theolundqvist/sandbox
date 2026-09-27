@@ -17,7 +17,7 @@ const BUILD = join(DATA, "build");
 const DB = join(DATA, "db");
 const PORT = Number(process.env.PORT ?? 7777);
 
-export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "hills" | "blank"; invite: string; hostKey: string; host?: string };
+export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "hills" | "blank"; invite: string; hostKey: string; host?: string; password?: string; agents?: false };
 type Conn = { name: string; ua: string; at: number; spectator?: true };
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
@@ -591,7 +591,7 @@ const server = Bun.serve<Conn>({
       );
       return new Response(null, { status: 204 });
     }
-    if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size, publicUrl });
+    if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size, publicUrl, password: !!config.password, agents: config.agents !== false });
     if (path === "/api/join" && req.method === "POST") {
       const body = await req.json();
       const known = nameByKey(body.key);
@@ -600,6 +600,8 @@ const server = Bun.serve<Conn>({
         return Response.json({ key: body.key, name: known, invite: config.invite });
       }
       if (body.invite !== config.invite && body.invite !== config.hostKey) return Response.json({ error: "You need an invite link from the host." }, { status: 403 });
+      if (config.password && body.invite !== config.hostKey && body.password !== config.password)
+        return Response.json({ error: body.password ? "That password isn't right." : "This world has a password. Ask the host for it.", password: true }, { status: 403 });
       const name = String(body.name ?? "").trim().toLowerCase();
       if (!/^[a-z0-9][a-z0-9_-]{1,15}$/.test(name)) return Response.json({ error: "Names are 2–16 letters, digits, - or _." }, { status: 400 });
       // A name is someone's only while they play as it or their Claude works under it; claimed from another device, the old key stops working.
@@ -613,6 +615,7 @@ const server = Bun.serve<Conn>({
       return Response.json({ key, name, invite: config.invite });
     }
 
+    if ((path === "/cli" || path.startsWith("/cli/")) && config.agents === false) return new Response("The host turned agents off for this world.\n", { status: 403 });
     if (path === "/cli" || path.startsWith("/cli/")) return cli(req, nameByKey(bearer(req)) ?? null, path.slice(5) || "script", url.searchParams.get("url"), url.searchParams.get("name"));
 
     if (path === "/ws") {

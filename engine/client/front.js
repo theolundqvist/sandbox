@@ -67,7 +67,7 @@ export function backdrop(el) {
 
 /** A value picked with the arrows: <div class="pick" data-options="open:Open,additive:Additive">. Its value is in dataset.value. */
 export function pick(el, onChange) {
-  const options = el.dataset.options.split(",").map((o) => o.split(":"));
+  const options = el.choices ?? el.dataset.options.split(",").map((o) => o.split(":"));
   el.tabIndex = 0;
   el.innerHTML = "<i>‹</i><output></output><i>›</i>";
   const show = () => (el.querySelector("output").textContent = options.find(([v]) => v === el.dataset.value)?.[1] ?? "");
