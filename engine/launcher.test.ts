@@ -435,6 +435,12 @@ export default {
 
   const cover = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
   writeFileSync(join(worldDir(id), "cover.jpg"), cover);
+  // A database whose writer died mid-WAL: opening it read-write would fold the WAL into it, so the export must leave both files as they are.
+  const ghost = join(worldDir(id), "db/ghost.sqlite");
+  Bun.spawnSync([process.execPath, "-e", `const db = new (require("bun:sqlite").Database)(${JSON.stringify(ghost)}); db.run("pragma journal_mode = wal"); db.run("create table t (x)"); db.run("insert into t values (1)"); process.kill(process.pid, "SIGKILL");`]);
+  const untouched = () => [ghost, `${ghost}-wal`].map((f) => existsSync(f) && `${statSync(f).size} ${statSync(f).mtimeMs}`);
+  const ghostBefore = untouched();
+  expect(ghostBefore[1]).toBeTruthy();
   const res = (await menu("export", { id })) as Response;
   expect(res.headers.get("content-type")).toBe("application/zip");
   expect(res.headers.get("content-disposition")).toBe('attachment; filename="export-test.zip"');
@@ -444,6 +450,10 @@ export default {
   expect(names).toContain("world/.git/HEAD");
   expect(names).toContain("world/mods/note/server.ts");
   expect(names).toContain("db/note.sqlite");
+  expect(names).toContain("db/ghost.sqlite");
+  expect(untouched()).toEqual(ghostBefore);
+  writeFileSync(join(dir, "ghost.sqlite"), files["db/ghost.sqlite"]!);
+  expect(count(join(dir, "ghost.sqlite"), "select count(*) n from t")).toBe(1);
   expect(files["cover.jpg"]).toEqual(cover);
   expect(names.filter((n) => /^(keys\.json|launcher\.json)$|node_modules|\.sqlite-(wal|shm)$/.test(n))).toEqual([]);
   expect(names.filter((n) => n.startsWith("games"))).toEqual(["games.json", "games/arena/world.sqlite"]);
