@@ -250,14 +250,21 @@ test("switching runs exitGame and enterGame, and a player comes back to where th
   expect(back[2]).toBeCloseTo(left[2], 0);
   expect(await found(["entered"], "alpha")).toHaveLength(1);
 
-  // A mod moves a player with world.enter.
+  // A mod moves a player with world.enter; a game mod that places them itself in enterGame wins over the game's spawn.
+  expect((await tool("edit_game", { id: "beta", spawn: [7, 1, 7] })).status).toBe(200);
+  await write("mods/beta-place/server.ts", serverMod(`{ game: "beta", enterGame(world, player) { for (const [, e] of world.query("player", "pos")) if (e.player === player.id) e.pos = [40, 1, 40]; } }`));
+  await reload("beta-place");
   await write("mods/portal/server.ts", serverMod(`{ message(world, player, msg) { world.enter(player.id, msg.to); } }`));
   await reload("portal");
   const from = players.ada!.got.length;
   players.ada!.ws.send(JSON.stringify({ t: "m", mod: "portal", msg: { to: "beta" } }));
   await until(() => players.ada!.got.slice(from).some((m) => m.t === "gameSwitch" && m.game === "beta" && m.phase === "done"));
   expect((await game("beta")).players.sort()).toEqual(["ada", "bo"]);
-  expect((await tool("delete_game", { id: "beta" })).text).toContain("Live mods name the game beta: beta-world");
+  expect((await avatar("beta")).pos[0]).toBeCloseTo(40, 0);
+  expect((await tool("delete_game", { id: "beta" })).text).toContain("Live mods name the game beta: beta-world, beta-place");
+  const placeHash = (await tool("read_file", { path: "mods/beta-place/server.ts" })).text.match(/^hash: (\w+)/)![1]!;
+  expect((await tool("delete_file", { path: "mods/beta-place/server.ts", base_hash: placeHash })).status).toBe(200);
+  expect((await tool("reload", { mod: "beta-place" })).text).toStartWith("Unloaded beta-place");
   await enter("ada", "alpha");
 }, 30_000);
 

@@ -289,12 +289,15 @@ async function setMod(name: string, id: number, path: string | null, game: strin
 }
 
 // ---------- players coming and going ----------
-/** Joining the world or switching in from another game: shared mods get join either way, this game's mods get join only on joining, then enterGame. */
+/**
+ * Joining the world or switching in from another game: shared mods get join either way, this game's mods get join only on joining.
+ * Bodies made by then go where the player left this game, or to its spawn; enterGame comes after, so a game mod that places the player itself has the last word.
+ */
 function arrive(p: Player, switched: boolean, at: Vec | undefined) {
   world.players.set(p.id, p);
   for (const m of ordered) if (!switched || !m.game) call(m, "join", p);
-  for (const m of ordered) if (m.game) call(m, "enterGame", p);
   if (at) for (const [, e] of world.query("player", "pos")) if (e.player === p.id) e.pos = [...at];
+  for (const m of ordered) if (m.game) call(m, "enterGame", p);
 }
 
 /** A player's body is any entity whose `player` is their id: whichever mod made it, it goes with them, so no game keeps someone who isn't in it. */
