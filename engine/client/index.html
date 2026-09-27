@@ -259,7 +259,7 @@
   </div>
   <div id="status" class="caps">Connecting…</div>
   <div id="feed"></div>
-  <input id="chat" placeholder="Say something, or ask your Claude for anything…" autocomplete="off" hidden>
+  <input id="chat" placeholder="Say something, or ask your agent for anything…" autocomplete="off" hidden>
   <div id="hint" class="caps shadow">Enter to chat · Tab for menu</div>
   <div id="toasts" popover="manual"></div>
   <div id="builders" class="caps shadow"></div>
@@ -281,7 +281,7 @@
   <div id="hud-bottom" class="hud-area"><div id="interact" hidden><kbd>E</kbd><span></span></div>
   <div id="react" hidden><span id="react-mod" class="caps"></span><button data-kind="love">Love it <span></span></button><button data-kind="undo">Vote to undo <span></span></button></div></div>
   <div id="announce" hidden><div class="caps"></div><b></b><p></p></div>
-  <div id="empty" class="shadow" hidden><b>Nothing exists yet</b>Press Tab, connect your Claude, and ask it for the game you want to play.</div>
+  <div id="empty" class="shadow" hidden><b>Nothing exists yet</b>Press Tab, connect your agent, and ask it for the game you want to play.</div>
 </div>
 
 <div id="join" hidden>
@@ -305,7 +305,7 @@
     <dl class="keys">
       <dt><span>Enter</span></dt><dd>Chat</dd>
       <dt class="talk-key"><span>T</span></dt><dd class="talk-key">Talk</dd>
-      <dt><span>⌘</span><span>K</span></dt><dd>Search</dd>
+      <dt><span class="cmd">⌘</span><span>K</span></dt><dd>Search</dd>
       <dt><span>Tab</span><span>Esc</span></dt><dd>Menu</dd>
     </dl>
     <dl class="keys mod-keys"></dl>
@@ -327,7 +327,7 @@
     <div class="items">
       <button id="menu-close" class="item">Resume</button>
       <button id="menu-games" class="item" hidden>Games</button>
-      <button class="item" data-tab="claude">Claude</button>
+      <button class="item" data-tab="claude">Agent</button>
       <button class="item" data-tab="invite">Invite</button>
       <button class="item" data-tab="builders">Builders</button>
       <button class="item" data-tab="mods">Mods</button>
@@ -355,7 +355,7 @@
     </section>
     <section data-tab="builders" hidden>
       <ul id="menu-builders"></ul>
-      <details id="talk"><summary class="caps">Between Claudes <span id="talk-count">0</span></summary><ul id="menu-talk"></ul></details>
+      <details id="talk"><summary class="caps">Between agents <span id="talk-count">0</span></summary><ul id="menu-talk"></ul></details>
     </section>
     <section data-tab="mods" hidden><ul id="menu-mods"></ul></section>
     <section data-tab="world" hidden>

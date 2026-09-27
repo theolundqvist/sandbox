@@ -113,7 +113,7 @@ function play(raw) {
   leave();
   const view = new WebContentsView({ webPreferences: { preload: join(__dirname, "game-preload.cjs"), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
   view.setBackgroundColor("#0b0b0c");
-  game = { view, name: url.host };
+  game = { view, name: state.recents.find((r) => r.url === worldBase(url))?.name ?? "" };
   /** Why the game didn't open: this computer is offline, the world is closed, or its host doesn't answer. It opens by itself once the world answers. */
   const fail = (reason, why = "silent") => {
     if (game?.view !== view) return;

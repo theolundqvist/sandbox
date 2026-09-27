@@ -266,7 +266,12 @@ describe("hosting and joining", () => {
     await game.click("#create-go");
     await game.waitForURL(/\/r\/[a-z0-9-]+\/(#.*)?$/);
     await playing(game);
-    assert.notEqual(await game.textContent("#world-name"), "Sandbox");
+    const world = await game.textContent("#world-name");
+    assert.notEqual(world, "Sandbox");
+    await until("the world's name in the title bar", async () => (await shell.textContent("#world")) === world);
+    assert.equal(await shown(game, "#rules"), false);
+    assert.equal(await game.textContent("#claude"), "Connect your agent");
+    assert.equal(await game.textContent("#howto .cmd"), "Ctrl");
     assert.equal(await game.evaluate(() => localStorage.getItem("sandbox-name")), "host");
   });
 
@@ -520,6 +525,12 @@ describe("a friend in a browser", () => {
     const key = await page.evaluate((id) => localStorage.getItem(`sandbox-key:${id}`), id);
     const res = await fetch(`${base}/cli/status`, { method: "POST", headers: { authorization: `Bearer ${key}` } });
     assert.deepEqual([res.status, await res.text()], [403, "The host turned agents off for this world.\n"]);
+  });
+
+  test("Add only rules show by the world's name", async () => {
+    await rehost(() => game.locator("#create-rules i").nth(1).click());
+    assert.equal(await game.textContent("#rules"), "Add only");
+    assert.equal(await shown(game, "#rules"), true);
   });
 });
 

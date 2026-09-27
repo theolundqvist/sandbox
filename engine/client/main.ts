@@ -929,8 +929,8 @@ function connect() {
         listen();
         me = msg.playerId;
         $("world-name").textContent = world;
-        $("rules").textContent = msg.rules === "additive" ? "additive" : "open";
-        $("rules").hidden = false;
+        $("rules").textContent = "Add only";
+        $("rules").hidden = msg.rules !== "additive";
         $("status").hidden = true;
         welcomedAt = performance.now();
         let firstFrameMs = 0;
@@ -1836,7 +1836,7 @@ addEventListener("contextmenu", (e) => (e.target as Element).closest("input, tex
 uiRoot.addEventListener("contextmenu", (e) => (e.target as Element).closest("input, textarea, [contenteditable]") && e.stopPropagation());
 const ideas = ["add a scoreboard", "make it harder every round", "let us play in teams", "add sound effects", "add a timer and a winner", "give everyone a secret role", "surprise us with a twist"];
 function openChat() {
-  chat.placeholder = `Chat, or ask your Claude: "${ideas[Math.floor(Math.random() * ideas.length)]}"`;
+  chat.placeholder = `Chat, or ask your agent: "${ideas[Math.floor(Math.random() * ideas.length)]}"`;
   chat.hidden = false;
   chat.focus();
   releaseKeys();
@@ -2110,7 +2110,7 @@ function showBuilders() {
           if (b.task?.percent === undefined && b.task?.state !== "done") li.querySelector(".bar")!.remove();
           return li;
         })
-      : [Object.assign(document.createElement("li"), { textContent: "No Claude has connected yet." })]),
+      : [Object.assign(document.createElement("li"), { textContent: "No agent has connected yet." })]),
   );
 }
 
@@ -2123,7 +2123,7 @@ function addTalk(from: string, text: string) {
   $("talk-count").textContent = String($("menu-talk").children.length);
 }
 
-const claudeLabels = { listening: "Claude listening", working: "Claude working…", offline: "Connect Claude" };
+const claudeLabels = { listening: "Agent listening", working: "Agent working…", offline: "Connect your agent" };
 function showClaude(state: keyof typeof claudeLabels) {
   $("claude").textContent = claudeLabels[state];
   $("claude").dataset.state = state;
@@ -2609,6 +2609,7 @@ addEventListener("unhandledrejection", (e: PromiseRejectionEvent) => {
   if (mod && ++forwarded <= 30) send({ t: "error", mod, text: `unhandled rejection: ${e.reason?.stack ?? e.reason}` });
 });
 
+if (!/Mac|iPhone|iPad/.test(navigator.platform)) for (const k of all(".cmd")) k.textContent = "Ctrl";
 if (watching) {
   $("hud").hidden = false;
   $("status").hidden = true;
