@@ -11,7 +11,8 @@ const dir = mkdtempSync(join(tmpdir(), "sandbox-share-"));
 const LAUNCHER = 21000 + Math.floor(Math.random() * 1000);
 const BASE = `http://127.0.0.1:${LAUNCHER}`;
 const procs: Subprocess[] = [];
-const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY")));
+/** No relay answers here, so hosted worlds stay off the public one. */
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY"))), SANDBOX_RELAY: "http://127.0.0.1:1" };
 const HOST_TOKEN = "hosttoken-4f9a8b7c6d5e";
 const VOICE_KEY = "sk_voice_0123456789abcdefghij";
 const COVER = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);

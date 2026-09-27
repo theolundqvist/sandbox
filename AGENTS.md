@@ -9,16 +9,15 @@
    ```sh
    K=$(jq -r .hostKey data/launcher.json)
    menu() { curl -s -X POST "localhost:7777/api/menu/$1" -H "authorization: Bearer $K" -H 'content-type: application/json' -d "${2:-{\}}"; }
-   menu share '{"on":true}'                                   # go public through the hosted relay
    menu create '{"name":"Sandbox","rules":"open","start":"basics"}'  # create and host a new world
    menu host '{"id":"<world id>"}'                            # host an existing world (ids: menu state)
    menu stop                                                  # stop the running world
-   menu state                                                 # worlds, running world, tunnel url + join code
+   menu state                                                 # worlds, running world and its invite link
    ```
 
    `rules` is `open` or `additive`; `start` is `blank`, `basics` (3D field) or `hills` (3D hills). Anything else falls back to `open` and `basics`. `password` sets one players type once per device, and `"agents": false` turns agents off; `host` takes the same three for a saved world and restarts it when they change.
-4. **Use the hosted relay** (`https://sandbox-relay.lundqvistliss.com`, the default) for sharing over the internet. Don't set `SANDBOX_RELAY` or run `relay/relay.ts` unless asked. Sharing is remembered in `data/launcher.json`, so later launches reconnect by themselves.
-5. Invite link for friends: `<tunnel.url>/#invite=<running.invite>` from `menu state`, plus `tunnel.code` as the join code. `running.hostKey` is the host's own link; never share it or the menu key.
+4. **Use the hosted relay** (`https://sandbox-relay.lundqvistliss.com`, the default) for sharing over the internet. Don't set `SANDBOX_RELAY` or run `relay/relay.ts` unless asked. A hosted world is always shared through it.
+5. Invite link for friends: `running.link` from `menu state`. While the relay can't be reached, `running.wifiOnly` is true and the link works only on the host's network. `running.hostKey` is the host's own link; never share it or the menu key.
 
 ## Moving a world
 
@@ -58,7 +57,7 @@ loginctl enable-linger "$USER"   # keep user services running while logged out
 journalctl --user -u sandbox -f  # logs, including the menu link
 ```
 
-To move from another machine: export the world there and stop that launcher, then import the zip on the server and host it. To keep the same public link and join code, carry the relay identity: the server's launcher writes its own `data/launcher.json` on first start, so stop it, copy `sharing`, `room`, `relayToken` and `code` from the old machine's file into it, and start it again. Leave `hostKey` as the server made it. Never run both launchers with the same identity, and never commit or paste these values anywhere public.
+To move from another machine: export the world there and stop that launcher, then import the zip on the server and host it. To keep the same public link, carry the relay identity: the server's launcher writes its own `data/launcher.json` on first start, so stop it, copy `room` and `relayToken` from the old machine's file into it, and start it again. Leave `hostKey` as the server made it. Never run both launchers with the same identity, and never commit or paste these values anywhere public.
 
 ## README media
 

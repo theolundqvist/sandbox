@@ -68,9 +68,7 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 
 | Journey | Entry | States | Test |
 | --- | --- | --- | --- |
-| Link, code | Invite in the game menu | code leads to the current invite link | launcher: join code |
-| New code, new link | Invite | new link: the code follows it; new code: the old one stops | launcher: join code |
-| Sharing off | Invite | code stops resolving | launcher: join code |
+| One link | Invite in the game menu | the same link every time the world is hosted; a Wi-Fi link, told to players in the game, while the relay is down | launcher: one invite link |
 
 ## In game
 

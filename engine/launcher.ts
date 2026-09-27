@@ -18,10 +18,8 @@ const SECRETS = join(DATA, "secrets.json");
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 mkdirSync(WORLDS, { recursive: true });
-const state: { hostKey: string; hosting: string | null; sharing?: boolean; room?: string; relayToken?: string; code?: string } = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : { hostKey: token(), hosting: null };
+const state: { hostKey: string; hosting: string | null; room?: string; relayToken?: string } = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : { hostKey: token(), hosting: null };
 const saveState = () => writeFileSync(STATE, JSON.stringify(state, null, 2));
-const CODE_LETTERS = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
-const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => CODE_LETTERS[b % CODE_LETTERS.length]).join("");
 saveState();
 
 type Pipe = { target: string; upstream?: WebSocket; queue: string[] };
@@ -34,7 +32,7 @@ const sampleProxy = (record: Recorder) => {
   if (Object.keys(sample).length) record.add("proxy", null, sample);
 };
 setInterval(() => running && sampleProxy(running.record), 10_000);
-let tunnel: { ws: WebSocket; url: string | null } | null = null;
+let tunnel: { ws: WebSocket } | null = null;
 let tunnelError: string | null = null;
 const players = new Set<ServerWebSocket<Pipe>>();
 
@@ -145,6 +143,7 @@ async function host(id: string, notice?: string, revert?: string) {
   running = { id, proc, port, record, recorded };
   state.hosting = id;
   saveState();
+  share(true);
   await publish();
   proc.exited.then(async () => {
     if (running?.proc !== proc) return;
@@ -253,36 +252,25 @@ function share(on: boolean) {
   if (!on) {
     const current = tunnel;
     tunnel = null;
-    if (current?.ws.readyState === WebSocket.OPEN) current.ws.send(JSON.stringify({ t: "code", code: null }));
     current?.ws.close();
-    delete state.code;
-    saveState();
-    void publish();
     return;
   }
   if (tunnel) return;
-  tunnelError = null;
   state.room ??= `${token().slice(0, 8)}`;
   state.relayToken ??= token() + token();
   saveState();
   const ws = new WebSocket(`${RELAY.replace(/^http/, "ws")}/_host?room=${state.room}&token=${state.relayToken}`);
-  const current = (tunnel = { ws, url: null as string | null });
+  const current = (tunnel = { ws });
   const local = new Map<number, { ws: WebSocket; queue: string[] }>();
   const ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ t: "ping" })), 20_000);
   const reply = (msg: object) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(msg));
   ws.onopen = () => {
-    current.url = `${RELAY}/r/${state.room}`;
-    state.code ??= newCode();
-    saveState();
+    tunnelError = null;
     void publish();
   };
   ws.onmessage = async ({ data }) => {
     const msg = JSON.parse(String(data));
-    if (msg.t === "code" && msg.taken === state.code) {
-      state.code = newCode();
-      saveState();
-      void publish();
-    } else if (msg.t === "req") {
+    if (msg.t === "req") {
       const started = performance.now();
       try {
         const res = await fetch(`http://127.0.0.1:${PORT}${msg.path}`, { method: msg.method, headers: { ...msg.headers, [RELAYED]: "1" }, body: msg.body && Buffer.from(msg.body, "base64"), redirect: "manual", decompress: false });
@@ -322,10 +310,10 @@ function share(on: boolean) {
     for (const pipe of local.values()) pipe.ws.close();
     if (tunnel !== current) return;
     tunnel = null;
-    void publish();
     tunnelError = "Can't reach the Sandbox relay, so only people on your Wi-Fi can join. Trying again…";
+    void publish();
     console.error(`Lost the connection to ${RELAY}${e.reason ? `: ${e.reason}` : ""}. Retrying in 5 seconds.`);
-    setTimeout(() => state.sharing && !tunnel && share(true), 5_000);
+    setTimeout(() => running && !tunnel && share(true), 5_000);
   };
 }
 
@@ -346,11 +334,12 @@ async function world(action: string, body?: object) {
   return data;
 }
 
-/** The running world's public address and join code, so its invites point at the relay rather than wherever the host opened the world. */
+/** A world's one invite: through the relay, which keeps the same room across restarts, or on this Wi-Fi alone while the relay can't be reached. */
+const invite = (id: string) => ({ link: `${tunnelError ? `http://${lan ?? "localhost"}:${PORT}` : `${RELAY}/r/${state.room}`}/#invite=${config(id).invite}`, wifiOnly: !!tunnelError });
+
+/** Tells the running world its invite, so its Invite page shows the link that works rather than wherever the host opened the world. */
 async function publish() {
-  const code = tunnel?.url ? state.code : null;
-  if (code && tunnel?.ws.readyState === WebSocket.OPEN) tunnel.ws.send(JSON.stringify({ t: "code", code, invite: running ? config(running.id).invite : null }));
-  if (running) await world("public", { url: tunnel?.url ?? null, code, lan: lan ? `http://${lan}:${PORT}` : null });
+  if (running) await world("public", invite(running.id));
 }
 
 type Secrets = { voice?: Voice; elevenlabs?: { key: string; host: string } };
@@ -379,12 +368,9 @@ async function menuState() {
     worlds: worlds(),
     running:
       running && live
-        ? { id: running.id, name: live.name, invite: live.invite, hostKey: live.hostKey, players: await world("players"), snapshots: await world("snapshots") }
+        ? { id: running.id, name: live.name, invite: live.invite, ...invite(running.id), hostKey: live.hostKey, players: await world("players"), snapshots: await world("snapshots") }
         : null,
-    lan: lan ? `http://${lan}:${PORT}` : null,
-    tunnel: tunnel ? { url: tunnel.url, code: tunnel.url ? state.code : null } : null,
     relay: RELAY,
-    tunnelError,
     voiceKey: voice ? `${voice.provider} ••••${voice.key.slice(-4)}` : null,
     voiceProviders: PROVIDERS.map(({ name, keys, free }) => ({ name, keys, free: !!free })),
   };
@@ -424,9 +410,9 @@ async function menuApi(req: Request, action: string) {
     }
     else if (action === "stop") {
       await stop();
+      share(false);
       state.hosting = null;
       saveState();
-      await publish();
     } else if (action === "delete") {
       if (running?.id === body.id) throw new Error("Stop the world before deleting it.");
       if (!/^[a-z0-9-]+$/.test(body.id ?? "")) throw new Error("That world doesn't exist.");
@@ -435,19 +421,6 @@ async function menuApi(req: Request, action: string) {
       if (running?.id === body.id) throw new Error("Stop the world before changing it.");
       if (!exists(body.id)) throw new Error("That world doesn't exist.");
       configure(body.id, body);
-    } else if (action === "code") {
-      if (!tunnel?.url) throw new Error("Share the world first.");
-      state.code = newCode();
-      saveState();
-      await publish();
-    } else if (action === "share") {
-      share(!!body.on);
-      state.sharing = !!body.on;
-      saveState();
-    }
-    else if (action === "invite") {
-      await world(action, body);
-      await publish();
     } else if (["remove", "rewind"].includes(action)) await world(action, body);
     else if (action === "voice") await setVoiceKey(body.key);
     else if (action !== "state") return Response.json({ error: "Unknown action" }, { status: 404 });
@@ -569,12 +542,6 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutdown
 if (process.env.SANDBOX_EXIT_WITH_STDIN) void Bun.stdin.stream().pipeTo(new WritableStream()).then(shutdown);
 
 if (state.hosting && existsSync(join(WORLDS, state.hosting))) await host(state.hosting).catch((e) => console.error(e.message));
-if (state.sharing)
-  try {
-    share(true);
-  } catch (e: any) {
-    console.error(e.message);
-  }
 const menuLink = `http://localhost:${PORT}/menu#key=${state.hostKey}`;
 // The link carries the host key, so it goes only to a terminal, never into a log file; on this computer the menu finds the key by itself.
 console.log(process.stdout.isTTY ? `\n  Main menu (keep private): ${menuLink}\n` : `Main menu: http://localhost:${PORT}/menu`);

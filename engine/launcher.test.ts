@@ -12,8 +12,8 @@ const dir = mkdtempSync(join(tmpdir(), "sandbox-launcher-"));
 const LAUNCHER = 17000 + Math.floor(Math.random() * 1000);
 const RELAY = LAUNCHER + 1000;
 const procs: Subprocess[] = [];
-/** This machine's own service keys never reach a test world. */
-const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY")));
+/** This machine's own service keys never reach a test world, and its worlds share through the test relay, never the public one. */
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY"))), SANDBOX_RELAY: `http://127.0.0.1:${RELAY}` };
 
 async function up(url: string) {
   for (let i = 0; i < 100; i++) {
@@ -27,7 +27,7 @@ beforeAll(async () => {
   procs.push(Bun.spawn(["bun", join(import.meta.dir, "../relay/relay.ts")], { env: { ...env, PORT: String(RELAY), RELAY_CLAIMS: join(dir, "claims.json") }, stdout: "ignore" }));
   procs.push(
     Bun.spawn(["bun", join(import.meta.dir, "launcher.ts")], {
-      env: { ...env, PORT: String(LAUNCHER), SANDBOX_DATA: join(dir, "data"), SANDBOX_RELAY: `http://127.0.0.1:${RELAY}`, SANDBOX_NO_OPEN: "1" },
+      env: { ...env, PORT: String(LAUNCHER), SANDBOX_DATA: join(dir, "data"), SANDBOX_NO_OPEN: "1" },
       stdout: "ignore",
     }),
   );
@@ -62,60 +62,65 @@ test("a LAN address is not the host", async () => {
   expect((await localKey(`http://${lan}:${LAUNCHER}`)).status).toBe(401);
 });
 
+async function until<T>(what: string, check: () => Promise<T | null | undefined | false>) {
+  for (let i = 0; i < 150; i++, await Bun.sleep(100)) {
+    const got = await check();
+    if (got) return got;
+  }
+  throw new Error(`never saw ${what}`);
+}
+
 test("a player through the relay is not the host", async () => {
-  const { key } = await (await localKey(`http://127.0.0.1:${LAUNCHER}`)).json();
-  const menu = async (action: string, body?: object) =>
-    (await fetch(`http://127.0.0.1:${LAUNCHER}/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) })).json();
-  await menu("share", { on: true });
-  let url: string | null = null;
-  for (let i = 0; i < 50 && !url; i++, await Bun.sleep(100)) url = (await menu("state")).tunnel?.url ?? null;
+  const menu = await hostMenu();
+  const { running } = await menu("create", { name: "Relay Test" });
+  const url = running.link.split("/#")[0];
   expect(url).toStartWith(`http://127.0.0.1:${RELAY}/r/`);
   // The relay is reached on loopback here, exactly like a relay on the host's machine would be.
-  expect((await fetch(`${url}/menu`)).status).toBe(200);
+  await until("the menu through the relay", async () => (await fetch(`${url}/menu`)).status === 200);
   expect((await localKey(url!)).status).toBe(401);
   expect((await localKey(url!, { host: "localhost" })).status).toBe(401);
-});
-
-test("a join code leads to the game's invite link until the host replaces it or stops sharing", async () => {
-  const { key } = await (await localKey(`http://127.0.0.1:${LAUNCHER}`)).json();
-  const menu = async (action: string, body?: object) =>
-    (await fetch(`http://127.0.0.1:${LAUNCHER}/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) })).json();
-  const lookup = (code: string, ip = "198.51.100.1") => fetch(`http://127.0.0.1:${RELAY}/join/${code}`, { headers: { "x-real-ip": ip } });
-  await menu("share", { on: true });
-  const s = await menu("create", { name: "Code Test" });
-  expect(s.tunnel.code).toMatch(/^[2-9A-HJKMNP-Z]{6}$/);
-  const first = s.tunnel.code;
-  const formatted = `${first.slice(0, 3)}-${first.slice(3).toLowerCase()}`;
-  expect(await (await lookup(formatted)).json()).toEqual({ url: `${s.tunnel.url}/#invite=${s.running.invite}` });
-
-  const invited = await menu("invite", {});
-  expect(invited.running.invite).not.toBe(s.running.invite);
-  expect((await (await lookup(first)).json()).url).toEndWith(`#invite=${invited.running.invite}`);
-
-  const renewed = await menu("code", {});
-  expect(renewed.tunnel.code).not.toBe(first);
-  expect(await (await lookup(first)).json()).toEqual({ error: "No world with that code" });
-  expect((await lookup(renewed.tunnel.code)).status).toBe(200);
-
-  await menu("share", { on: false });
-  await Bun.sleep(200);
-  expect((await lookup(renewed.tunnel.code)).status).toBe(404);
   await menu("stop", {});
 });
 
-test("join code lookups are limited per address", async () => {
-  const statuses = [];
-  for (let i = 0; i < 11; i++) statuses.push((await fetch(`http://127.0.0.1:${RELAY}/join/AAAAAA`, { headers: { "x-real-ip": "198.51.100.2" } })).status);
-  expect(statuses).toEqual([...Array(10).fill(404), 429]);
-  expect((await fetch(`http://127.0.0.1:${RELAY}/join/AAAAAA`, { headers: { "x-real-ip": "198.51.100.3" } })).status).toBe(404);
-});
+test("a hosted world has one invite link, the same when hosted again, and a Wi-Fi link its players see while the relay is down", async () => {
+  const menu = await hostMenu();
+  const s = await menu("create", { name: "Link Test" });
+  const { link, invite, wifiOnly } = s.running;
+  expect(link).toMatch(new RegExp(`^http://127\\.0\\.0\\.1:${RELAY}/r/[a-z0-9]+/#invite=${invite}$`));
+  expect(wifiOnly).toBe(false);
+  await until("the game through the link", async () => (await fetch(link.split("#")[0])).status === 200);
+
+  await menu("stop", {});
+  const again = await menu("host", { id: s.running.id });
+  expect(again.running.link).toBe(link);
+
+  const { key } = await (await fetch(`http://127.0.0.1:${LAUNCHER}/api/join`, { method: "POST", body: JSON.stringify({ invite, name: "linker" }) })).json();
+  const player = new WebSocket(`ws://127.0.0.1:${LAUNCHER}/ws?key=${key}`);
+  const received: any[] = [];
+  player.onmessage = ({ data }) => received.push(JSON.parse(String(data)));
+  const welcome = await until("the welcome", async () => received.find((m) => m.t === "welcome"));
+  expect([welcome.link, welcome.wifiOnly]).toEqual([link, false]);
+
+  const relay = procs[0]!;
+  relay.kill();
+  await relay.exited;
+  const lan = Object.values(networkInterfaces()).flat().find((a) => a && a.family === "IPv4" && !a.internal)?.address;
+  const wifi = `http://${lan}:${LAUNCHER}/#invite=${invite}`;
+  expect(await until("a Wi-Fi-only invite", async () => (await menu("state")).running.wifiOnly && (await menu("state")).running.link)).toBe(wifi);
+  expect(await until("players told", async () => received.find((m) => m.t === "public" && m.wifiOnly))).toMatchObject({ link: wifi });
+
+  procs[0] = Bun.spawn(["bun", join(import.meta.dir, "../relay/relay.ts")], { env: { ...env, PORT: String(RELAY), RELAY_CLAIMS: join(dir, "claims.json") }, stdout: "ignore" });
+  expect(await until("the relay link back", async () => !(await menu("state")).running.wifiOnly && (await menu("state")).running.link)).toBe(link);
+  player.close();
+  await menu("stop", {});
+}, 30_000);
 
 test("worlds made without a name each get their own", async () => {
   const { key } = await (await localKey(`http://127.0.0.1:${LAUNCHER}`)).json();
   const create = async () => (await fetch(`http://127.0.0.1:${LAUNCHER}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: "{}" })).json();
   await create();
   const { worlds } = await create();
-  const unnamed = worlds.filter((w: { name: string }) => w.name !== "Code Test").map((w: { name: string }) => w.name);
+  const unnamed = worlds.filter((w: { name: string }) => !["Relay Test", "Link Test"].includes(w.name)).map((w: { name: string }) => w.name);
   expect(unnamed).toHaveLength(2);
   expect(new Set(unnamed).size).toBe(2);
   expect(unnamed).not.toContain("Sandbox");
@@ -127,7 +132,7 @@ test("a computer without git hosts worlds, reloads mods, and says history needs 
   mkdirSync(bin);
   symlinkSync(Bun.which("bun")!, join(bin, "bun"));
   const port = LAUNCHER + 500;
-  procs.push(Bun.spawn([join(bin, "bun"), join(import.meta.dir, "launcher.ts")], { env: { PATH: bin, HOME: dir, PORT: String(port), SANDBOX_DATA: join(dir, "nogit"), SANDBOX_NO_OPEN: "1" }, stdout: "ignore", stderr: "ignore" }));
+  procs.push(Bun.spawn([join(bin, "bun"), join(import.meta.dir, "launcher.ts")], { env: { PATH: bin, HOME: dir, SANDBOX_RELAY: env.SANDBOX_RELAY, PORT: String(port), SANDBOX_DATA: join(dir, "nogit"), SANDBOX_NO_OPEN: "1" }, stdout: "ignore", stderr: "ignore" }));
   await up(`http://127.0.0.1:${port}/menu`);
   const { key } = await (await localKey(`http://127.0.0.1:${port}`)).json();
   const s = await (await fetch(`http://127.0.0.1:${port}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ name: "No Git", start: "basics" }) })).json();

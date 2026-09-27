@@ -411,10 +411,8 @@ setInterval(() => {
 /** Feed lines wait a moment, so a reload or a tab open for a few seconds says nothing. */
 const joiningLine = new Map<string, ReturnType<typeof setTimeout>>();
 const leavingLine = new Map<string, ReturnType<typeof setTimeout>>();
-let publicUrl: string | null = null;
-let joinCode: string | null = null;
-/** The host's Wi-Fi address, where friends nearby join when the relay can't be reached. */
-let lanUrl: string | null = null;
+/** The world's one invite link, from the launcher, and whether it only works on the host's Wi-Fi because the relay is down. */
+let invite = { link: null as string | null, wifiOnly: false };
 const shots = new Map<string, (data: string) => void>();
 const cli = createCli({
   data: DATA,
@@ -513,7 +511,7 @@ const server = Bun.serve<Conn>({
       const body = req.method === "POST" ? await req.json() : {};
       switch (path.slice("/api/host/".length)) {
         case "players":
-          return Response.json([...new Set(Object.values(keys))].map((name) => ({ name, online: sockets.has(name), key: Object.keys(keys).find((k) => keys[k] === name) })));
+          return Response.json([...new Set(Object.values(keys))].map((name) => ({ name, online: sockets.has(name) })));
         case "remove": {
           for (const [key, name] of Object.entries(keys)) if (name === body.name) delete keys[key];
           writeJson("keys.json", keys);
@@ -522,16 +520,9 @@ const server = Bun.serve<Conn>({
           return Response.json({});
         }
         case "public":
-          publicUrl = body.url ?? null;
-          joinCode = body.code ?? null;
-          lanUrl = body.lan ?? null;
-          broadcast({ t: "public", url: publicUrl, code: joinCode, lan: lanUrl });
+          invite = { link: body.link ?? null, wifiOnly: !!body.wifiOnly };
+          broadcast({ t: "public", ...invite });
           return Response.json({});
-        case "invite":
-          config.invite = token();
-          writeJson("config.json", config);
-          for (const ws of spectators.values()) ws.close(4003, "The invite changed");
-          return Response.json({ invite: config.invite });
         case "snapshots":
           return Response.json(store.snapshots());
         case "voice":
@@ -595,7 +586,7 @@ const server = Bun.serve<Conn>({
       );
       return new Response(null, { status: 204 });
     }
-    if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size, build, publicUrl, password: !!config.password, agents: config.agents !== false });
+    if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size, build, password: !!config.password, agents: config.agents !== false });
     if (path === "/api/join" && req.method === "POST") {
       const body = await req.json();
       const known = nameByKey(body.key);
@@ -668,9 +659,7 @@ const server = Bun.serve<Conn>({
           world: config.name,
           rules: config.rules,
           invite: config.invite,
-          publicUrl,
-          joinCode,
-          lanUrl,
+          ...invite,
           voice: !!voiceKey(),
           host: config.host ?? null,
           game,
