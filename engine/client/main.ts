@@ -806,7 +806,7 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
 }
 
 /** The slot for mods' blocks on the menu page with this title: mods share pages by title, join the engine's by using its title, and a page no mod fills any more goes away. Resume, Timelapse and Leave are the engine's. */
-const CORE_PAGES = ["claude", "invite", "builders", "mods", "settings"];
+const CORE_PAGES = ["claude", "invite", "builders", "mods", "settings", "world"];
 const PAGE_ALIASES: Record<string, string> = { help: "Settings", controls: "Settings" };
 const ENGINE_ENTRIES = ["resume", "timelapse", "leave"];
 let pageSeq = 0;
@@ -2176,6 +2176,7 @@ function showTab(tab: string | null) {
   menu.classList.toggle("paging", !!tab);
   $("page-title").textContent = button?.textContent ?? "";
   if (tab === "mods") refreshMenu();
+  if (tab === "world") void showWorld();
 }
 /** Opens a page and moves the keyboard into it. */
 function openPage(tab: string) {
@@ -2297,18 +2298,60 @@ for (const keysList of $("howto").querySelectorAll(".keys")) $("help-keys").appe
 /** Leaving closes this world: the host goes back to their main menu, anyone else to this world's join screen. */
 let leaving = false;
 /** The desktop app says when a newer release is out, and installs it when asked. */
-const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void } }).sandboxDesktop;
+const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void; leave(): void } }).sandboxDesktop;
 desktop?.onUpdate((version) => ($("menu-update").hidden = !version));
 $("menu-update").onclick = async () => {
   const error = await desktop?.update();
   if (error) toast(error, "error");
 };
-$("leave").onclick = () => {
+/** In the app everyone leaves to its title screen; in a browser the host goes to their main menu. */
+function leave() {
   leaving = true;
   socket?.close();
+  if (desktop) return desktop.leave();
   if (hosting) return location.assign("menu");
   history.replaceState(null, "", `${origin}/#left`);
   location.reload();
+}
+$("leave").onclick = leave;
+
+/** The host's own world: rewind it to a saved moment, export it, or stop hosting it. */
+if (hostsThisWorld) {
+  $("rail").querySelector<HTMLElement>("[data-tab=world]")!.hidden = false;
+  $("world-saved").textContent = info.name;
+}
+async function showWorld() {
+  $("world-stop").textContent = "Stop hosting";
+  const s = await (await hostMenu("state")).json();
+  const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  $("world-snapshots").replaceChildren(
+    ...(s.running?.snapshots ?? []).map((at: number) => {
+      const rewind = Object.assign(document.createElement("button"), { textContent: "Rewind" });
+      rewind.onclick = async () => {
+        if (rewind.textContent === "Rewind") return void (rewind.textContent = `Rewind to ${time(at)}?`);
+        const res = await hostMenu("rewind", { at });
+        if (!res.ok) toast((await res.json()).error, "error");
+      };
+      const row = Object.assign(document.createElement("div"), { className: "copy-row" });
+      row.append(Object.assign(document.createElement("span"), { textContent: time(at) }), Object.assign(document.createElement("code"), { textContent: "Saved moment" }), rewind);
+      return row;
+    }),
+  );
+}
+$("world-export").onclick = async () => {
+  $("world-export").textContent = "Exporting…";
+  const res = await hostMenu("export", { id: info.id });
+  $("world-export").textContent = "Export";
+  if (!res.ok) return toast((await res.json()).error, "error");
+  const link = Object.assign(document.createElement("a"), { href: URL.createObjectURL(await res.blob()), download: res.headers.get("content-disposition")?.match(/filename="(.+)"/)?.[1] ?? "world.zip" });
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
+};
+$("world-stop").onclick = async () => {
+  if ($("world-stop").textContent === "Stop hosting") return void ($("world-stop").textContent = "Stop for everyone?");
+  leaving = true;
+  await hostMenu("stop", {});
+  leave();
 };
 
 /** The host's speech key, kept by their launcher and shown only by its provider and last characters. */

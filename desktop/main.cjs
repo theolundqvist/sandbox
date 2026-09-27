@@ -444,10 +444,17 @@ app.whenReady().then(() => {
     // A server that didn't start gets a screen saying why, Retry, and its last words to copy; other failures are a line under the menu.
     return own ? hostGame(own).catch((e) => (e.log ? void shell.webContents.send("down", { url, name: null, why: "server", cause: e.cause, log: e.log }) : e.message)) : play(String(url));
   });
-  ipcMain.handle("forget", (event, url) => {
-    if (!fromShell(event)) return;
+  ipcMain.handle("forget", async (event, url) => {
+    if (!fromShell(event)) return null;
+    const own = String(url).match(/^local:(.+)$/)?.[1];
+    if (own) {
+      const { base, key } = await startServer();
+      const res = await fetch(`${base}/api/menu/delete`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ id: own }) });
+      return res.ok ? null : (await res.json()).error;
+    }
     state.recents = state.recents.filter((r) => r.url !== url);
     save();
+    return null;
   });
   ipcMain.handle("name", (event) => (fromShell(event) ? { name: state.name ?? null, suggested: suggestedName() } : null));
   ipcMain.handle("set-name", (event, raw) => {
@@ -460,7 +467,7 @@ app.whenReady().then(() => {
   });
   // The game joins every world as this name, without asking again.
   ipcMain.on("player-name", (event) => (event.returnValue = event.sender === game?.view.webContents ? (state.name ?? null) : null));
-  ipcMain.on("leave", (event) => fromShell(event) && leave());
+  ipcMain.on("leave", (event) => (fromShell(event) || event.sender === game?.view.webContents) && leave());
   ipcMain.handle("update", (event) => (fromShell(event) || event.sender === game?.view.webContents) && install());
   ipcMain.on("quit", (event) => fromShell(event) && app.quit());
   ipcMain.handle("ready", (event) => fromShell(event) && ready);

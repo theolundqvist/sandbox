@@ -340,6 +340,7 @@
       <button class="item" data-tab="builders">Builders</button>
       <button class="item" data-tab="mods">Mods</button>
       <button class="item" data-tab="settings">Settings</button>
+      <button class="item" data-tab="world" hidden>World</button>
       <button id="timelapse" class="item">Timelapse</button>
     </div>
     <div id="mod-pages" class="items"></div>
@@ -365,6 +366,11 @@
       <details id="talk"><summary class="caps">Between Claudes <span id="talk-count">0</span></summary><ul id="menu-talk"></ul></details>
     </section>
     <section data-tab="mods" hidden><ul id="menu-mods"></ul></section>
+    <section data-tab="world" hidden>
+      <div class="copy-row"><span>This world</span><code id="world-saved"></code><button id="world-export">Export</button><button id="world-stop" class="danger">Stop hosting</button></div>
+      <div class="gap"></div>
+      <div id="world-snapshots"></div>
+    </section>
     <section data-tab="settings" hidden>
       <label class="field" id="voice-field" hidden><span>Voice key</span><input type="password" id="voice-key" autocomplete="off" spellcheck="false"></label>
       <p class="note" id="voice-where" hidden></p>

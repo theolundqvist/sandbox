@@ -105,6 +105,10 @@
     <div class="items" id="snapshots"></div>
   </section>
 
+  <section id="hosting" class="screen" data-nav hidden>
+    <p class="status">Starting the world</p>
+  </section>
+
   <section id="ask" class="screen" data-nav hidden>
     <h1 id="ask-title"></h1>
     <p class="lead" id="ask-note" hidden></p>
@@ -129,6 +133,8 @@
 
   /** The desktop app links straight to a screen: #world=<id> for a saved world, #screen=create for a new one. */
   const jump = new URLSearchParams(location.hash.slice(1));
+  const inApp = navigator.userAgent.includes("SandboxDesktop");
+  const leaveApp = () => window.sandboxDesktop.leave();
   const hashKey = jump.get("key");
   if (hashKey) {
     localStorage.setItem("sandbox-menu", hashKey);
@@ -162,7 +168,7 @@
     enter();
   }
   function back() {
-    if (stack.length < 2) return;
+    if (stack.length < 2) return inApp && stack.length && leaveApp();
     stack.pop();
     enter();
   }
@@ -170,7 +176,7 @@
     const { id, focus } = current();
     for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== id;
     $("error").textContent = "";
-    $("back").hidden = stack.length < 2;
+    $("back").hidden = stack.length < 2 && !inApp;
     const target = focus?.isConnected && !focus.disabled && focus.getClientRects().length ? focus : $(id).querySelector(".item:not([hidden]):not(:disabled), .field input, .pick, .copy-row button");
     target?.focus();
   }
@@ -289,18 +295,22 @@
       }));
     }
     if (!stack.length) {
-      show("title");
+      // The app has its own title and worlds, so it opens straight into a screen, or into a world it hosts.
+      if (!inApp) show("title");
       if (jump.get("world") && s.worlds.some((w) => w.id === jump.get("world"))) {
         selected = jump.get("world");
+        if (inApp) {
+          show("hosting");
+          return void hostWorld(selected).then((hosting) => hosting || leaveApp());
+        }
         renderWorld();
         show("world");
-      } else if (jump.get("screen") === "create") {
+      } else if (jump.get("screen") === "browse") {
+        if (!inApp) show("worlds");
+        $("go-browse").click();
+      } else if (jump.get("screen") === "create" || inApp) {
         pickWorld("new");
         show("create");
-      }
-      else if (jump.get("screen") === "browse") {
-        show("worlds");
-        $("go-browse").click();
       }
     }
     else if (!$(current().id).querySelector(":focus")) enter();
@@ -324,9 +334,11 @@
   }
 
   const play = (s) => location.assign(`./#invite=${s.running.hostKey}`);
+  /** Hosts a world and plays it, unless the host would rather keep the one running; says whether it went ahead. */
   async function hostWorld(id, settings) {
-    if (state.running && state.running.id !== id && !(await ask(`Stop ${state.running.name}?`, "Stop and host"))) return;
+    if (state.running && state.running.id !== id && !(await ask(`Stop ${state.running.name}?`, "Stop and host"))) return false;
     await attempt(async () => play(await api("host", { id, ...settings })));
+    return true;
   }
   joinEntry($("join-link"));
   const joinGame = () => attempt(async () => location.assign(await joinLink($("join-link").value, state.relay)));

@@ -69,11 +69,11 @@
     <p id="no-games" class="status" hidden>Worlds you host or join show up here</p>
   </section>
 
-  <section id="game" class="screen" data-nav hidden>
-    <h1 id="game-name"></h1>
+  <section id="forget" class="screen" data-nav hidden>
+    <h1 id="forget-title"></h1>
     <div class="items">
-      <button class="item" id="game-continue">Continue</button>
-      <button class="item danger" id="game-forget">Forget</button>
+      <button class="item danger" id="forget-yes"></button>
+      <button class="item" id="forget-no">Cancel</button>
     </div>
   </section>
 
@@ -113,7 +113,7 @@
   <p id="busy" class="status" hidden></p>
   <div id="error" class="error"></div>
 </main>
-<div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span><kbd>Esc</kbd>Back</span><span id="fullscreen-hint"><kbd>F11</kbd>Full screen</span><span id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span></div>
+<div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span><kbd>Esc</kbd>Back</span><span id="forget-hint"><kbd>Del</kbd>Remove</span><span id="fullscreen-hint"><kbd>F11</kbd>Full screen</span><span id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span></div>
 
 <script type="module">
   import { backdrop, joinEntry, joinLink, joinable, logo } from "/front.js";
@@ -148,6 +148,7 @@
     for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== id;
     $("error").textContent = "";
     $("back").hidden = stack.length < 2;
+    $("forget-hint").hidden = id !== "saved";
     const target = focus?.isConnected && focus.getClientRects().length ? focus : $(id).querySelector(".item:not([hidden]) input, .item:not([hidden])");
     target?.focus();
   }
@@ -189,20 +190,20 @@
   $("go-new").onclick = () => open("local:new");
   $("go-browse").onclick = () => open("local:browse");
 
-  // ---------- saved worlds: the ones this computer hosts and the ones joined, most recent first ----------
+  // ---------- saved worlds: the ones this computer hosts and the ones joined, most recent first; each opens its game ----------
+  let games = [];
   let selected = null;
   async function refresh() {
     const s = await shell.state();
-    const games = [
-      ...s.hosted.map((g) => ({ ...g, value: g.live ? "Live" : ago(g.at), kind: "Hosted", go: () => open(g.url) })),
-      ...s.joined.map((g) => ({ ...g, value: ago(g.at), kind: "Joined", go: () => ((selected = g), ($("game-name").textContent = g.name), show("game")) })),
-    ].sort((a, b) => (b.live ? Infinity : b.at) - (a.live ? Infinity : a.at));
+    games = [...s.hosted.map((g) => ({ ...g, value: g.live ? "Live" : ago(g.at), kind: "Hosted" })), ...s.joined.map((g) => ({ ...g, value: ago(g.at), kind: "Joined" }))].sort(
+      (a, b) => (b.live ? Infinity : b.at) - (a.live ? Infinity : a.at),
+    );
     const focused = $("games").contains(document.activeElement) ? document.activeElement.dataset.key : null;
     $("games").replaceChildren(
       ...games.map((g) => {
         const cover = el("span", { className: "cover" });
         if (g.cover) cover.append(el("img", { src: g.cover, alt: "", onerror: (e) => e.target.remove() }));
-        const b = el("button", { className: "item pictured", onclick: g.go }, cover, el("span", { className: "what", textContent: g.name }), el("span", { className: g.live ? "value live" : "value", textContent: g.value }), el("span", { className: "value", textContent: g.kind }));
+        const b = el("button", { className: "item pictured", onclick: () => open(g.url) }, cover, el("span", { className: "what", textContent: g.name }), el("span", { className: g.live ? "value live" : "value", textContent: g.value }), el("span", { className: "value", textContent: g.kind }));
         b.dataset.key = g.url;
         return b;
       }),
@@ -212,10 +213,20 @@
     if (s.copied && !$("join-link").value && joinable(s.copied)) $("join-link").set(s.copied);
     if (current()?.id === "title" && !document.activeElement?.closest("#title")) enter();
   }
-  $("game-continue").onclick = () => open(selected.url);
-  $("game-forget").onclick = async () => {
-    await shell.forget(selected.url);
+  /** Del on a world: a joined one is forgotten here, a hosted one deleted from this computer, after asking. */
+  $("games").addEventListener("keydown", (e) => {
+    if (e.key !== "Delete") return;
+    selected = games.find((g) => g.url === document.activeElement?.dataset.key);
+    if (!selected || !selected.url.startsWith(selected.kind === "Hosted" ? "local:" : "http")) return;
+    $("forget-title").textContent = `${selected.kind === "Hosted" ? "Delete" : "Forget"} ${selected.name}?`;
+    $("forget-yes").textContent = selected.kind === "Hosted" ? "Delete" : "Forget";
+    show("forget");
+  });
+  $("forget-no").onclick = back;
+  $("forget-yes").onclick = async () => {
+    const error = await shell.forget(selected.url);
     back();
+    $("error").textContent = error ?? "";
     refresh();
   };
 

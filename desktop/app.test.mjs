@@ -250,6 +250,15 @@ describe("hosting and joining", () => {
     assert.match(game.url(), new RegExp(`^${relayUrl}/r/[a-z0-9-]+/menu`));
   });
 
+  test("the app's Host screen has no second title menu: Esc goes back to the app's own", async () => {
+    const game = await gamePage(app);
+    // The page closes as the key goes down.
+    await game.keyboard.press("Escape").catch(() => {});
+    await until("the app's title", () => menuShown(shell));
+    await shell.click("text=Host world");
+    await until("the Host screen", async () => (await gamePage(app)).locator("#create").isVisible());
+  });
+
   test("Host untouched starts a new 3D field anyone may change, and the host plays it as their name", async () => {
     const game = await gamePage(app);
     assert.deepEqual(await game.locator("#create .field:visible output").allTextContents(), ["New world", "3D field", "Allowed", "Anyone changes"]);
@@ -350,8 +359,10 @@ describe("hosting and joining", () => {
     await shell.click("text=Worlds");
     await until("both worlds", async () => (await rows(shell)).length === 2);
     assert.ok((await rows(shell)).some((r) => /^Snow Race \| .+ \| Joined$/.test(r)));
-    await shell.click("text=Snow Race");
-    await shell.click("#game-forget");
+    await shell.focus('#games .item:has-text("Snow Race")');
+    await shell.keyboard.press("Delete");
+    assert.equal(await shell.textContent("#forget-title"), "Forget Snow Race?");
+    await shell.click("#forget-yes");
     await until("one world", async () => (await rows(shell)).length === 1);
     assert.equal(state().recents.some((r) => r.url === other.url), false);
     await shell.keyboard.press("Escape");
@@ -403,6 +414,22 @@ describe("hosting and joining", () => {
     assert.deepEqual(readFileSync(join(worlds, isle, "cover.jpg")), COVER);
     await shell.click("#leave");
     await until("the host's view of Tiny Isle", async () => readFileSync(join(worlds, isle, "cover.jpg")).length > COVER.length);
+  });
+
+  test("a hosted world opens straight into the game, and Stop hosting in its World tab ends it and goes back to the title", async () => {
+    await shell.click("text=Worlds");
+    await shell.click("#games .item >> text=Tiny Isle");
+    const game = await gamePage(app);
+    await playing(game);
+    await game.locator("#menu-button").dispatchEvent("click");
+    await game.click("#rail [data-tab=world]");
+    await game.click("#world-stop");
+    assert.equal(await game.textContent("#world-stop"), "Stop for everyone?");
+    await game.click("#world-stop");
+    await until("the app's title", () => menuShown(shell));
+    await shell.click("text=Worlds");
+    await until("Tiny Isle stopped", async () => (await rows(shell)).some((r) => /^Tiny Isle \| .+ ago \| Hosted$|^Tiny Isle \| just now \| Hosted$/.test(r)));
+    await shell.keyboard.press("Escape");
   });
 
   test("quitting stops the game server", async () => {
@@ -543,7 +570,7 @@ describe("the relay down", () => {
     assert.match(row, /^Home World \| .+ \| Hosted$/);
     await shell.click("#games .item");
     const game = await gamePage(app);
-    await game.locator("#world-name").waitFor();
+    await playing(game);
     assert.equal(await game.textContent("#world-name"), "Home World");
   });
 });
@@ -1013,7 +1040,6 @@ describe("the host closes the game", () => {
     await shell.click("text=Worlds");
     await until("the world", async () => (await rows(shell)).some((r) => r.startsWith("Snow Race")));
     await shell.click("#games .item >> text=Snow Race");
-    await shell.click("#game-continue");
     await shell.locator("#waiting").waitFor();
     assert.deepEqual([await shell.textContent("#waiting-title"), await shell.textContent("#waiting-text")], ["Snow Race", "Waiting for the host to open it"]);
     assert.equal(state().recents.find((r) => r.url === other.url).name, "Snow Race");
@@ -1030,7 +1056,6 @@ describe("the host closes the game", () => {
     await until("the world gone", async () => !(await fetch(`${other.url}/api/info`)).ok);
     await shell.click("text=Worlds");
     await shell.click("#games .item >> text=Snow Race");
-    await shell.click("#game-continue");
     await shell.locator("#waiting").waitFor();
     await shell.click("#waiting-back");
     otherLauncher = startOther();
