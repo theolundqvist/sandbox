@@ -8,7 +8,8 @@ import type { Diff, Tick } from "./world";
 export type RunningMod = { name: string; id: number; server: string | null; game: string | null };
 /** The server put a player somewhere other than where their own game or another mod had just moved them. */
 export type Correction = { at: number; mod: string; hook: string; player: string; entity: number; overruled: string; from: number[]; to: number[]; wanted: number[] | null; repeats: number };
-export type Perf = { msPerTick: number; p50: number; p95: number; max: number; mods: Record<string, number>; modTicks: Record<string, { p95: number; max: number }> };
+/** engine is the p50 of each tick's time outside mod hooks. */
+export type Perf = { msPerTick: number; p50: number; p95: number; max: number; engine: number; mods: Record<string, number>; modTicks: Record<string, { p95: number; max: number }> };
 
 const HANG_MS = 2000;
 /** Starting a trial loads every server mod, which takes seconds on a busy machine; only its ticks count as hanging. */

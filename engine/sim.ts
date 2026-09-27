@@ -514,13 +514,17 @@ const receive = async (msg: any) => {
       if (trial) return runTrial();
       let last = performance.now();
       let times: number[] = [];
+      let engine: number[] = [];
+      const modMs = () => ordered.reduce((sum, m) => sum + m.ms, 0);
       loop = setInterval(() => {
         const now = performance.now();
+        const before = modMs();
         tick(Math.min((now - last) / 1000, 0.25));
         last = now;
         flush();
         for (const w of walks.splice(0)) post({ t: "answer", id: w.id, value: walk(w.from, w.to, w.body ?? {}) });
         times.push(performance.now() - now);
+        engine.push(times.at(-1)! - (modMs() - before));
         if (times.length < 40) return;
         const ticks = times.length;
         const cost = Object.fromEntries(ordered.filter((m) => m.ms).sort((a, b) => b.ms - a.ms).map((m) => [m.name, +(m.ms / ticks).toFixed(2)]));
@@ -535,9 +539,10 @@ const receive = async (msg: any) => {
             })
             .sort((a, b) => b[1].max - a[1].max),
         );
-        post({ t: "perf", msPerTick: +(sorted.reduce((a, b) => a + b, 0) / ticks).toFixed(2), p50: at(0.5), p95: at(0.95), max: +sorted[ticks - 1].toFixed(2), mods: cost, modTicks: spikes });
+        post({ t: "perf", msPerTick: +(sorted.reduce((a, b) => a + b, 0) / ticks).toFixed(2), p50: at(0.5), p95: at(0.95), max: +sorted[ticks - 1].toFixed(2), engine: +engine.sort((a, b) => a - b)[Math.floor(ticks / 2)]!.toFixed(2), mods: cost, modTicks: spikes });
         for (const m of ordered) [m.ms, m.ticks] = [0, []];
         times = [];
+        engine = [];
       }, 50);
       return post({ t: "ready" });
     }

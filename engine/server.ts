@@ -382,6 +382,7 @@ const tickTimes = (window: Perf[]) => ({
   p50: r(Math.max(0, ...window.map((p) => p.p50))),
   p95: r(Math.max(0, ...window.map((p) => p.p95))),
   max: r(Math.max(0, ...window.map((p) => p.max))),
+  engine: r(Math.max(0, ...window.map((p) => p.engine))),
 });
 setInterval(() => {
   const used = process.cpuUsage(cpu);
