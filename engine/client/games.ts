@@ -52,7 +52,6 @@ export function mountPicker(root: ShadowRoot | HTMLElement, opts: { me: string; 
       canvas.width = Math.max(1, Math.round(canvas.clientWidth * dpr));
       canvas.height = Math.max(1, Math.round(canvas.clientHeight * dpr));
     }
-    edges();
   });
 
   const current = () => seats.find((s) => s.player === opts.me)?.game ?? null;
@@ -96,7 +95,7 @@ export function mountPicker(root: ShadowRoot | HTMLElement, opts: { me: string; 
     tilt.append(art, badges, body);
     el.append(tilt);
     const c: Card = { game: g, el, tilt, canvas, painter: painterOf(g.id), t: i * 7.3, tx: 0, ty: 0, px: 0, py: 0, who: "\0" };
-    el.addEventListener("pointerenter", (e) => e.pointerType === "mouse" && setFocus(cards.indexOf(c)));
+    el.addEventListener("pointerenter", (e) => e.pointerType === "mouse" && setFocus(cards.indexOf(c), false));
     el.addEventListener("pointermove", (e) => {
       const r = el.getBoundingClientRect();
       const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
@@ -147,18 +146,29 @@ export function mountPicker(root: ShadowRoot | HTMLElement, opts: { me: string; 
     el.style.setProperty("--fc", g.color);
     b1.style.background = g.color;
     b2.style.background = g.accent ?? g.color;
-    if (scroll) cards[focus]!.el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    if (!scroll) return;
+    // The top row brings the header back with it.
+    const at = cards[focus]!.el;
+    if (at.offsetTop === cards[0]!.el.offsetTop) el.scrollTo({ top: 0, behavior: "smooth" });
+    else at.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
+  /** Left and right step through the cards in order; up and down go to the nearest card in the row above or below, as laid out at this width. */
   function move(dx: number, dy: number) {
     const n = cards.length;
     if (!n) return;
     let next = focus;
-    if (dx) next = (focus + dx + n) % n;
+    if (dx) next = Math.max(0, Math.min(n - 1, focus + dx));
     else {
-      const top = (k: number) => cards[k]!.el.offsetTop;
-      const perRow = cards.filter((_, k) => top(k) === top(0)).length || 1;
-      next = Math.max(0, Math.min(n - 1, focus + dy * perRow));
+      const at = cards[focus]!.el;
+      const x = at.offsetLeft + at.offsetWidth / 2;
+      let rowGap = Infinity, colGap = Infinity;
+      cards.forEach((c, k) => {
+        const down = (c.el.offsetTop - at.offsetTop) * dy;
+        if (down <= 1) return;
+        const across = Math.abs(c.el.offsetLeft + c.el.offsetWidth / 2 - x);
+        if (down < rowGap - 1 || (Math.abs(down - rowGap) <= 1 && across < colGap)) [next, rowGap, colGap] = [k, down, across];
+      });
     }
     if (next !== focus) setFocus(next);
   }
@@ -291,19 +301,6 @@ export function mountPicker(root: ShadowRoot | HTMLElement, opts: { me: string; 
     });
   }
 
-  /** Fades the row's edges only on the sides that have more cards off screen. */
-  function edges() {
-    const more = row.scrollWidth - row.clientWidth > 2;
-    row.classList.toggle("more-l", more && row.scrollLeft > 2);
-    row.classList.toggle("more-r", more && row.scrollLeft + row.clientWidth < row.scrollWidth - 2);
-  }
-  row.addEventListener("scroll", edges, { passive: true });
-  row.addEventListener("wheel", (e) => {
-    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX) || row.scrollWidth <= row.clientWidth) return;
-    e.preventDefault();
-    row.scrollLeft += e.deltaY;
-  }, { passive: false });
-
   function hints(kind: "keys" | "pad") {
     foot.innerHTML = kind === "pad"
       ? `<span><kbd>✛</kbd>Choose</span><span><kbd>A</kbd>Play</span><span><kbd>B</kbd>Close</span>`
@@ -322,13 +319,13 @@ export function mountPicker(root: ShadowRoot | HTMLElement, opts: { me: string; 
     document.exitPointerLock?.();
     el.classList.add("open");
     el.focus({ preventScroll: true });
-    cards[focus]?.el.scrollIntoView({ block: "nearest", inline: "center" });
+    el.scrollTop = 0;
+    cards[focus]?.el.scrollIntoView({ block: "nearest" });
     requestAnimationFrame(() => requestAnimationFrame(() => opened && el.classList.add("in")));
     held = new Set(["a", "b", "l", "r", "u", "d"]);
     addEventListener("keydown", onKey, true);
     last = 0;
     frame = requestAnimationFrame(tick);
-    edges();
   }
 
   function close() {
@@ -351,7 +348,6 @@ export function mountPicker(root: ShadowRoot | HTMLElement, opts: { me: string; 
       if (!opened) return;
       build();
       who();
-      edges();
     },
     open,
     close,
@@ -677,12 +673,10 @@ const CSS = `
   font: 700 12px/1 var(--display, system-ui); letter-spacing: .14em; text-transform: uppercase; }
 .gp button.gp-back:hover { background: #fff; color: #0b0b0c; }
 .gp kbd { font: 700 10px/1 system-ui, sans-serif; letter-spacing: .04em; border: 1px solid currentColor; border-radius: 4px; padding: 3px 5px; margin: 0; opacity: .6; }
-.gp-row { position: relative; flex: 1; display: flex; align-items: center; gap: 26px; padding: 40px 56px; overflow: auto hidden; scroll-snap-type: x proximity; scroll-padding: 0 56px; scrollbar-width: none; perspective: 1400px;
-  --ml: #000; --mr: #000; -webkit-mask-image: linear-gradient(90deg, var(--ml), #000 120px, #000 calc(100% - 120px), var(--mr)); mask-image: linear-gradient(90deg, var(--ml), #000 120px, #000 calc(100% - 120px), var(--mr)); }
-.gp-row::-webkit-scrollbar { display: none; }
-.gp-row.more-l { --ml: transparent; } .gp-row.more-r { --mr: transparent; }
-.gp-row > :first-child { margin-left: auto; } .gp-row > :last-child { margin-right: auto; }
-.gp-card { position: relative; flex: none; width: clamp(200px, 16.5vw, 290px); height: clamp(380px, 60vh, 470px); cursor: pointer; scroll-snap-align: center;
+.gp-row { position: relative; flex: 1 0 auto; display: grid; grid-template-columns: repeat(auto-fill, var(--cw)); justify-content: center; align-content: start; gap: 26px; padding: 40px 56px; perspective: 1400px;
+  --cw: clamp(200px, 16.5vw, 290px); }
+.gp-row:has(> .gp-empty) { align-content: center; }
+.gp-card { position: relative; width: var(--cw); height: clamp(380px, 60vh, 470px); cursor: pointer; scroll-margin: 40px 0;
   transition: opacity .6s cubic-bezier(.2,.8,.2,1), transform .6s cubic-bezier(.2,.8,.2,1); transition-delay: calc(var(--i) * 70ms); }
 .gp-tilt { position: absolute; inset: 0; border-radius: 22px; overflow: hidden; background: #0d0f16; transform-style: preserve-3d;
   box-shadow: 0 18px 40px rgba(0,0,0,.55), inset 0 0 0 1px rgba(255,255,255,.08); transition: transform .25s cubic-bezier(.2,.8,.2,1), box-shadow .25s ease; }
@@ -726,17 +720,17 @@ const CSS = `
 .gp button.gp-play:active { transform: translateY(4px); box-shadow: 0 2px 0 color-mix(in srgb, var(--c) 55%, #000); }
 .gp button.gp-play.resume, .gp .gp-card.focus button.gp-play.resume { background: rgba(255,255,255,.1); color: #fff; box-shadow: inset 0 0 0 2px var(--c); }
 .gp button.gp-play:disabled { opacity: 1; background: rgba(255,255,255,.07); color: rgba(255,255,255,.45); box-shadow: none; }
-.gp-empty { margin: auto; max-width: 420px; text-align: center; font: 700 14px/1.6 var(--display, system-ui); letter-spacing: .1em; text-transform: uppercase; color: rgba(255,255,255,.55); }
+.gp-empty { grid-column: 1 / -1; margin: auto; max-width: 420px; text-align: center; font: 700 14px/1.6 var(--display, system-ui); letter-spacing: .1em; text-transform: uppercase; color: rgba(255,255,255,.55); }
 .gp-foot { position: relative; display: flex; justify-content: center; gap: 26px; padding: 0 0 26px; font-size: 11px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; color: rgba(255,255,255,.45); }
 .gp-foot span { display: flex; align-items: center; gap: 6px; }
 .gp-foot kbd { font-size: 11px; color: rgba(255,255,255,.75); }
-@media (max-height: 640px) { .gp-head { padding-top: 24px; } .gp-row { padding-block: 24px; } .gp-foot { padding-bottom: 14px; } }
+@media (max-height: 640px) { .gp-head { padding-top: 24px; } .gp-row { padding-block: 24px; } .gp-card { scroll-margin-block: 24px; } .gp-foot { padding-bottom: 14px; } }
 @media (max-width: 700px) {
   .gp-head { padding: 22px 20px 0; align-items: center; gap: 12px; }
   .gp-logo { font-size: 28px; } .gp-sub { display: none; }
   .gp button.gp-back { min-width: 0; max-width: 62%; padding: 10px 14px; font-size: 11px; }
-  .gp-row { gap: 16px; padding: 28px 20px; scroll-snap-type: x mandatory; scroll-padding: 0 20px; -webkit-mask-image: none; mask-image: none; }
-  .gp-card { width: min(78vw, 320px); height: clamp(380px, 64vh, 520px); }
+  .gp-row { gap: 16px; padding: 28px 20px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); }
+  .gp-card { width: 100%; max-width: 320px; justify-self: center; height: clamp(380px, 64vh, 520px); scroll-margin-block: 28px; }
   .gp-title { font-size: 26px; } .gp-title.long { font-size: 20px; }
   .gp-foot { display: none; }
 }
