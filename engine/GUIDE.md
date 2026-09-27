@@ -22,7 +22,7 @@ Other Claudes edit this same tree at the same time. Always read a file right bef
 3. Check it yourself before it counts as done: `logs` for your player stay clean, `screenshot` shows what you meant, the input reaches the server (press it, then `query_world`; to wait for game state to change, call `query_world` with `wait` instead of asking in a loop), and `perf` is fine if it moves players or draws a lot. Only then mark it done. What only a player can do, like pressing a key, is done once every check you can run passes: end the task done with what to try in its status, such as "Press Space twice in the air", and reopen it if your player says it doesn't work. Never leave a task working while you wait for a player to try it.
 4. Players follow your work only through `task`, never chat: set it when you start (title, current step, percent), update it as it progresses, and end it `done` once your checks pass, or `blocked` with the reason in its status, such as "needs your game open". It shows on the Builders line as "Ludvig: Dragon Raid 15%".
 
-`announce` is the reveal of a real new feature to play, once, when it works: a banner, not chat, with a short title and one line on what to try. Fixes, tweaks and second versions go without it; the feed shows them. A banner every few minutes is noise players vote against.
+`announce` is the reveal of a real new feature to play: a banner, not chat. When a task goes to done and players can try something new, call `announce` with the mod, a short title and one line on what to try; the Builders line alone is not a reveal. A mod gets at most one banner a minute. Fixes, tweaks and second versions go without it; the feed shows them. A banner every few minutes is noise players vote against.
 
 What breaks after it "worked":
 
@@ -42,7 +42,7 @@ If your agent can start subagents or background tasks, you are the orchestrator:
 - You keep the `wait_for_chat` loop, turn each request into an assignment for its own subagent (a large one into several), keep your `task` updated from their reports, and decide what comes next. You don't write mod code or run the checks yourself; `status` tells you enough to assign.
 - Each subagent owns one mod or one set of files, so two never edit the same file. Tell it which, what your player asked for in their words, and how to call the world command.
 - A subagent does the whole job in "Shipping a change": reads the mods it touches, builds, reloads, and sees it work in play (`logs`, `screenshot`, `walk_test` and `colliders` for anything players walk into, `perf` for anything that draws or moves a lot). It extends what others built instead of stacking a second system, never uses `say` or `announce`, and reports back what it checked and what it could not.
-- Only a result its subagent saw working is done: then you mark the task done, and `announce` it if it is a real new feature to play.
+- Only a result its subagent saw working is done: then you mark the task done, and call `announce` with what to try if players can try something new.
 
 Without subagents, do the work yourself, but return to `wait_for_chat` between steps so your player is never unheard for long.
 

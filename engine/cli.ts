@@ -27,7 +27,7 @@ export type CliContext = {
   nextChat(): Promise<void>;
   presence(who: string, state: "listening" | "working" | "offline"): void;
   setTask(who: string, task: Task): void;
-  announce(a: { mod: string; by: string; title: string; text: string; color: string }): void;
+  announce(a: { mod: string; by: string; title: string; text: string; color: string; vote: boolean }): void;
   status(): object;
   perf(): object;
   screenshot(who: string): Promise<string>;
@@ -53,6 +53,12 @@ const GAME_CARD: Record<Exclude<keyof GameCard, "id">, object> = {
   art: { type: "string", description: "A client mod whose default export has paintCard(canvas, t) to paint the card; t is seconds." },
 };
 const CARD_FIELDS = Object.keys(GAME_CARD) as (keyof typeof GAME_CARD)[];
+
+const BANNER = {
+  title: { type: "string", description: "1 to 4 words, like a game mode name: LOW GRAVITY, THE FLOOR IS LAVA." },
+  text: { type: "string", description: "One short line telling players what to try or watch out for." },
+  color: { type: "string", description: "A #hex colour that fits the mod's mood." },
+};
 
 const tools = [
   {
@@ -113,21 +119,12 @@ const tools = [
   {
     name: "reload",
     description:
-      "Put a mod live for every player without disconnecting anyone: typechecks it, builds it, test-runs it against a copy of the live world, then hot-swaps server and client code. If any step fails nothing changes and you get the error. Reloads of a mod asked for while one runs go live together as one reload of the latest files; read logs rather than reloading to look. Pass announce only for a new thing to play, once it works; fixes and tweaks go without it and show in the feed. New mods get a banner with their name if you leave it out.",
+      "Put a mod live for every player without disconnecting anyone: typechecks it, builds it, test-runs it against a copy of the live world, then hot-swaps server and client code. If any step fails nothing changes and you get the error. Reloads of a mod asked for while one runs go live together as one reload of the latest files; read logs rather than reloading to look. Pass announce only for a new thing to play that you already checked; otherwise reload without it and call announce once the task is done. Fixes and tweaks go without it and show in the feed. New mods get a banner with their name if you leave it out.",
     inputSchema: {
       type: "object",
       properties: {
         mod: { type: "string" },
-        announce: {
-          type: "object",
-          description: "The banner every player sees when this goes live.",
-          properties: {
-            title: { type: "string", description: "1 to 4 words, like a game mode name: LOW GRAVITY, THE FLOOR IS LAVA." },
-            text: { type: "string", description: "One short line telling players what to try or watch out for." },
-            color: { type: "string", description: "A #hex colour that fits the mod's mood." },
-          },
-          required: ["title"],
-        },
+        announce: { type: "object", description: "The banner every player sees when this goes live.", properties: BANNER, required: ["title"] },
         force: {
           type: "boolean",
           description: "Only for removing a mod whose files you deleted: unload it even though live mods still use it. Tell their owners first.",
@@ -276,6 +273,12 @@ const tools = [
     },
   },
   {
+    name: "announce",
+    description:
+      "Reveal a new thing to play with a banner every player sees, the same one reload's announce shows: call it when a task goes done and players can try something new, saying what to try. Fixes and tweaks go without it; a mod gets at most one banner a minute.",
+    inputSchema: { type: "object", properties: { mod: { type: "string", description: "The live mod it is part of." }, ...BANNER }, required: ["mod", "title"] },
+  },
+  {
     name: "publish",
     description:
       "Package this world to share on GitHub: saves it into a folder and prints the folder's path. It holds world.json, the live mods, the packages they use, the entities and the mods' databases, never keys, recordings, chat or anything that names a player. GUIDE.md, Publishing this world, says how to put it on GitHub.",
@@ -304,7 +307,7 @@ const instructions = `This is a live multiplayer game that the players build tog
 Workflow: call status, read GUIDE.md and the mods that touch what you are about to build, then write or edit files under mods/<your-mod>/ and call reload. Nothing is live until reload succeeds.
 A world can hold several games: check list_games before you build, and put a game's mods in it with game: "<id>" (GUIDE.md, Games).
 One game, not a pile of mods: every shared system (movement, ground and sky, lighting, economy, shop, inventory, progression, map, HUD, each key) has one owner mod, which names it in its server.ts with export const owns = ["inventory"] so status lists it. Extend it through its exports or wrap, or ask its owner with say to "claudes"; never build a second one. Hook new things into what players already earn, press and see.
-Before you tell anyone something works, see it work: logs for your player stay clean, screenshot shows it, the input reaches the server (query_world, with wait when you expect state to change; never poll it in a loop). Only then mark your task done. Chat belongs to the players: say one greeting when you connect and nothing more there; players follow your work through task, and announce reveals only a real new thing to play, once it works.
+Before you tell anyone something works, see it work: logs for your player stay clean, screenshot shows it, the input reaches the server (query_world, with wait when you expect state to change; never poll it in a loop). Only then mark your task done. Chat belongs to the players: say one greeting when you connect and nothing more there; players follow your work through task, and when a task goes done and they can try something new, call announce with what to try.
 Other Claudes edit at the same time: re-read a file right before changing it. Between builds call wait_for_chat, for the whole session: players ask for things in the in-game chat, which is also appended to every tool result.`;
 
 class ToolError extends Error {}
@@ -325,6 +328,18 @@ export function createCli(ctx: CliContext) {
     if (ctx.rules() === "additive" && owner && owner !== who)
       throw new ToolError(`This world is additive: ${mod} belongs to ${owner}, so you can't change it. Build your own mod next to it instead.`);
     return { abs, rel, mod };
+  }
+
+  const BANNER_GAP = 60_000;
+  const bannered = new Map<string, number>();
+  function checkBanner(a: any, prefix: string, outcome: string) {
+    for (const [field, max] of [["title", 40], ["text", 160]] as const)
+      if (String(a?.[field] ?? "").length > max) throw new ToolError(`${prefix}${field} is ${String(a[field]).length} characters and the banner shows at most ${max}. Shorten it; ${outcome}.`);
+  }
+  /** vote is false for a reveal of a mod that is already live: players voted on it when it arrived. */
+  function banner(mod: string, who: string, a: any, vote: boolean) {
+    bannered.set(mod, Date.now());
+    ctx.announce({ mod, by: who, title: String(a.title), text: String(a.text ?? ""), color: /^#[0-9a-f]{3,8}$/i.test(a.color) ? a.color : "#ffb547", vote });
   }
 
   function claim(mod: string, who: string) {
@@ -477,23 +492,24 @@ export function createCli(ctx: CliContext) {
       case "reload": {
         const mod = String(args.mod);
         const a = args.announce;
-        for (const [field, max] of [["title", 40], ["text", 160]] as const)
-          if (String(a?.[field] ?? "").length > max) throw new ToolError(`announce.${field} is ${String(a[field]).length} characters and the banner shows at most ${max}. Shorten it; nothing was reloaded.`);
+        checkBanner(a, "announce.", "nothing was reloaded");
         const owner = ctx.owners[mod];
         if (ctx.rules() === "additive" && owner && owner !== who && owner !== "world") throw new ToolError(`This world is additive: ${mod} belongs to ${owner}.`);
         claim(mod, who);
         const isNew = !ctx.mods.running.has(mod);
         const result = await ctx.mods.reload(mod, who, ctx.owners[mod]!, args.force === true);
         if (!result.ok) throw new ToolError(result.report);
-        if (a || isNew)
-          ctx.announce({
-            mod,
-            by: who,
-            title: String(a?.title ?? mod),
-            text: String(a?.text ?? ""),
-            color: /^#[0-9a-f]{3,8}$/i.test(a?.color) ? a.color : "#ffb547",
-          });
+        if (a || isNew) banner(mod, who, a ?? { title: mod }, true);
         return result.report;
+      }
+      case "announce": {
+        const mod = String(args.mod);
+        if (!ctx.mods.running.has(mod)) throw new ToolError(`${mod} isn't live; reload it first.`);
+        checkBanner(args, "", "nothing was shown");
+        const wait = (bannered.get(mod) ?? 0) + BANNER_GAP - Date.now();
+        if (wait > 0) throw new ToolError(`${mod} had a banner ${Math.round((BANNER_GAP - wait) / 1000)} s ago and gets at most one a minute; nothing was shown.`);
+        banner(mod, who, args, false);
+        return "Shown to every player.";
       }
       case "logs": {
         const lines = ctx.logs.filter((l) => (!args.mod || l.mod === args.mod) && (!args.player || l.player === args.player)).slice(-(args.limit ?? 50));

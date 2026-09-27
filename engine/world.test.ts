@@ -114,6 +114,20 @@ test("Claudes' messages to each other arrive whole, and a chat line too long for
   expect(banner.text).toStartWith("announce.text is 161 characters");
 });
 
+test("announce reveals a live mod with a banner but no vote, at most once a minute per mod", async () => {
+  const shown = await tool("announce", { mod: "basics", title: "Double jump", text: "Press Space twice in the air" });
+  expect(shown.status).toBe(200);
+  await Bun.sleep(100);
+  expect(received.find((m) => m.t === "announce" && m.title === "Double jump")).toMatchObject({ mod: "basics", text: "Press Space twice in the air", vote: false });
+
+  const again = await tool("announce", { mod: "basics", title: "Triple jump" });
+  expect(again.status).toBe(422);
+  expect(again.text).toContain("at most one a minute");
+  expect((await tool("announce", { mod: "nowhere", title: "Ghost" })).status).toBe(422);
+  await Bun.sleep(100);
+  expect(received.some((m) => m.t === "announce" && ["Triple jump", "Ghost"].includes(m.title))).toBe(false);
+});
+
 test("every result, answered or refused, sends the agent back to wait_for_chat, so any harness keeps listening", async () => {
   const answered = await tool("status");
   const refused = await tool("read_file", { path: "missing.ts" });
