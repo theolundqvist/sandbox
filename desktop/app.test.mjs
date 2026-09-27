@@ -20,7 +20,7 @@ const children = [];
 
 async function until(what, check, ms = 20000) {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) {
-    const got = await check().catch(() => null);
+    const got = await Promise.race([check().catch(() => null), sleep(end - Date.now())]);
     if (got) return got;
   }
   throw new Error(`Timed out waiting for ${what}`);
@@ -89,12 +89,12 @@ before(async () => {
   otherLauncher = startOther();
   const base = `http://127.0.0.1:${OTHER}`;
   const { key } = await until("the other launcher", async () => (await fetch(`${base}/api/local-key`)).json());
-  await menu(base, key, "share", { on: true });
-  const s = await until("the other world's code", async () => {
-    const s = await menu(base, key, "create", { name: "Snow Race" });
-    return s.tunnel?.code && s;
+  await menu(base, key, "create", { name: "Snow Race" });
+  const running = await until("the other world's relay link", async () => {
+    const { running } = await menu(base, key, "state");
+    return running?.link.startsWith(relayUrl) && running;
   });
-  other = { base, key, code: s.tunnel.code, url: s.tunnel.url, invite: s.running.invite };
+  other = { base, key, url: running.link.split("/#")[0], invite: running.invite };
 });
 
 after(() => {
@@ -202,11 +202,11 @@ describe("hosting and joining", () => {
     assert.equal(await shown(shell, "#title"), true);
   });
 
-  test("Join world fills in a copied invite link or code, and nothing else", async () => {
+  test("Join world fills in a copied invite link, and nothing else", async () => {
     const cases = {
       [`${other.url}/#invite=${other.invite}`]: `${other.url}/#invite=${other.invite}`,
       "http://192.168.1.20:7777/#key=0123456789abcdef": "http://192.168.1.20:7777/#key=0123456789abcdef",
-      "k7f-m2q": "K7F-M2Q",
+      "k7f-m2q": "",
       "https://www.reddit.com/r/gaming/comments/abc/": "",
       [`${other.url}/`]: "",
       "https://example.com/page": "",
@@ -218,36 +218,31 @@ describe("hosting and joining", () => {
     for (const [copied, filled] of Object.entries(cases)) {
       await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), copied);
       await shell.evaluate(() => {
-        document.getElementById("join-link").set("");
+        document.getElementById("join-link").value = "";
         dispatchEvent(new Event("focus"));
       });
       if (filled) await until(`${copied} filled in`, async () => (await shell.inputValue("#join-link")) === filled, 5000).catch(() => {});
       else await sleep(1000);
       assert.equal(await shell.inputValue("#join-link"), filled, `copied ${JSON.stringify(copied)}`);
     }
-    // A link is shown at text size, a code as a code.
-    await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), `${other.url}/#invite=${other.invite}`);
-    await shell.evaluate(() => dispatchEvent(new Event("focus")));
-    await until("the link filled in", async () => (await shell.inputValue("#join-link")) !== "");
-    assert.equal(await shell.locator("#join-link").evaluate((i) => i.classList.contains("code")), false);
     await app.evaluate(({ clipboard }) => clipboard.writeText(""));
-    await shell.evaluate(() => document.getElementById("join-link").set(""));
+    await shell.evaluate(() => (document.getElementById("join-link").value = ""));
   });
 
-  test("a wrong code says so", async () => {
+  test("anything but a link asks for the invite link", async () => {
     await shell.click("text=Join world");
     await shell.fill("#join-link", "AAAAAA");
     await shell.press("#join-link", "Enter");
-    await until("the error", async () => (await shell.textContent("#error")) === "No world with that code");
+    await until("the error", async () => (await shell.textContent("#error")) === "Paste the invite link your host sent.");
     await shell.keyboard.press("Escape");
   });
 
-  test("Host world opens this computer's main menu through the relay, never Waiting for the host", async () => {
+  test("Host world opens this computer's main menu, never Waiting for the host", async () => {
     await shell.click("text=Host world");
     const game = await gamePage(app);
     await game.locator("#create").waitFor();
     assert.equal(await shown(game, "#waiting"), false);
-    assert.match(game.url(), new RegExp(`^${relayUrl}/r/[a-z0-9-]+/menu`));
+    assert.match(game.url(), /^http:\/\/localhost:\d+\/menu/);
   });
 
   test("the app's Host screen has no second title menu: Esc goes back to the app's own", async () => {
@@ -264,7 +259,7 @@ describe("hosting and joining", () => {
     assert.deepEqual(await game.locator("#create .field:visible output").allTextContents(), ["New world", "3D field", "Allowed", "Anyone changes"]);
     assert.equal(await game.inputValue("#create-password"), "");
     await game.click("#create-go");
-    await game.waitForURL(/\/r\/[a-z0-9-]+\/(#.*)?$/);
+    await game.waitForURL(/:\d+\/(#.*)?$/);
     await playing(game);
     const world = await game.textContent("#world-name");
     assert.notEqual(world, "Sandbox");
@@ -341,9 +336,9 @@ describe("hosting and joining", () => {
     await shell.keyboard.press("Escape");
   });
 
-  test("a code joins through the relay; reload stays in the room; the world is saved under its relay address", async () => {
+  test("a link joins through the relay; reload stays in the room; the world is saved under its relay address", async () => {
     await shell.click("text=Join world");
-    await shell.fill("#join-link", `${other.code.slice(0, 3)}-${other.code.slice(3)}`);
+    await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
     const game = await gamePage(app);
     const clips = [];
@@ -379,21 +374,8 @@ describe("hosting and joining", () => {
     await shell.press("#join-link", "Enter");
     await playing(await gamePage(app));
     await shell.click("#leave");
-    const bare = await shell.evaluate(async () => (await import("/front.js")).joinLink("sandbox-relay.example.com/r/ab12cd/", "/relay"));
+    const bare = await shell.evaluate(async () => (await import("/front.js")).joinLink("sandbox-relay.example.com/r/ab12cd/"));
     assert.equal(bare, "https://sandbox-relay.example.com/r/ab12cd/");
-  });
-
-  test("too many wrong codes are refused for a minute", async () => {
-    await shell.click("text=Join world");
-    let error = "";
-    for (let i = 0; i < 12 && error !== "Too many tries. Wait a minute."; i++) {
-      await shell.fill("#join-link", "BBBBBB");
-      await shell.press("#join-link", "Enter");
-      await sleep(200);
-      error = await shell.textContent("#error");
-    }
-    assert.equal(error, "Too many tries. Wait a minute.");
-    await shell.keyboard.press("Escape");
   });
 
   test("Browse plays a listed world after one download, and a pasted link to another asks for trust first", async () => {
@@ -557,14 +539,6 @@ describe("the relay down", () => {
   before(async () => ({ app, shell } = await launch("offline", { SANDBOX_RELAY: `http://127.0.0.1:${port()}` })));
   after(() => close(app));
 
-  test("a code can't be looked up", async () => {
-    await shell.click("text=Join world");
-    await shell.fill("#join-link", "K7F-M2Q");
-    await shell.press("#join-link", "Enter");
-    await until("the error", async () => (await shell.textContent("#error")) === "Can't look up codes right now. Check your connection, or ask for the invite link.");
-    await shell.keyboard.press("Escape");
-  });
-
   test("Host world still opens the main menu, on this computer", async () => {
     await shell.click("text=Host world");
     const game = await gamePage(app);
@@ -572,17 +546,16 @@ describe("the relay down", () => {
     assert.match(game.url(), /^http:\/\/localhost:\d+\/menu/);
   });
 
-  test("the host's invite is a Wi-Fi link, and the main menu says why", async () => {
+  test("the host's invite is a Wi-Fi link, and Invite says why", async () => {
     const game = await gamePage(app);
     await game.fill("#create-name", "Home World");
     await game.click("#create-go");
     await playing(game);
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#rail [data-tab=invite]");
-    assert.equal(await game.textContent("#invite-label"), "Wi-Fi link");
     assert.match(await game.textContent("#invite-link"), /^http:\/\/(\d+\.){3}\d+:\d+\/#invite=[0-9a-f]+$/);
-    await game.goto(new URL("/menu", game.url()).href);
-    await until("the relay error", async () => (await game.textContent("#error")) === "Can't reach the Sandbox relay, so only people on your Wi-Fi can join. Trying again…");
+    assert.equal(await shown(game, "#invite-wifi"), true);
+    assert.equal(await game.textContent("#invite-wifi"), "Internet invites are down. Friends on your Wi-Fi can still join.");
   });
 
   test("a crashed app leaves no game server behind", async () => {
@@ -686,7 +659,7 @@ describe("starting up", () => {
 });
 
 describe("updates", () => {
-  let app, shell, state, game, code;
+  let app, shell, state, game, link;
   before(async () => {
     releases.latest = VERSION;
     ({ app, shell, state } = await launch("update", {}, "robin"));
@@ -702,7 +675,8 @@ describe("updates", () => {
     const own = state().port;
     const key = JSON.parse(readFileSync(join(dir, "update", "Sandbox", "data", "launcher.json"), "utf8")).hostKey;
     const s = await menu(`http://127.0.0.1:${own}`, key, "state");
-    code = s.tunnel.code;
+    link = s.running.link;
+    assert.ok(link.startsWith(`${relayUrl}/r/`));
     await guest(`http://127.0.0.1:${own}`, s.running.invite, "friend");
     const pid = app.process().pid;
     await answer(app, 0);
@@ -713,7 +687,6 @@ describe("updates", () => {
     assert.deepEqual(await asked(app), []);
     assert.equal(app.process().pid, pid);
     assert.equal(await portAnswers(own), true);
-    assert.match(game.url(), new RegExp(`^${relayUrl}/r/`));
   });
 
   test("a failed download says so and keeps the app and the game open", async () => {
@@ -740,17 +713,17 @@ describe("updates", () => {
     await until("the installer", async () => existsSync(marker) && readFileSync(marker, "utf8").trim() === String(pid));
     assert.equal(await portAnswers(own), false);
     assert.equal(state().reopen.hosting, true);
-    assert.match(state().reopen.url, new RegExp(`^${relayUrl}/r/`));
+    assert.match(state().reopen.url, new RegExp(`^http://localhost:${own}/`));
     app = null;
   });
 
-  test("after the update the world is back up under the same code, and the host is back in it", async () => {
+  test("after the update the world is back up under the same link, and the host is back in it", async () => {
     releases.latest = VERSION;
     ({ app, shell, state } = await launch("update", {}, "robin"));
     game = await gamePage(app);
-    assert.match(game.url(), new RegExp(`^${relayUrl}/r/`));
-    const res = await fetch(`${relayUrl}/join/${code}`, { headers: { "x-real-ip": "198.51.100.7" } });
-    assert.equal(res.status, 200);
+    const key = JSON.parse(readFileSync(join(dir, "update", "Sandbox", "data", "launcher.json"), "utf8")).hostKey;
+    await until("the same link", async () => (await menu(`http://127.0.0.1:${state().port}`, key, "state")).running?.link === link);
+    assert.equal((await fetch(`${link.split("/#")[0]}/api/info`)).status, 200);
     await game.locator("#join").waitFor({ state: "hidden" });
     assert.equal(state().reopen, undefined);
     assert.equal(await shown(shell, "#go-update"), false);

@@ -79,7 +79,7 @@
 
   <section id="join" class="screen" data-nav hidden>
     <h1>Join world</h1>
-    <label class="item entry"><input type="text" id="join-link" placeholder="Code or invite link" autocomplete="off" spellcheck="false"></label>
+    <label class="item entry"><input type="text" id="join-link" placeholder="Invite link" autocomplete="off" spellcheck="false"></label>
   </section>
 
   <section id="name" class="screen" data-nav hidden>
@@ -116,7 +116,7 @@
 <div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span><kbd>Esc</kbd>Back</span><span id="forget-hint"><kbd>Del</kbd>Remove</span><span id="fullscreen-hint"><kbd>F11</kbd>Full screen</span><span id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span></div>
 
 <script type="module">
-  import { backdrop, joinEntry, joinLink, joinable, logo } from "/front.js";
+  import { backdrop, joinLink, joinable, logo } from "/front.js";
   const $ = (id) => document.getElementById(id);
   backdrop($("backdrop"));
   logo($("logo"));
@@ -210,7 +210,7 @@
     );
     if (focused) $("games").querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();
     $("no-games").hidden = !!games.length;
-    if (s.copied && !$("join-link").value && joinable(s.copied)) $("join-link").set(s.copied);
+    if (s.copied && !$("join-link").value && joinable(s.copied)) $("join-link").value = s.copied;
     if (current()?.id === "title" && !document.activeElement?.closest("#title")) enter();
   }
   /** Del on a world: a joined one is forgotten here, a hosted one deleted from this computer, after asking. */
@@ -230,10 +230,9 @@
     refresh();
   };
 
-  joinEntry($("join-link"));
   async function join() {
     try {
-      await open(await joinLink($("join-link").value, "/relay"));
+      await open(joinLink($("join-link").value));
     } catch (e) {
       $("error").textContent = e.message;
     }

@@ -39,9 +39,9 @@ Every world is saved. Host it again from **Worlds**, or rewind it to any point i
 
 ## Join a world
 
-Players need only a browser. The Invite screen gives a Wi-Fi link, and with **Internet** on, a public link and join code through a free relay with no port forwarding. The public link stays the same each time you host.
+Players need only a browser. Invite gives one link through a free relay, with no port forwarding, and it stays the same each time you host. If the relay can't be reached, the link works for friends on your Wi-Fi, and Invite says so.
 
-![The Invite screen with the Wi-Fi link, public link and join code](docs/readme/menu-invite.jpg)
+![The Invite screen with the world's link](docs/readme/menu-invite.jpg)
 
 The [desktop app](desktop/README.md) for Mac and Linux adds full-screen play and mouse look without browser interruptions. To run your own relay, start `bun relay/relay.ts` behind HTTPS and set `SANDBOX_RELAY`.
 

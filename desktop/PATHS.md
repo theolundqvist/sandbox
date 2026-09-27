@@ -26,14 +26,14 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | Which installer | any update | from 0.2.6 the installer script and the build come from the tag being installed, so master cannot break updates; older apps still fetch master's installer | app: newer release installs |
 | Update from the menu | Update | Downloading…, installer handoff, app quits, relaunches | app: downloads before quitting |
 | Update, failure | Update, download fails | app stays open, "The update didn't download. Check your connection." | app: failed download |
-| Update, friends online | Update | asks first, naming the players; after restart hosting resumes under the same code and the host is back in the game | app: failed download (dialog), after the update |
+| Update, friends online | Update | asks first, naming the players; after restart hosting resumes under the same link and the host is back in the game | app: failed download (dialog), after the update |
 
 ## Worlds
 
 | Journey | Entry | States | Test |
 | --- | --- | --- | --- |
 | Hosted world | Worlds | row: name, Live or last played, Hosted | app: leaving shows the hosted world |
-| Joined world | Worlds | row: name, last played, Joined; saved under its relay address | app: code joins, listed as Joined |
+| Joined world | Worlds | row: name, last played, Joined; saved under its relay address | app: link joins, listed as Joined |
 | Empty | Worlds | "Worlds you host or join show up here" | app: first launch |
 | Hosted, not running | Worlds, open | Starting your server…, then the world | app: reopened after the crash |
 | Joined, host closed it | Worlds, Continue | "Snow Race is closed. Ask the host to open it, then retry."; Retry opens it once it is back | app: host closes the game |
@@ -55,13 +55,10 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 
 | Journey | Entry | States | Test |
 | --- | --- | --- | --- |
-| Code | Join world, code | relay looks it up, join screen, game | app: code joins through the relay |
 | Invite link | Join world, link | join screen, game | app: invite link |
 | /r/ link without scheme | Join world | becomes https | app: invite link |
-| Wrong code | Join world | "No world with that code" | app: wrong code |
-| Rate limit | many wrong codes | "Too many tries. Wait a minute." | app: rate limit; launcher: limited per address |
-| Relay down | code | "Can't look up codes right now. Check your connection, or ask for the invite link." | app: relay down, code |
-| Clipboard prefill | Join world | prefills invite links and codes only | app: clipboard, true and false positives |
+| Not a link | Join world | "Paste the invite link your host sent." | app: anything but a link |
+| Clipboard prefill | Join world | prefills invite links only | app: clipboard, true and false positives |
 | Other games' clips | join screen | only this world's | app: no /clips/ requests |
 
 ## Invites
@@ -81,7 +78,7 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | Crash | app killed | no server left behind; reopening lists the world and opens it | app: crashed app, reopened after the crash |
 | Host quits mid-game | host closes | "The host closed the world. You're back in when they open it."; rejoins by itself | app: host closes the game |
 | Voice, host without a key | mic reads Turn on voice | opens Settings on the Voice key field; key checked with ElevenLabs, saved 0600 in the app's data, shown masked, voice on for everyone without a restart | app: host turns voice on; launcher: voice key |
-| Voice, player without host key | mic reads Voice off | disabled | app: code joins (visitor) |
+| Voice, player without host key | mic reads Voice off | disabled | app: link joins (visitor) |
 | Voice, key refused later | hold T | host: "ElevenLabs refused the voice key. Add it again in Settings."; players: "Voice didn't go through. Try again." | manual |
 | Mic blocked in the app | hold T | "Voice needs the microphone. Hold T again to allow it." | manual |
 | Connect a coding agent | Claude tab | one prompt for any agent with a shell, with Copy; Copied shows in place | app: connecting an agent |
@@ -103,7 +100,6 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | Host quits mid-game | Reconnecting… forever | says the host closed it and rejoins by itself |
 | Joined world is closed | "<host:port> isn't answering. Is the game running?" | names the world and says the host must open it; offline says offline |
 | Host's relay is blocked | main menu showed the relay URL and a retry interval; invite link pointed at localhost | plain relay message; invite is a Wi-Fi link friends on the same network can open |
-| Code lookup with the relay down | "Can't reach the relay" | says codes can't be looked up and offers the invite link instead |
 | /menu opened by a player | "Open the menu link from the host's terminal." | says it is the host's, on their own computer |
 | World crashes on start | "the terminal shows why" | "The world crashed while starting. Try again." |
 | Mic blocked in the app | pointed at the browser's address bar | says to hold T again |

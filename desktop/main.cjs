@@ -246,25 +246,19 @@ function startServer() {
   return starting;
 }
 
-/** Hosts a world of this computer's: shares it through the relay, which gives it a join code, and opens its screen in the main menu. */
+/** Hosts a world of this computer's: opens its screen in the main menu here; the launcher shares whatever it hosts through the relay. */
 async function hostGame(target) {
   const { base, key } = await startServer();
-  const menu = (action, body) => fetch(`${base}/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) }).then((r) => r.json());
-  let s = await menu("state");
-  if (!s.tunnel) s = await menu("share", { on: true });
-  // Offline, the relay never answers; the game still opens here, without a public link.
-  for (const until = Date.now() + 8000; !s.tunnel?.code && Date.now() < until; await new Promise((r) => setTimeout(r, 250))) s = await menu("state");
-  const share = s.tunnel?.url ?? base;
   const screen = { new: "screen=create", browse: "screen=browse" }[target] ?? `world=${target}`;
-  return play(`${share}/menu#key=${key}&${screen}`);
+  return play(`${base}/menu#key=${key}&${screen}`);
 }
 
-/** Starts this app's server again after a restart: the launcher brings back the world it hosted and shares it again, under the same code. */
+/** Starts this app's server again after a restart: the launcher brings back the world it hosted, under the same link. */
 async function resumeHosting() {
   const { base, key } = await startServer();
   for (const until = Date.now() + 10000; Date.now() < until; await new Promise((r) => setTimeout(r, 250))) {
     const s = await ask(`${base}/api/menu/state`, key).then((r) => r.json(), () => null);
-    if (s?.running && (!s.tunnel || s.tunnel.code)) return;
+    if (s?.running) return;
   }
 }
 
@@ -283,10 +277,7 @@ async function guests() {
   if (!server) return null;
   const s = await ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null);
   if (!s?.running) return null;
-  const here = game && [server.base, s.tunnel?.url].includes(worldBase(new URL(game.view.webContents.getURL() || "about:blank")));
-  // The host's own player, when they have joined the game open here; the game keeps its key in the page.
-  const me = here && (await game.view.webContents.executeJavaScript(`localStorage.getItem(${JSON.stringify(`sandbox-key:${s.running.id}`)})`).catch(() => null));
-  return { name: s.running.name, count: s.running.players.filter((p) => p.online && p.key !== me).length };
+  return { name: s.running.name, count: s.running.players.filter((p) => p.online && p.name !== state.name).length };
 }
 
 /** The worlds this app hosts, read from its data folder so they show without starting the server. */
@@ -343,9 +334,8 @@ async function games() {
     if (!m) continue;
     mine.add(m.base);
     if (!m.s) continue;
-    const share = m.s.tunnel?.url ?? m.base;
-    mine.add(share);
-    for (const w of m.s.worlds) hosted.push({ name: w.name, at: w.played, live: m.s.running?.id === w.id, url: `${share}/menu#key=${m.key}&world=${w.id}` });
+    if (m.s.running) mine.add(m.s.running.link.split("/#")[0]);
+    for (const w of m.s.worlds) hosted.push({ name: w.name, at: w.played, live: m.s.running?.id === w.id, url: `${m.base}/menu#key=${m.key}&world=${w.id}` });
   }
   const copied = (await clipboard.readText()).trim().slice(0, 2000);
   return {
@@ -474,7 +464,6 @@ app.whenReady().then(() => {
 
   protocol.handle("sandbox", (req) => {
     const path = decodeURIComponent(new URL(req.url).pathname);
-    if (path.startsWith("/relay/join/")) return net.fetch(`${RELAY}/join/${encodeURIComponent(path.slice(12))}`);
     if (path === "/shell.html") return net.fetch(pathToFileURL(join(__dirname, "shell.html")).href);
     if (/^\/cover\/[a-z0-9-]+$/.test(path)) return net.fetch(pathToFileURL(join(DATA, "worlds", path.slice(7), "cover.jpg")).href);
     if (path === "/clips/") return Response.json(readdirSync(join(FRONT, "clips")).filter((f) => f.endsWith(".mp4")));

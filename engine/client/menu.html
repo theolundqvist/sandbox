@@ -18,7 +18,7 @@
   .status { color: var(--dim); font: 700 14px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; }
   .copy-row b { flex: 1; min-width: 0; font: 700 18px/1.2 var(--display); overflow: hidden; text-overflow: ellipsis; }
   .dot { width: 8px; height: 8px; background: #55524c; flex: none; } .dot.on { background: var(--ok); }
-  #app .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
+  :is(#app, #invite) .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -55,7 +55,7 @@
 
   <section id="join" class="screen" data-nav hidden>
     <h1>Join world</h1>
-    <label class="item entry"><input type="text" id="join-link" placeholder="Code or invite link" autocomplete="off" spellcheck="false"></label>
+    <label class="item entry"><input type="text" id="join-link" placeholder="Invite link" autocomplete="off" spellcheck="false"></label>
   </section>
 
   <section id="world" class="screen" data-nav hidden>
@@ -92,10 +92,8 @@
 
   <section id="invite" class="screen" data-nav hidden>
     <h1>Invite</h1>
-    <div class="copy-row"><span>Wi-Fi</span><code id="link-lan"></code><button data-copy="link-lan">Copy</button><button id="new-invite" title="Old links stop working">New link</button></div>
-    <div class="copy-row" title="Anyone with the link can join and run code on this computer"><span>Internet</span><div class="pick" id="share" data-options="off:Off,on:On"></div></div>
-    <div class="copy-row" id="public" hidden><span>Link</span><code id="link-public"></code><button data-copy="link-public">Copy</button></div>
-    <div class="copy-row" id="code-row" hidden><span>Code</span><code id="join-code" class="join-code"></code><button data-copy="join-code">Copy</button><button id="new-code" title="The old code stops working">New code</button></div>
+    <div class="copy-row"><span>Link</span><code id="link"></code><button data-copy="link">Copy</button></div>
+    <p class="note" id="wifi-only" hidden>Internet invites are down. Friends on your Wi-Fi can still join.</p>
     <div class="gap"></div>
     <div id="players"></div>
   </section>
@@ -126,7 +124,7 @@
 </main>
 <div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span></div>
 <script type="module">
-  import { backdrop, joinEntry, joinLink, joinable, logo, pick } from "/front.js";
+  import { backdrop, joinLink, joinable, logo, pick } from "/front.js";
   const $ = (id) => document.getElementById(id);
   backdrop($("backdrop"));
   logo($("logo"));
@@ -252,7 +250,7 @@
 
   function render(s) {
     const r = s.running;
-    offerApp(`${s.tunnel?.url ?? location.origin}/menu#key=${key}`);
+    offerApp(`${r?.link.split("/#")[0] ?? location.origin}/menu#key=${key}`);
     $("no-worlds").hidden = !!s.worlds.length;
     rebuild($("world-list"), s.worlds.map((w) => {
       const b = el("button", { className: "item pictured" }, coverTile(localCover(w)), el("span", { className: "what", textContent: w.name }), el("span", { className: r?.id === w.id ? "value live" : "value", textContent: r?.id === w.id ? "Live" : ago(w.played) }));
@@ -267,24 +265,13 @@
     if (selected) renderWorld();
     hostChoices(s.worlds);
     if (r) {
-      $("link-lan").textContent = `${s.lan ?? location.origin}/#invite=${r.invite}`;
-      $("share").set(s.tunnel ? "on" : "off");
-      if (s.tunnelError) $("error").textContent = s.tunnelError;
-      $("public").hidden = !s.tunnel;
-      $("link-public").textContent = s.tunnel?.url ? `${s.tunnel.url}/#invite=${r.invite}` : "Opening…";
-      $("code-row").hidden = !s.tunnel?.code;
-      $("join-code").textContent = s.tunnel?.code ? `${s.tunnel.code.slice(0, 3)}-${s.tunnel.code.slice(3)}` : "";
+      $("link").textContent = r.link;
+      $("wifi-only").hidden = !r.wifiOnly;
       rebuild($("players"), r.players.map((p) => {
-        const link = el("button", { textContent: "Copy link", title: "Their own link back in, from any address" });
-        link.dataset.key = `link-${p.name}`;
-        link.onclick = async () => {
-          await navigator.clipboard.writeText(`${s.tunnel?.url ?? s.lan ?? location.origin}/#key=${p.key}`);
-          link.textContent = "Copied";
-        };
         const remove = el("button", { className: "danger", textContent: "Remove" });
         remove.dataset.key = `remove-${p.name}`;
         remove.onclick = async () => (await ask(`Remove ${p.name}?`, "Remove")) && attempt(() => api("remove", { name: p.name }));
-        return el("div", { className: "copy-row" }, el("i", { className: p.online ? "dot on" : "dot" }), el("b", { textContent: p.name }), link, remove);
+        return el("div", { className: "copy-row" }, el("i", { className: p.online ? "dot on" : "dot" }), el("b", { textContent: p.name }), remove);
       }));
       rebuild($("snapshots"), r.snapshots.map((at) => {
         const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -340,13 +327,12 @@
     await attempt(async () => play(await api("host", { id, ...settings })));
     return true;
   }
-  joinEntry($("join-link"));
-  const joinGame = () => attempt(async () => location.assign(await joinLink($("join-link").value, state.relay)));
+  const joinGame = () => attempt(async () => location.assign(joinLink($("join-link").value)));
   /** Only reads the clipboard where the browser already allows it, so opening Join world never prompts. */
   $("go-join").addEventListener("click", async () => {
     const allowed = await navigator.permissions?.query({ name: "clipboard-read" }).then((p) => p.state === "granted", () => false);
     const copied = allowed ? (await navigator.clipboard.readText().catch(() => "")).trim() : "";
-    if (copied && !$("join-link").value && joinable(copied)) $("join-link").set(copied);
+    if (copied && !$("join-link").value && joinable(copied)) $("join-link").value = copied;
   });
   $("go-create").addEventListener("click", () => pickWorld("new"));
   $("world-play").onclick = () => hostWorld(selected);
@@ -465,9 +451,6 @@
     await attempt(async () => play(await api("create", { name: $("create-name").value, start: $("create-start").dataset.value, ...settings })));
   };
 
-  $("new-code").onclick = async () => (await ask("Make a new code?", "New code")) && attempt(() => api("code", {}));
-  $("new-invite").onclick = async () => (await ask("Make a new invite link?", "New link")) && attempt(() => api("invite", {}));
-  pick($("share"), (on) => attempt(() => api("share", { on: on === "on" })).then(() => state && $("share").set(state.tunnel ? "on" : "off")));
   for (const button of document.querySelectorAll("[data-copy]"))
     button.onclick = async () => {
       await navigator.clipboard.writeText($(button.dataset.copy).textContent);

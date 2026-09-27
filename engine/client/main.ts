@@ -55,9 +55,9 @@ const hosting = hostKey ? await hostMenu("state").then((r) => (r.ok ? r.json() :
 let me = "";
 let world = "";
 let invite = "";
-let publicUrl: string | null = null;
-let joinCode: string | null = null;
-let lanUrl: string | null = null;
+/** The world's one invite link from the host, which works only on the host's Wi-Fi while the relay can't be reached. */
+let link: string | null = null;
+let wifiOnly = false;
 
 /** A name that belongs to an offline player waits for the host to let this computer in, for up to a minute. */
 async function join(body: object) {
@@ -931,9 +931,9 @@ function connect() {
       case "welcome": {
         world = msg.world;
         invite = msg.invite;
-        publicUrl = msg.publicUrl;
-        joinCode = msg.joinCode;
-        lanUrl = msg.lanUrl;
+        link = msg.link;
+        wifiOnly = msg.wifiOnly;
+        showInvite();
         voiceAvailable = msg.voice;
         voiceHost = msg.host;
         listen();
@@ -975,10 +975,9 @@ function connect() {
       case "let-in":
         return letIn(msg.id, msg.name);
       case "public":
-        publicUrl = msg.url;
-        joinCode = msg.code;
-        lanUrl = msg.lan;
-        return;
+        link = msg.link;
+        wifiOnly = msg.wifiOnly;
+        return showInvite();
       case "claude":
         if (msg.name === me) showClaude(msg.state);
         claudes.set(msg.name, { state: msg.state, task: msg.task });
@@ -2406,10 +2405,15 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
 const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
 /** One prompt for any coding agent with a shell: it installs this world's command, signed with this player's key, then plays. */
 function connectPrompt() {
-  const base = publicUrl ?? origin;
+  const base = link?.split("/#")[0] ?? origin;
   const bin = `~/.local/bin/${slug(world)}`;
   const install = `mkdir -p ~/.local/bin && curl -fsS -H ${shellQuote(`Authorization: Bearer ${key}`)} ${shellQuote(`${base}/cli?name=${slug(world)}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin}`;
   return `First install the command for our game by running \`${install}\`. Then run \`${bin}\` alone to list its tools, call one as \`${bin} <tool> name=value\`, and give wait_for_chat calls a shell timeout of at least 300 seconds. We are playing ${world} together right now: a live multiplayer game my friends and I build while we play it, each with our own coding agent. I am ${me} in the game. Anything you reload goes live for every player at once, so make it one coherent game: extend what the others built instead of building it again, and see a thing work before you tell me it does. Start with status and read GUIDE.md, then say in a line or two what the world has and one thing you could build. From then on I talk to you only through the in-game chat, where my voice is transcribed too when I hold T: act when I ask for something or clearly want a change, not on every word. Then loop forever: wait_for_chat seconds=240, get what I (${me}) ask for built, say what is done in a line, and wait_for_chat again. If you can start subagents or background tasks, be the orchestrator and never build or test yourself: give each request, or each part of a big one, to its own subagent owning its own mod, which builds, reloads and checks it in play, keep calling wait_for_chat while they work, and say only what they saw working (GUIDE.md, Subagents). Nothing ever arrives in this terminal, so never end your turn.`;
+}
+
+function showInvite() {
+  $("invite-link").textContent = link ?? `${origin}/#invite=${invite}`;
+  $("invite-wifi").hidden = !wifiOnly;
 }
 
 let menuOpenedAt = 0;
@@ -2427,12 +2431,6 @@ async function openMenu() {
   }
   if (document.pointerLockElement) document.exitPointerLock();
   $("menu-world").textContent = world;
-  // A host playing on their own computer while the relay is out of reach invites friends on the same Wi-Fi.
-  const nearby = !publicUrl && /^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(`${origin}/`) && lanUrl;
-  $("invite-label").textContent = nearby ? "Wi-Fi link" : "Link";
-  $("invite-link").textContent = `${nearby || publicUrl || origin}/#invite=${invite}`;
-  $("invite-code-row").hidden = !joinCode;
-  $("invite-code").textContent = joinCode ? `${joinCode.slice(0, 3)}-${joinCode.slice(3)}` : "";
   $("claude-prompt").textContent = connectPrompt();
   showBuilders();
   await refreshMenu();

@@ -31,10 +31,8 @@
 .item.entry:focus-within::before { scale: 1; }
 .item.entry input { all: unset; width: 100%; font: inherit; letter-spacing: inherit; text-transform: uppercase; caret-color: var(--accent); }
 .item.entry input::placeholder { color: var(--faint); opacity: 1; }
-.item.entry input:not(.code) { text-transform: none; }
-.item.entry input:not(.code):not(:placeholder-shown) { font-size: 20px; letter-spacing: normal; }
-.item.entry input.code { font-size: 64px; letter-spacing: .2em; }
-.copy-row code.join-code { font: 700 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .2em; color: var(--text); }
+.item.entry input { text-transform: none; }
+.item.entry input:not(:placeholder-shown) { font-size: 20px; letter-spacing: normal; }
 .item.danger:focus { color: var(--err); }
 .gap { height: 24px; flex: none; }
 

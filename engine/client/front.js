@@ -132,39 +132,13 @@ function hover(e) {
 }
 addEventListener("pointermove", hover);
 
-const JOIN_CODE = /^[2-9A-HJKMNP-Z]{6}$/;
-
-/** A join entry takes a join code, shown as K7F-M2Q while it is typed, or an invite link, shown as is. */
-export function joinEntry(input) {
-  const format = () => {
-    const raw = input.value;
-    const code = !/[:/.]/.test(raw) && raw.replace(/[^a-z0-9]/gi, "").length <= 6;
-    if (code) {
-      const c = raw.replace(/[^a-z0-9]/gi, "").toUpperCase();
-      input.value = c.length > 3 ? `${c.slice(0, 3)}-${c.slice(3)}` : c;
-    } else if (input.classList.contains("code")) input.value = raw.replace(/^([A-Z0-9]{3})-/, "$1").replace(/^[A-Z0-9-]+/, (s) => s.toLowerCase());
-    input.classList.toggle("code", code && !!raw);
-  };
-  input.addEventListener("input", format);
-  input.set = (value) => {
-    input.value = value;
-    format();
-  };
-}
-
-/** Where a join entry leads: a link opens as is; a code is looked up on the relay. Throws what to tell the player. */
-export async function joinLink(text, relay) {
+/** Where a pasted invite leads: the link as is, with https:// added to a relay link copied without it. Throws what to tell the player. */
+export function joinLink(text) {
   const t = text.trim();
   if (/^https?:\/\/\S+$/.test(t)) return t;
   if (/^[\w.-]+(:\d+)?\/r\/[a-z0-9-]+/.test(t)) return `https://${t}`;
-  const code = t.replace(/[\s-]/g, "").toUpperCase();
-  if (!JOIN_CODE.test(code)) throw new Error("Type the code or paste the link your host sent.");
-  const res = await fetch(`${relay}/join/${code}`).catch(() => null);
-  if (!res) throw new Error("Can't look up codes right now. Check your connection, or ask for the invite link.");
-  const body = await res.json().catch(() => ({ error: `The relay answered ${res.status}.` }));
-  if (!res.ok) throw new Error(body.error);
-  return body.url;
+  throw new Error("Paste the invite link your host sent.");
 }
 
-/** Whether copied text is certainly something to join: an invite link, or a code in the K7F-M2Q form the host menu shows. */
-export const joinable = (text) => /^https?:\/\/\S+#(invite|key)=\S+$/.test(text) || /^[2-9A-HJKMNP-Z]{3}-[2-9A-HJKMNP-Z]{3}$/i.test(text);
+/** Whether copied text is certainly an invite link. */
+export const joinable = (text) => /^https?:\/\/\S+#(invite|key)=\S+$/.test(text);
