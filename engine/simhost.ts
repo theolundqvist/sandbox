@@ -18,17 +18,27 @@ const CRASH_BACKOFF_MS = 1000;
 const SIM = new URL("./sim.ts", import.meta.url);
 
 /** How a host reaches its simulation: a worker in this process for the hub, a child process for a game. */
-type Channel = { send(msg: object): void; retire(now?: boolean): void; pid: number | null };
+type Channel = { send(msg: object): void; retire(now?: boolean): Promise<void>; pid: number | null };
 
-/** Closes a worker's databases before terminating it, since Bun never frees what a terminated worker left open; one too stuck to answer is terminated anyway. */
+/**
+ * Closes a worker's databases before terminating it, since Bun never frees what a terminated worker left open and
+ * terminating it while it closes them crashes the process. Resolves once it is gone; one too stuck to answer is terminated after 2 s.
+ */
 function retire(worker: Worker) {
-  const timer = setTimeout(() => worker.terminate(), 500);
-  worker.addEventListener("message", ({ data }) => {
-    if (data.t !== "closed") return;
-    clearTimeout(timer);
-    worker.terminate();
+  return new Promise<void>((resolve) => {
+    const gone = () => {
+      clearTimeout(timer);
+      worker.terminate();
+      resolve();
+    };
+    const timer = setTimeout(gone, 2000);
+    worker.addEventListener("message", ({ data }) => data.t === "closed" && gone());
+    try {
+      worker.postMessage({ t: "close" });
+    } catch {
+      gone();
+    }
   });
-  worker.postMessage({ t: "close" });
 }
 
 function workerChannel(receive: (msg: any) => void, log: (text: string) => void): Channel {
@@ -56,11 +66,14 @@ function processChannel(receive: (msg: any) => void, exited: (code: number | str
     },
     retire(now) {
       retiring = true;
-      if (now) return void proc.kill("SIGKILL");
-      setTimeout(() => proc.kill("SIGKILL"), 500);
-      try {
-        proc.send({ t: "close" });
-      } catch {}
+      if (now) proc.kill("SIGKILL");
+      else {
+        setTimeout(() => proc.kill("SIGKILL"), 500);
+        try {
+          proc.send({ t: "close" });
+        } catch {}
+      }
+      return proc.exited.then(() => {});
     },
     pid: proc.pid,
   };
@@ -84,6 +97,10 @@ export class SimHost {
   private applying = new Map<string, (error: string | null) => void>();
   /** Set while a crashed game waits out its backoff; it counts as running, so nothing starts it early from its save. */
   private restarting?: Timer;
+  /** The last simulation, until it has closed its databases; the next one opens them only after. */
+  private closing: Promise<void> | null = null;
+  /** A start waiting for the last simulation to close; it counts as running. */
+  private waiting: Promise<void> | null = null;
   /** Players who entered while the game was down, by id: they arrive, with their mods' hooks, once the next process has loaded. */
   private arriving = new Map<string, object>();
 
@@ -123,7 +140,7 @@ export class SimHost {
       }
       if (Date.now() - lastChange < (this.ready ? HANG_MS : TRIAL_START_MS)) return;
       const culprit = this.culprit();
-      this.channel.retire(true);
+      this.retireChannel(true);
       if (culprit) this.on.fault(culprit.name, `froze the server for over ${HANG_MS / 1000} s`);
       this.start();
       lastChange = Date.now();
@@ -131,7 +148,7 @@ export class SimHost {
   }
 
   get running() {
-    return !!this.channel || !!this.restarting;
+    return !!this.channel || !!this.restarting || !!this.waiting;
   }
 
   get pid() {
@@ -142,9 +159,29 @@ export class SimHost {
     return this.mods().find((m) => m.id === Atomics.load(this.beat, 1));
   }
 
+  private retireChannel(now?: boolean) {
+    if (this.channel) {
+      const closing: Promise<void> = this.channel.retire(now).then(() => {
+        if (this.closing === closing) this.closing = null;
+      });
+      this.closing = closing;
+    }
+    this.channel = null;
+  }
+
   start() {
     clearTimeout(this.restarting);
     this.restarting = undefined;
+    if (this.waiting) return;
+    if (this.closing) {
+      const wait: Promise<void> = this.closing.then(() => {
+        if (this.waiting !== wait) return;
+        this.waiting = null;
+        this.start();
+      });
+      this.waiting = wait;
+      return;
+    }
     Atomics.store(this.beat, 1, 0);
     this.ready = false;
     this.startedAt = Date.now();
@@ -187,8 +224,8 @@ export class SimHost {
 
   /** Stops the simulation and forgets its world; whoever stops it saves the world first. */
   stop() {
-    this.channel?.retire();
-    this.channel = null;
+    this.retireChannel();
+    this.waiting = null;
     clearTimeout(this.restarting);
     this.restarting = undefined;
     this.arriving.clear();
@@ -255,7 +292,7 @@ export class SimHost {
 
   /** Replaces the world wholesale: a fresh simulation loads every mod against the new entities. */
   restart() {
-    this.channel?.retire();
+    this.retireChannel();
     this.start();
   }
 

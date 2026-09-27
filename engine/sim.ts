@@ -63,8 +63,9 @@ function ownDb(name: string) {
     db = copy ? Database.deserialize(copy) : new Database(":memory:");
   } else {
     db = new Database(path, { create: true });
-    db.run("pragma journal_mode = wal");
+    // First, so that switching to WAL waits out a lock instead of failing.
     db.run(`pragma busy_timeout = ${BUSY_MS}`);
+    db.run("pragma journal_mode = wal");
   }
   handles.push(db);
   writers.set(name, modDb(db));
@@ -393,6 +394,8 @@ function tick(dt: number) {
   Atomics.add(beat, 0, 1);
 }
 
+let loop: ReturnType<typeof setInterval> | undefined;
+
 const receive = async (msg: any) => {
   switch (msg.t) {
     case "init": {
@@ -423,7 +426,7 @@ const receive = async (msg: any) => {
       if (trial) return runTrial();
       let last = performance.now();
       let times: number[] = [];
-      setInterval(() => {
+      loop = setInterval(() => {
         const now = performance.now();
         tick(Math.min((now - last) / 1000, 0.25));
         last = now;
@@ -508,6 +511,9 @@ const receive = async (msg: any) => {
       return post({ t: "answer", id: msg.id, value: ticks });
     }
     case "close":
+      // Nothing may reach a database once it is closed: no tick, and no mod's later() or async work.
+      clearInterval(loop);
+      mods.clear();
       for (const db of handles.splice(0)) db.close();
       return post({ t: "closed" });
     case "walk":

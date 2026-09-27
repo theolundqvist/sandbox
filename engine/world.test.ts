@@ -321,3 +321,24 @@ test("a mod that takes 16 ms or more of every frame for 10 s is named in the fee
   await Bun.sleep(200);
   expect(named()).toEqual(["bell takes 24 ms of every frame in builder's game"]);
 });
+
+test("a world restarted by a rewind or after a mod froze it opens every mod's database again without a lock error", async () => {
+  // Every tick grows each database's write-ahead log, so a restart finds the old worker still closing them.
+  const keeper = serverMod(`{ load(world) { world.db.run("create table if not exists t (s text)"); }, tick(world) { world.db.run("insert into t values (?)", "x".repeat(50_000)); } }`);
+  for (let i = 0; i < 6; i++) await write(`mods/keeper${i}/server.ts`, keeper);
+  for (let i = 0; i < 6; i++) expect((await tool("reload", { mod: `keeper${i}` })).text).toStartWith(`keeper${i} v1 is live`);
+  const host = (action: string, body?: object) => fetch(`${BASE}/api/host/${action}`, { method: body ? "POST" : "GET", headers: { authorization: "Bearer test-host" }, body: body && JSON.stringify(body) });
+  const [at] = await (await host("snapshots")).json();
+  for (let i = 0; i < 10; i++) {
+    await Bun.sleep(1500);
+    expect((await host("rewind", { at })).status).toBe(200);
+  }
+  await write("mods/freezer/server.ts", serverMod(`{ message() { const until = performance.now() + 3000; while (performance.now() < until); } }`));
+  expect((await tool("reload", { mod: "freezer" })).text).toStartWith("freezer v1 is live");
+  await Bun.sleep(3000);
+  player.send(JSON.stringify({ t: "m", mod: "freezer", msg: {} }));
+  await Bun.sleep(8000);
+  const logs = (await tool("logs", { limit: 500 })).text;
+  expect(logs).toContain("froze the server");
+  expect(logs).not.toContain("database is locked");
+}, 90_000);
