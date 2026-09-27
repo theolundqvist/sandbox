@@ -1037,6 +1037,57 @@ export default { init() { const until = performance.now() + 600; while (performa
   });
 });
 
+describe("Continue", () => {
+  let app, shell, state;
+  before(async () => ({ app, shell, state } = await launch("continue", {}, "returner")));
+  after(() => close(app));
+
+  test("the title starts on Continue, naming the world last played, hosted or joined and after a restart, and it opens that world; a forgotten world takes it away", async () => {
+    const title = () => shell.locator("#title .item:visible").allTextContents();
+    const focused = () => shell.evaluate(() => document.activeElement.textContent);
+    /** The game view just opened, not the one just left, which closes as it goes. */
+    const opened = (left) => until("the world", async () => app.windows().find((w) => w !== left && /^https?:/.test(w.url())));
+    await shell.click("text=Host world");
+    let game = await gamePage(app);
+    await game.click("#create-go");
+    await playing(game);
+    const world = await game.textContent("#world-name");
+    await shell.click("#leave");
+    // The title comes back under the pointer, which moves the focus as it hovers; click rather than press Enter.
+    await until("Continue on the hosted world", async () => (await title())[0] === `Continue${world}`);
+    await shell.click("#go-last");
+    game = await opened(game);
+    await playing(game);
+    assert.equal(await game.textContent("#world-name"), world);
+    await shell.click("#leave");
+
+    await shell.click("text=Join world");
+    await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
+    await shell.press("#join-link", "Enter");
+    await playing(await opened(game));
+    await until("Snow Race played last", async () => state().last === other.url);
+    await shell.click("#leave");
+    await close(app);
+    ({ app, shell, state } = await launch("continue", {}, "returner"));
+    await until("Continue on the joined world", async () => (await focused()) === "ContinueSnow Race");
+    assert.deepEqual(await title(), ["ContinueSnow Race", "Worlds", "Join world", "Host world", "Settings", "Quit"]);
+    await shell.keyboard.press("Enter");
+    game = await gamePage(app);
+    await playing(game);
+    assert.equal(await game.textContent("#world-name"), "Snow Race");
+    assert.ok(game.url().startsWith(other.url));
+    await shell.click("#leave");
+
+    await shell.click("text=Worlds");
+    await until("Snow Race listed", async () => (await rows(shell)).some((r) => r.startsWith("Snow Race")));
+    await shell.focus('#games .item:has-text("Snow Race")');
+    await shell.keyboard.press("Delete");
+    await shell.click("#forget-yes");
+    await shell.keyboard.press("Escape");
+    await until("the title without Continue", async () => (await title()).join() === "Worlds,Join world,Host world,Settings,Quit");
+  });
+});
+
 describe("the host closes the game", () => {
   let app, shell, game, state;
   before(async () => ({ app, shell, state } = await launch("closing", {}, "stayer")));
