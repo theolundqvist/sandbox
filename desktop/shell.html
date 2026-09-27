@@ -12,7 +12,7 @@
   #title .logo { margin-bottom: 64px; }
   .front { top: 36px; bottom: 96px; padding-top: 60px; padding-bottom: 0; }
   .status { margin: 0; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .16em; text-transform: uppercase; }
-  #down .lead { margin: -16px 0 32px; }
+  #down .lead, #waiting .status { margin: -16px 0 32px; }
   .hints span { white-space: nowrap; }
   @media (max-width: 1000px), (max-height: 640px) {
     .front { bottom: 64px; padding: 28px 48px 0; }
@@ -101,9 +101,13 @@
     <div class="items">
       <button class="item" id="retry">Retry</button>
       <button class="item" id="copy-details" hidden>Copy details</button>
-      <button class="item" data-to="saved">Worlds</button>
-      <button class="item" data-to="join">Join world</button>
     </div>
+  </section>
+
+  <section id="waiting" class="screen" data-nav hidden>
+    <h1 id="waiting-title"></h1>
+    <p class="status" id="waiting-text"></p>
+    <div class="items"><button class="item" id="waiting-back">Back</button></div>
   </section>
 
   <p id="busy" class="status" hidden></p>
@@ -134,6 +138,8 @@
   }
   function back() {
     if (stack.length < 2) return;
+    // Leaving the waiting screen stops waiting for that world.
+    if (current().id === "waiting") shell.leave();
     stack.pop();
     enter();
   }
@@ -251,15 +257,21 @@
     }
   });
   $("copy-details").onclick = () => navigator.clipboard.writeText($("copy-details").dataset.log).then(() => ($("copy-details").textContent = "Copied"));
+  $("waiting-back").onclick = back;
+  /** A world that didn't open: the app waits for it and goes in by itself, while a game server that didn't start says why. */
   shell.on("down", ({ url, name, why, cause, log }) => {
-    const world = name ?? "The world";
-    $("down-title").textContent = why === "server" ? "Couldn't start" : "Can't reach";
-    $("down-text").textContent = { offline: "You're offline. Check your internet, then retry.", closed: `${world} is closed. Ask the host to open it, then retry.`, silent: `${world} isn't answering. Ask the host if it's running, then retry.`, server: cause ?? "Your game server didn't answer in time. Retry, or restart your computer if it keeps happening." }[why];
+    show("title", { reset: true });
+    if (why !== "server") {
+      $("waiting-title").textContent = name ?? "The world";
+      $("waiting-text").textContent = why === "offline" ? "You're offline. Waiting for your connection" : "Waiting for the host to open it";
+      return show("waiting");
+    }
+    $("down-title").textContent = "Couldn't start";
+    $("down-text").textContent = cause ?? "Your game server didn't answer in time. Retry, or restart your computer if it keeps happening.";
     $("copy-details").dataset.log = log?.join("\n") ?? "";
     $("copy-details").textContent = "Copy details";
     $("copy-details").hidden = !log?.length;
     $("retry").dataset.url = url;
-    show("title", { reset: true });
     show("down");
   });
   addEventListener("focus", () => document.body.classList.contains("playing") || refresh());

@@ -93,7 +93,7 @@ const worldBase = (url) => url.origin + (url.pathname.match(/^\/r\/[a-z0-9-]+/)?
 
 async function remember(base) {
   const info = await session.defaultSession.fetch(`${base}/api/info`).then((r) => r.json()).catch(() => null);
-  const name = info?.name ?? new URL(base).host;
+  const name = info?.name ?? state.recents.find((r) => r.url === base)?.name ?? new URL(base).host;
   state.recents = [{ url: base, name, at: Date.now() }, ...state.recents.filter((r) => r.url !== base)].slice(0, 8);
   save();
   if (game) {
@@ -114,13 +114,14 @@ function play(raw) {
   const view = new WebContentsView({ webPreferences: { preload: join(__dirname, "game-preload.cjs"), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
   view.setBackgroundColor("#0b0b0c");
   game = { view, name: url.host };
-  /** Why the game didn't open: this computer is offline, the world is closed, or its host doesn't answer. */
+  /** Why the game didn't open: this computer is offline, the world is closed, or its host doesn't answer. It opens by itself once the world answers. */
   const fail = (reason, why = "silent") => {
     if (game?.view !== view) return;
     console.log(`Couldn't reach ${url.href}: ${reason}`);
     leave();
     const name = state.recents.find((r) => r.url === worldBase(url))?.name ?? null;
     shell.webContents.send("down", { url: url.href, name, why });
+    waitFor(url);
   };
   // A host that drops packets never answers; don't leave a blank window for the minute Chromium waits.
   const timer = setTimeout(() => fail("no answer"), 15000);
@@ -159,6 +160,19 @@ function play(raw) {
   void wc.loadURL(url.href);
   wc.focus();
   return null;
+}
+
+/** A world that didn't open, asked every 2 seconds whether it is back. */
+let waiting = null;
+function waitFor(url) {
+  const check = async () => {
+    const back = await ask(`${worldBase(url)}/api/info`).then((r) => r.ok, () => false);
+    if (waiting !== timer) return;
+    if (back) play(url.href);
+    else waiting = timer = setTimeout(check, 2000);
+  };
+  let timer = setTimeout(check, 2000);
+  waiting = timer;
 }
 
 const DATA = join(app.getPath("userData"), "data");
@@ -342,6 +356,8 @@ async function games() {
 }
 
 function leave() {
+  clearTimeout(waiting);
+  waiting = null;
   if (!game) return;
   win.contentView.removeChildView(game.view);
   // Closing as a browser tab would lets the page finish: the host's game sends its world's picture as it goes.

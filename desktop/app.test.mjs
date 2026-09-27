@@ -980,8 +980,8 @@ export default { init() { const until = performance.now() + 600; while (performa
 });
 
 describe("the host closes the game", () => {
-  let app, shell, game;
-  before(async () => ({ app, shell } = await launch("closing", {}, "stayer")));
+  let app, shell, game, state;
+  before(async () => ({ app, shell, state } = await launch("closing", {}, "stayer")));
   after(() => close(app));
 
   test("players in it are told, not left reconnecting", async () => {
@@ -1008,19 +1008,36 @@ describe("the host closes the game", () => {
     assert.equal(await shown(game, "#rules"), false);
   });
 
-  test("opening it again from Worlds says it is closed, and Retry opens it once the host is back", async () => {
+  test("opening it again from Worlds waits for the host, keeps its name, and goes back in by itself once the host is back", async () => {
     await shell.click("#leave");
     await shell.click("text=Worlds");
     await until("the world", async () => (await rows(shell)).some((r) => r.startsWith("Snow Race")));
     await shell.click("#games .item >> text=Snow Race");
     await shell.click("#game-continue");
-    await until("the message", async () => (await shell.textContent("#down-text")) === "Snow Race is closed. Ask the host to open it, then retry.");
+    await shell.locator("#waiting").waitFor();
+    assert.deepEqual([await shell.textContent("#waiting-title"), await shell.textContent("#waiting-text")], ["Snow Race", "Waiting for the host to open it"]);
+    assert.equal(state().recents.find((r) => r.url === other.url).name, "Snow Race");
+    otherLauncher = startOther();
+    game = await until("the game back", async () => app.windows().find((w) => w.url().startsWith(other.url)), 30000);
+    await playing(game);
+    assert.equal(await game.textContent("#world-name"), "Snow Race");
+    assert.equal(await shown(shell, "#waiting"), false);
+  });
+
+  test("Back stops waiting", async () => {
+    await shell.click("#leave");
+    otherLauncher.kill();
+    await until("the world gone", async () => !(await fetch(`${other.url}/api/info`)).ok);
+    await shell.click("text=Worlds");
+    await shell.click("#games .item >> text=Snow Race");
+    await shell.click("#game-continue");
+    await shell.locator("#waiting").waitFor();
+    await shell.click("#waiting-back");
     otherLauncher = startOther();
     await until("the world back", async () => (await fetch(`${other.url}/api/info`)).ok, 20000);
-    await shell.click("#retry");
-    game = await gamePage(app);
-    await until("Snow Race", async () => (await game.textContent("#world-name")) === "Snow Race");
-    assert.equal(game.url().startsWith(other.url), true);
+    await sleep(3000);
+    assert.equal(app.windows().some((w) => w.url().startsWith(other.url)), false);
+    assert.equal(await menuShown(shell), true);
   });
 });
 
