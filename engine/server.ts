@@ -239,7 +239,7 @@ const mods = new Mods(ROOT, BUILD, join(DATA, "mods.json"), {
 });
 const sims = new Sims(DATA, DB, () => mods.list(), {
   deliver: (id, text) => {
-    (sockets.get(id) ?? spectators.get(id))?.send(text);
+    (sockets.get(id) ?? spectators.get(id))?.send(text, true);
     sent(id, text);
   },
   notify: (id, msg) => sockets.get(id)?.send(JSON.stringify(msg)),
@@ -640,6 +640,7 @@ const server = Bun.serve<Conn>({
     return new Response("not found", { status: 404 });
   }),
   websocket: {
+    perMessageDeflate: true,
     open(ws) {
       const { name } = ws.data;
       if (!name) return ws.close(4001, "You joined from another device");
