@@ -480,8 +480,10 @@ export default {
   expect(await tool(again, "query_world", { components: ["note"], game: "" })).toContain('"note":"kept"');
   expect(await tool(again, "query_world", { components: ["pillar"] })).toContain('"pillar":"north"');
   expect(await tool(again, "history", { mod: "note" })).toContain("note v1");
-  // Its load hook ran once more, on top of the rows it brought along.
-  expect(answer(await tool(again, "query_db", { mod: "note", sql: "select count(*) n from loads" }))).toEqual([{ n: loads + 1 }]);
+  // Its load hook ran once more, on top of the rows it brought along; the simulation loads mods just after the world starts answering.
+  const loadsNow = async () => answer(await tool(again, "query_db", { mod: "note", sql: "select count(*) n from loads" }));
+  for (let i = 0; i < 40 && (await loadsNow())[0].n === loads; i++) await Bun.sleep(50);
+  expect(await loadsNow()).toEqual([{ n: loads + 1 }]);
   const activity = await (await fetch(`http://127.0.0.1:${LAUNCHER}/api/host/activity?kind=tool&summary=false&minutes=10`, { headers: { authorization: `Bearer ${hosted.running.hostKey}` } })).json();
   expect(activity.some((r: any) => r.who === "alice" && r.data.tool === "reload")).toBe(true);
   await menu("stop", {});
