@@ -145,7 +145,8 @@ const answer = (app, response) =>
 const asked = (app) => app.evaluate(() => globalThis.asked);
 
 /** In the game: the app joins as its player's name without asking. */
-const playing = (page) => until("the game", () => page.locator("#hud").evaluate((hud) => !hud.hidden));
+/** In the game: the HUD shows and the server has welcomed this player. */
+const playing = (page) => until("the game", () => page.locator("#hud").evaluate((hud) => !hud.hidden && hud.getRootNode().getElementById("status").hidden));
 
 async function joinAs(page, name) {
   await page.locator("#join-name").waitFor();
@@ -812,6 +813,15 @@ describe("in a browser", () => {
     await page.keyboard.press("Enter");
     assert.equal(await opacity(), 1);
     await page.keyboard.press("Escape");
+  });
+
+  test("a late second notice that the mouse was freed doesn't open the menu once the chat has closed", async () => {
+    await until("the mouse locked", () => page.evaluate(() => !!document.pointerLockElement));
+    await page.evaluate(() => document.exitPointerLock());
+    await until("the mouse freed", () => page.evaluate(() => !document.pointerLockElement));
+    await page.evaluate(() => document.dispatchEvent(new Event("pointerlockchange")));
+    await sleep(300);
+    assert.equal(await shown(page, "#menu"), false);
   });
 
   test("the search palette opens over the menu", async () => {

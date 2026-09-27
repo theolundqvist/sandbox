@@ -1851,15 +1851,19 @@ function capture() {
 renderer.domElement.addEventListener("click", capture);
 /** Mods free the mouse for their own windows through exitPointerLock; a loss nobody asked for (Esc, switching windows) pauses into the menu. */
 let unlockAsked = false;
+let locked = false;
 const exitPointerLock = Document.prototype.exitPointerLock;
 Document.prototype.exitPointerLock = function () {
   unlockAsked = true;
   return exitPointerLock.call(this);
 };
 document.addEventListener("pointerlockchange", () => {
+  // Chromium can announce a lock after it was already released, so only a real change counts.
+  if (!!document.pointerLockElement === locked) return;
+  locked = !locked;
   const asked = unlockAsked;
   unlockAsked = false;
-  if (!document.pointerLockElement && !asked && inputFree()) void openMenu();
+  if (!locked && !asked && inputFree()) void openMenu();
 });
 // Coming back to the window takes mouse-look straight back where the page may lock without a click (the desktop app); browsers refuse quietly.
 addEventListener("focus", capture);
