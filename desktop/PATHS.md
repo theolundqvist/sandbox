@@ -81,7 +81,7 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | Voice, player without host key | mic reads Voice off | disabled | app: link joins (visitor) |
 | Voice, key refused later | hold T | host: "ElevenLabs refused the voice key. Add it again in Settings."; players: "Voice didn't go through. Try again." | manual |
 | Mic blocked in the app | hold T | "Voice needs the microphone. Hold T again to allow it." | manual |
-| Connect a coding agent | Claude tab | one prompt for any agent with a shell, with Copy; Copied shows in place | app: connecting an agent |
+| Connect a coding agent | Agent tab | one prompt for any agent with a shell, with Copy; Copied shows in place | app: connecting an agent |
 
 ## Browser
 

@@ -18,6 +18,7 @@
   .status { color: var(--dim); font: 700 14px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; }
   .copy-row b { flex: 1; min-width: 0; font: 700 18px/1.2 var(--display); overflow: hidden; text-overflow: ellipsis; }
   .dot { width: 8px; height: 8px; background: #55524c; flex: none; } .dot.on { background: var(--ok); }
+  #create .field { min-height: 56px; }
   :is(#app, #invite) .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
 </style>
 </head>
@@ -78,7 +79,7 @@
     <div class="field"><span>Mods</span><div class="pick rules" id="configure-rules" data-options="open:Anyone changes,additive:Add only"></div></div>
   </section>
 
-  <section id="create" class="screen" data-nav hidden>
+  <section id="create" class="screen" data-nav data-enter="Host" hidden>
     <h1>Host world</h1>
     <div class="field"><span>World</span><div class="pick" id="create-world"></div></div>
     <label class="field new-only"><span>Name</span><input type="text" id="create-name" placeholder="Random" maxlength="40" autocomplete="off" spellcheck="false"></label>
@@ -86,8 +87,7 @@
     <label class="field"><span>Password</span><input type="text" id="create-password" placeholder="None" maxlength="40" autocomplete="off" spellcheck="false"></label>
     <div class="field"><span>Agents</span><div class="pick" id="create-agents" data-options="on:Allowed,off:Not allowed"></div></div>
     <div class="field"><span>Mods</span><div class="pick rules" id="create-rules" data-options="open:Anyone changes,additive:Add only"></div></div>
-    <div class="gap"></div>
-    <div class="items"><button class="item" id="create-go">Host</button></div>
+    <div class="items"><button class="item" id="create-go" autofocus>Host</button></div>
   </section>
 
   <section id="invite" class="screen" data-nav hidden>
@@ -122,7 +122,7 @@
 
   <div id="error" class="error"></div>
 </main>
-<div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span></div>
+<div class="hints"><span><kbd>↑↓</kbd>Select</span><span id="enter-hint"><kbd>Enter</kbd>Open</span></div>
 <script type="module">
   import { backdrop, joinLink, joinable, logo, pick } from "/front.js";
   const $ = (id) => document.getElementById(id);
@@ -175,7 +175,8 @@
     for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== id;
     $("error").textContent = "";
     $("back").hidden = stack.length < 2 && !inApp;
-    const target = focus?.isConnected && !focus.disabled && focus.getClientRects().length ? focus : $(id).querySelector(".item:not([hidden]):not(:disabled), .field input, .pick, .copy-row button");
+    $("enter-hint").lastChild.textContent = $(id).dataset.enter ?? "Open";
+    const target = focus?.isConnected && !focus.disabled && focus.getClientRects().length ? focus : $(id).querySelector("[autofocus]") ?? $(id).querySelector(".item:not([hidden]):not(:disabled), .field input, .pick, .copy-row button");
     target?.focus();
   }
   addEventListener("keydown", (e) => {

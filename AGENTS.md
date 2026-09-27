@@ -28,7 +28,7 @@ curl -s -X POST localhost:7777/api/menu/export -H "authorization: Bearer $K" -H 
 curl -s -X POST localhost:7777/api/menu/import -H "authorization: Bearer $K" --data-binary @world.zip
 ```
 
-The zip holds every mod and its history, the entities, each mod's database and the record. It never holds the invite, the host key or players' keys, so after a move every player pastes the new prompt from the game's Claude page into their agent; a name they played under gets its mods back. Imports through the relay are capped at 25 MB.
+The zip holds every mod and its history, the entities, each mod's database and the record. It never holds the invite, the host key or players' keys, so after a move every player pastes the new prompt from the game's Agent page into their agent; a name they played under gets its mods back. Imports through the relay are capped at 25 MB.
 
 ## Host on a Linux server
 
@@ -77,7 +77,7 @@ To move from another machine: export the world there and stop that launcher, the
   ```
 
   Skim a long recording first with one frame every 10–15 s tiled into contact sheets (`ffmpeg -ss <t> -frames:v 1` per frame, then `xstack`), then zoom into promising ranges at 1 fps.
-- Privacy, for every frame you keep: crop to the game canvas only. Nothing outside it: no OS menu bar, dock, notifications or other apps; no URL bar (invite and host keys live in URLs); no terminals; no Tab menu Claude page (its prompt holds the player's key); no invite links, join codes of a live world, emails, IPs, hostnames or API keys. Players' first names in the game are fine. If a good moment shows something private, crop it out or skip it, and look at the final frames yourself before committing.
+- Privacy, for every frame you keep: crop to the game canvas only. Nothing outside it: no OS menu bar, dock, notifications or other apps; no URL bar (invite and host keys live in URLs); no terminals; no Tab menu Agent page (its prompt holds the player's key); no invite links of a live world, emails, IPs, hostnames or API keys. Players' first names in the game are fine. If a good moment shows something private, crop it out or skip it, and look at the final frames yourself before committing.
 
 ## Secrets
 

@@ -258,7 +258,13 @@ describe("hosting and joining", () => {
     const game = await gamePage(app);
     assert.deepEqual(await game.locator("#create .field:visible output").allTextContents(), ["New world", "3D field", "Allowed", "Anyone changes"]);
     assert.equal(await game.inputValue("#create-password"), "");
-    await game.click("#create-go");
+    const host = await game.locator("#create-go").evaluate((el) => {
+      const box = el.getBoundingClientRect();
+      return { focused: document.activeElement === el, clickable: document.elementFromPoint(box.x + 40, box.y + box.height / 2) === el, aboveHints: box.bottom <= document.querySelector(".hints").getBoundingClientRect().top };
+    });
+    assert.deepEqual(host, { focused: true, clickable: true, aboveHints: true });
+    assert.equal(await game.textContent("#enter-hint"), "EnterHost");
+    await game.keyboard.press("Enter");
     await game.waitForURL(/:\d+\/(#.*)?$/);
     await playing(game);
     const world = await game.textContent("#world-name");

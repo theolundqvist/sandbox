@@ -2322,10 +2322,7 @@ function leave() {
 $("leave").onclick = leave;
 
 /** The host's own world: rewind it to a saved moment, export it, or stop hosting it. */
-if (hostsThisWorld) {
-  $("rail").querySelector<HTMLElement>("[data-tab=world]")!.hidden = false;
-  $("world-saved").textContent = info.name;
-}
+if (hostsThisWorld) $("rail").querySelector<HTMLElement>("[data-tab=world]")!.hidden = false;
 async function showWorld() {
   $("world-stop").textContent = "Stop hosting";
   const s = await (await hostMenu("state")).json();
