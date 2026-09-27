@@ -507,7 +507,7 @@ export function createCli(ctx: CliContext) {
         if (!ctx.mods.running.has(mod)) throw new ToolError(`${mod} isn't live; reload it first.`);
         checkBanner(args, "", "nothing was shown");
         const wait = (bannered.get(mod) ?? 0) + BANNER_GAP - Date.now();
-        if (wait > 0) throw new ToolError(`${mod} had a banner ${Math.round((BANNER_GAP - wait) / 1000)} s ago and gets at most one a minute; nothing was shown.`);
+        if (wait > 0) throw new ToolError(`${mod} gets at most one banner a minute; nothing was shown. Call announce again in ${Math.ceil(wait / 1000)} s.`);
         banner(mod, who, args, false);
         return "Shown to every player.";
       }

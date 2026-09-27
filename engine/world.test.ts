@@ -122,7 +122,7 @@ test("announce reveals a live mod with a banner but no vote, at most once a minu
 
   const again = await tool("announce", { mod: "basics", title: "Triple jump" });
   expect(again.status).toBe(422);
-  expect(again.text).toContain("at most one a minute");
+  expect(again.text).toMatch(/Call announce again in [1-6]?\d s\./);
   expect((await tool("announce", { mod: "nowhere", title: "Ghost" })).status).toBe(422);
   await Bun.sleep(100);
   expect(received.some((m) => m.t === "announce" && ["Triple jump", "Ghost"].includes(m.title))).toBe(false);
