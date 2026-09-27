@@ -380,17 +380,36 @@ export default {
     if (!world.query("note").length) world.spawn({ note: "kept" });
     world.db.run("create table if not exists loads (at integer)");
     world.db.run("insert into loads values (?)", Date.now());
+    const said = world.db.get("select text from said");
+    if (said && !world.query("said").length) world.spawn({ said: said.text });
   },
 } satisfies ServerMod;
 `;
+  // Players' text with the invite in it, everywhere a world keeps it: a mod's table and an entity, the record through a tool call, chat in the timelapse.
+  mkdirSync(join(worldDir(id), "db"), { recursive: true });
+  const sign = new Database(join(worldDir(id), "db/note.sqlite"));
+  sign.run("create table said (text text)");
+  sign.run("insert into said values (?)", [`Join us: ${invite}`]);
+  sign.close();
   await tool(alice, "write_file", { path: "mods/note/server.ts", content: note });
   await tool(alice, "reload", { mod: "note" });
-  // A Claude that passes the invite to a tool puts it in the record, which the export must scrub.
   await tool(alice, "logs", { mod: invite });
-  // The world saves every 5 s.
-  for (let i = 0; i < 100 && !count(join(worldDir(id), "world.sqlite"), `select count(*) n from entity where data like '%"note"%'`); i++) await Bun.sleep(100);
+  await tool(alice, "say", { text: `Join us: ${invite}` });
+  const inWorld = (sql: string) => count(join(worldDir(id), "world.sqlite"), sql);
+  const inMoments = (path: string) => {
+    const db = new Database(path, { readonly: true });
+    try {
+      return (db.query("select data from timelapse").all() as { data: Uint8Array<ArrayBuffer> }[]).filter((r) => new TextDecoder().decode(Bun.gunzipSync(r.data)).includes(invite)).length;
+    } finally {
+      db.close();
+    }
+  };
+  // The world saves every 5 s and records a timelapse moment every 2 s.
+  for (let i = 0; i < 100 && !(inWorld(`select count(*) n from entity where data like '%${invite}%'`) && inWorld(`select count(*) n from timelapse where activity like '%${invite}%'`) && inMoments(join(worldDir(id), "world.sqlite"))); i++) await Bun.sleep(100);
   await menu("stop", {});
   expect(count(join(worldDir(id), "record.sqlite"), `select count(*) n from events where data like '%${invite}%'`)).toBeGreaterThan(0);
+  expect(inWorld(`select count(*) n from timelapse where activity like '%${invite}%'`)).toBeGreaterThan(0);
+  expect(inMoments(join(worldDir(id), "world.sqlite"))).toBeGreaterThan(0);
   // A game with a save its process holds open, mid-WAL, beside a file of its own that stays home.
   const games = JSON.stringify({ arena: { id: "arena", title: "Arena", tagline: "Last one standing.", color: "#c33", status: "early", createdBy: "alice", createdAt: 1 } }, null, 2);
   const seats = JSON.stringify({ alice: { game: "arena", lastPos: { arena: [1, 2, 3] } } }, null, 2);
@@ -432,6 +451,8 @@ export default {
   expect(JSON.parse(new TextDecoder().decode(files["config.json"]))).toEqual({ name: "Export Test", rules: "additive", start: "basics" });
   expect(JSON.parse(new TextDecoder().decode(files["mods.json"])).note.build.server).toMatch(/^note\/[a-z0-9]+\/server\/server\.js$/);
   for (const [name, data] of Object.entries(files)) for (const secret of [hostKey, invite, alice]) expect(Buffer.from(data).includes(secret), `${secret} in ${name}`).toBe(false);
+  writeFileSync(join(dir, "exported.sqlite"), files["world.sqlite"]!);
+  expect(inMoments(join(dir, "exported.sqlite"))).toBe(0);
   writeFileSync(join(dir, "note.sqlite"), files["db/note.sqlite"]!);
   const loads = count(join(dir, "note.sqlite"), "select count(*) n from loads");
 

@@ -25,19 +25,30 @@ type Mod = { build: Build; previous: Build[] };
 const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value, null, 2));
 const readJson = (path: string) => (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {});
 
-/** A consistent copy of a database another process may be writing: VACUUM INTO reads it in one transaction and leaves out freed pages, which can still hold the text scrubbed from it. */
+/** A consistent copy of a database another process may be writing, with the world's secrets out of every table, since players paste invites into chat; the last vacuum drops freed pages that still hold them. */
 function snapshot(path: string, into: string, secrets: string[]) {
   const source = new Database(path, { readonly: true });
   source.run("pragma busy_timeout = 5000");
   source.run("vacuum into ?", [into]);
   source.close();
-  // The record keeps the world's last output lines when it stops, and those print the host link.
-  if (path.endsWith("record.sqlite")) {
-    const copy = new Database(into);
-    for (const secret of secrets) copy.run("update events set data = replace(data, ?, '[secret]')", [secret]);
-    copy.run("vacuum");
-    copy.close();
+  const copy = new Database(into);
+  const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
+  const scrub = (text: string) => secrets.reduce((t, s) => t.replaceAll(s, "[secret]"), text);
+  let scrubbed = 0;
+  for (const { name } of copy.query("select name from sqlite_master where type = 'table' and name not like 'sqlite_%'").all() as { name: string }[]) {
+    for (const { name: column } of copy.query("select name from pragma_table_info(?)").all(name) as { name: string }[]) {
+      const [table, col] = [quote(name), quote(column)];
+      for (const secret of secrets) scrubbed += copy.run(`update ${table} set ${col} = replace(${col}, ?1, '[secret]') where typeof(${col}) = 'text' and instr(${col}, ?1)`, [secret]).changes;
+      // Timelapse moments are gzipped JSON.
+      for (const { v } of copy.query(`select ${col} v from ${table} where typeof(${col}) = 'blob' and substr(${col}, 1, 2) = x'1f8b'`).all() as { v: Uint8Array<ArrayBuffer> }[]) {
+        const text = new TextDecoder().decode(Bun.gunzipSync(v));
+        const clean = scrub(text);
+        if (clean !== text) scrubbed += copy.run(`update ${table} set ${col} = ? where ${col} = ?`, [Bun.gzipSync(clean), v]).changes;
+      }
+    }
   }
+  if (scrubbed) copy.run("vacuum");
+  copy.close();
   return readFileSync(into);
 }
 
