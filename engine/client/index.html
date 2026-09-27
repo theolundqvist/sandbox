@@ -292,17 +292,9 @@
       <div class="items">
         <label class="item entry" id="join-name-field"><input type="text" id="join-name" placeholder="Your name" maxlength="16" autocomplete="off" spellcheck="false"></label>
         <label class="item entry" id="join-password-field" hidden><input type="password" id="join-password" placeholder="Password" autocomplete="off"></label>
-        <button class="item" type="submit" id="join-go">Join<span class="value" id="join-online"></span></button>
-        <button class="item" type="button" id="join-app-go" hidden>Get the app</button>
+        <button class="item" type="submit" id="join-go">Play<span class="value" id="join-online"></span></button>
       </div>
       <div id="join-error" class="error"></div>
-    </div>
-    <div id="join-app" class="screen" data-nav hidden>
-      <button type="button" class="back" id="app-back">Back<kbd>Esc</kbd></button>
-      <h1>Desktop app</h1>
-      <p class="lead">Full screen. Mouse look without interruptions. Right-click works.</p>
-      <div class="copy-row"><span>Install</span><code id="app-install"></code><button type="button" data-copy="app-install">Copy</button></div>
-      <p class="note">Mac and Linux. On Windows, in WSL.</p>
     </div>
   </form>
 </div>
@@ -376,7 +368,6 @@
       <p class="note" id="voice-where" hidden></p>
       <label class="field" id="open-mic-field" hidden><span>Always-on mic</span><input type="checkbox" id="open-mic"></label>
       <label class="field"><span>Volume</span><span class="range"><input type="range" id="volume" min="0" max="100" step="5"><input type="number" id="volume-exact" min="0" max="100"><em>%</em></span></label>
-      <div class="copy-row" id="app-row" hidden><span>Desktop app</span><code id="app-command"></code><button data-copy="app-command">Copy</button></div>
       <div id="help-keys"></div>
     </section>
   </div>

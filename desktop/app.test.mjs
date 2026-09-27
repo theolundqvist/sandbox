@@ -755,13 +755,11 @@ describe("in a browser", () => {
     assert.match(await page.textContent("#app-install"), /desktop\/install \| bash -s -- '.+#key=/);
   });
 
-  test("an invite link joins through the relay, and offers the app with the same link", async () => {
-    const link = `${other.url}/#invite=${other.invite}`;
-    await page.goto(link);
+  test("an invite link joins through the relay with a name and Play, and nothing else", async () => {
+    await page.goto(`${other.url}/#invite=${other.invite}`);
     await until("the join screen", async () => (await page.textContent("#join-world")) === "Snow Race");
-    await page.click("#join-app-go");
-    assert.ok((await page.textContent("#app-install")).endsWith(`bash -s -- '${link}'`));
-    await page.keyboard.press("Escape");
+    assert.deepEqual(await page.locator("#join-main .item:visible").evaluateAll((items) => items.map((i) => i.id)), ["join-name-field", "join-go"]);
+    assert.equal(await page.locator("#join-go").evaluate((b) => b.firstChild.textContent), "Play");
     await page.fill("#join-name", "Browser");
     await page.click("#join-go");
     await until("the game", () => page.locator("#join").isHidden());

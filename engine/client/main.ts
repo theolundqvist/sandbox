@@ -70,30 +70,6 @@ async function join(body: object) {
   history.replaceState(null, "", location.pathname);
 }
 
-/** The desktop app installs from GitHub and opens the link it's given. The app marks its user agent with SandboxDesktop. */
-const appCommand = (link: string) => `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '${link}'`;
-const appWanted = !navigator.userAgent.includes("SandboxDesktop");
-
-/** On computers the join screen offers the app as the other way to play. */
-function offerApp(link: string) {
-  if (!appWanted) return;
-  $("app-install").textContent = appCommand(link);
-  $("join-go").firstChild!.textContent = "Play in browser";
-  $("join-app-go").hidden = false;
-  const showApp = (on: boolean) => {
-    $("join-app").hidden = !on;
-    $("join-main").hidden = on;
-    $(on ? "app-back" : "join-app-go").focus();
-  };
-  $("join-app-go").onclick = () => showApp(true);
-  $("app-back").onclick = () => showApp(false);
-  $("join-app").onkeydown = (e) => {
-    if (e.key !== "Escape") return;
-    e.stopPropagation();
-    showApp(false);
-  };
-}
-
 /** The join screen, over the game itself when the link holds an invite. A player who left the world comes back to it and rejoins as themselves. */
 async function start() {
   const left = hashParams.has("left") && !!key;
@@ -123,7 +99,6 @@ async function start() {
   $("join-name-field").hidden = left;
   if (hashParams.get("invite")) spectate(hashParams.get("invite")!);
   else if (!left) $("join-error").textContent = "Ask the host for an invite link.";
-  offerApp(hashParams.get("invite") ? `${info.publicUrl ?? origin}/#invite=${hashParams.get("invite")}` : `${info.publicUrl ?? origin}/`);
   const name = $<HTMLInputElement>("join-name");
   name.value = appName ?? localStorage.getItem("sandbox-name") ?? "";
   const named = () => ($<HTMLButtonElement>("join-go").disabled = !left && !name.value.trim());
@@ -2640,8 +2615,6 @@ if (watching) {
   if (!(await playTimelapse())) setTimeout(() => location.assign("menu"), 4000);
 } else {
   await start();
-  $("app-row").hidden = !appWanted;
-  $("app-command").textContent = appCommand(`${publicUrl ?? info.publicUrl ?? origin}/#key=${key}`);
   $("hud").hidden = false;
   $("howto-world").textContent = info.name;
   howto.hidden = false;
