@@ -20,7 +20,10 @@ async function startWorld() {
     stdout: "ignore",
     stderr: "inherit",
   });
-  for (let i = 0; i < 200 && !(await fetch(`${BASE}/api/info`).then((r) => r.ok, () => false)); i++) await Bun.sleep(100);
+  for (let i = 0; !(await fetch(`${BASE}/api/info`).then((r) => r.ok, () => false)); i++) {
+    if (i > 300) throw new Error("the world didn't answer within 30 s of starting");
+    await Bun.sleep(100);
+  }
 }
 
 async function connect(name: string) {
@@ -91,6 +94,15 @@ function seen(who: string) {
   return [...all.values()];
 }
 const everSent = (who: string, component: string) => players[who]!.got.some((m) => m.t === "tick" && Object.values(m.set).some((e: any) => component in e));
+/** Waits until a game runs in a new process that loaded its mods and ticks for `who` again; a crashed game waits a moment before it restarts. */
+async function restarted(id: string, before: number, who = "ada") {
+  await until(async () => {
+    const g = await game(id);
+    return g.running && g.pid && g.pid !== before;
+  });
+  const from = players[who]!.got.length;
+  await until(() => players[who]!.got.slice(from).some((m) => m.t === "tick"));
+}
 
 test("games are created, edited and listed through the tools, and a bad card or a mod naming no game is refused", async () => {
   expect((await tool("create_game", { id: "alpha", title: "Alpha", tagline: "The first", color: "#1d6b4f" })).status).toBe(200);
@@ -151,7 +163,7 @@ test("each game runs in its own process, and a player in one never gets another 
   expect(players.ada!.got.findLast((m) => m.t === "games").mods).toEqual({ alpha: 1, beta: 1 });
 
   // Each game's tick times, apart from the hub's.
-  await until(async () => (await json("perf")).games.beta?.msPerTick >= 0, 5000);
+  await until(async () => (await json("perf")).games.beta?.msPerTick >= 0);
   const { server, games } = await json("perf");
   expect(Object.keys(games).sort()).toEqual(["alpha", "beta"]);
   expect(games.beta.modTicks["beta-world"]).toBeDefined();
@@ -164,21 +176,27 @@ test("a mod that freezes its game stalls only that game, which restarts without 
   const before = (await game("alpha")).pid;
   const betaCount = () => seen("bo").find((e) => e.betaThing)?.n ?? -1;
   players.ada!.ws.send(JSON.stringify({ t: "m", mod: "alpha-freeze", msg: {} }));
-  await Bun.sleep(300);
+  // Alpha is frozen once no tick of it reaches ada for a while; only a real stretch of time shows a silence.
+  await until(async () => {
+    const n = players.ada!.got.length;
+    await Bun.sleep(300);
+    return !players.ada!.got.slice(n).some((m) => m.t === "tick");
+  });
+  const unloaded = () => players.ada!.got.some((m) => m.t === "feed" && m.text.startsWith("alpha-freeze was unloaded"));
   const during = betaCount();
   const started = performance.now();
   expect((await fetch(`${BASE}/api/info`)).ok).toBe(true);
-  expect(performance.now() - started).toBeLessThan(500);
-  await Bun.sleep(1000);
-  expect(betaCount()).toBeGreaterThan(during + 10);
-  await until(() => players.ada!.got.some((m) => m.t === "feed" && m.text.startsWith("alpha-freeze was unloaded")));
+  // Well under the 2 s a frozen world would take.
+  expect(performance.now() - started).toBeLessThan(1000);
+  await until(() => betaCount() > during + 10);
+  expect(unloaded()).toBe(false);
+  await until(unloaded);
   const after = await game("alpha");
   expect(after.running).toBe(true);
   expect(after.pid).not.toBe(before);
   expect(after.mods).not.toContain("alpha-freeze");
   // The restarted game still has its player, who keeps getting ticks.
-  const from = players.ada!.got.length;
-  await until(() => players.ada!.got.slice(from).some((m) => m.t === "tick"));
+  await restarted("alpha", before);
 }, 30_000);
 
 test("a mod that crashes its game's process is blamed and unloaded, and the game restarts with its players", async () => {
@@ -187,10 +205,8 @@ test("a mod that crashes its game's process is blamed and unloaded, and the game
   const before = (await game("alpha")).pid;
   players.ada!.ws.send(JSON.stringify({ t: "m", mod: "alpha-crash", msg: {} }));
   await until(() => players.ada!.got.some((m) => m.t === "feed" && m.text.startsWith("alpha-crash was unloaded")));
-  await until(async () => (await game("alpha")).pid !== before);
+  await restarted("alpha", before);
   expect((await game("alpha")).players).toEqual(["ada"]);
-  const from = players.ada!.got.length;
-  await until(() => players.ada!.got.slice(from).some((m) => m.t === "tick"));
   expect(seen("bo").some((e) => e.betaThing)).toBe(true);
 }, 30_000);
 
@@ -200,29 +216,31 @@ test("a game's process that crashes with no mod running, within a minute of a re
   const before = (await game("alpha")).pid;
   players.ada!.ws.send(JSON.stringify({ t: "m", mod: "alpha-late", msg: {} }));
   await until(() => players.ada!.got.some((m) => m.t === "feed" && m.text.startsWith("alpha-late was unloaded") && m.text.includes("within a minute of this reload")));
-  await until(async () => (await game("alpha")).pid !== before);
+  await restarted("alpha", before);
   expect((await game("alpha")).mods).not.toContain("alpha-late");
 }, 30_000);
 
 test("switching runs exitGame and enterGame, and a player comes back to where they left a game", async () => {
   // First entry landed ada at alpha's spawn.
   const avatar = async (g: string) => (await found(["player", "pos"], g)).find((e) => e.player === "ada");
-  // The crash test before this one leaves alpha restarting; it answers once its new process is up.
-  await until(async () => !!(await avatar("alpha").catch(() => null)));
   const first = await avatar("alpha");
   expect(first.pos[0]).toBeCloseTo(5, 0);
   expect(first.pos[2]).toBeCloseTo(5, 0);
 
-  players.ada!.ws.send(JSON.stringify({ t: "m", mod: "basics", msg: { x: 1, z: 0 } }));
-  await Bun.sleep(600);
-  players.ada!.ws.send(JSON.stringify({ t: "m", mod: "basics", msg: { x: 0, z: 0 } }));
-  await Bun.sleep(200);
+  // Input is resent until the avatar shows it: the game may still be loading its mods after the restarts above.
+  const move = (x: number, done: (e: any) => boolean) =>
+    until(async () => {
+      players.ada!.ws.send(JSON.stringify({ t: "m", mod: "basics", msg: { x, z: 0 } }));
+      return done(await avatar("alpha"));
+    });
+  await move(1, (e) => e.pos[0] > 6.5);
+  await move(0, (e) => e.vel[0] === 0);
   const left = (await avatar("alpha")).pos;
   expect(left[0]).toBeGreaterThan(6);
 
   await enter("ada", null);
-  expect(await found(["entered"], "alpha")).toEqual([]);
-  expect(await avatar("alpha")).toBeUndefined();
+  // The hub's first tick can reach ada before alpha's tick that ran exitGame reaches the world.
+  await until(async () => !(await found(["entered"], "alpha")).length && !(await avatar("alpha")));
   expect(await avatar("")).toBeDefined();
   expect(players.ada!.got.findLast((m) => m.t === "games").seats).toContainEqual({ player: "ada", name: "ada", game: null, online: true });
 
@@ -250,13 +268,13 @@ test("a game nobody is in saves and stops after a while, and comes back from its
   await until(async () => !(await game("beta")).running, IDLE_MS + 5000);
   const saved = await count();
   expect(saved).toBeGreaterThan(20);
+  // A stopped game stays still, which only a stretch of real time shows.
   await Bun.sleep(500);
   expect(await count()).toBe(saved);
 
   await enter("bo", "beta");
   expect((await game("beta")).running).toBe(true);
-  await Bun.sleep(300);
-  expect(await count()).toBeGreaterThan(saved);
+  await until(async () => (await count()) > saved);
 }, 30_000);
 
 test("a restarted world puts every player back in their game", async () => {
