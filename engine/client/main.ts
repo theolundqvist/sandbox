@@ -1917,7 +1917,9 @@ function play() {
     pickerAfterHowto = false;
     return openPicker();
   }
-  capture();
+  // Back to a mod's panel the card showed over, else to mouse-look.
+  if (panel) panel.el.focus({ preventScroll: true });
+  else capture();
 }
 $("menu-games").onclick = () => {
   showMenu(false);
@@ -2652,6 +2654,8 @@ if (watching) {
   $("hud").hidden = false;
   $("howto-world").textContent = info.name;
   howto.hidden = false;
+  // In the top layer, so a game's panel the player rejoins into can't cover it; the Tab menu still goes above.
+  toTop(howto);
   stopSpectating();
   connect();
 }
