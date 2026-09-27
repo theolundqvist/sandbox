@@ -62,6 +62,8 @@
   #toasts { position: fixed; inset: 72px 24px auto auto; margin: 0; padding: 0; border: 0; overflow: visible; color: inherit; background: none; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
   .toast { padding: 10px 14px; background: var(--veil); border-left: 2px solid var(--dim); animation: in .25s ease-out; max-width: 360px; }
   .toast.ok { border-color: var(--ok); } .toast.error { border-color: var(--err); }
+  .toast.asking { border-color: var(--accent); } .toast .actions { display: flex; gap: 8px; margin-top: 10px; }
+  #join-form.asking .items { display: none; } #join-form.asking .error { color: var(--dim); }
   @keyframes in { from { opacity: 0; transform: translateX(12px); } }
 
   #announce { position: fixed; top: 16vh; left: 50%; translate: -50% 0; width: min(620px, calc(100vw - 32px)); padding: 22px 28px 24px; background: var(--veil); border-left: 4px solid var(--c); pointer-events: none; animation: reveal 5.5s cubic-bezier(.2,.8,.2,1) forwards; }

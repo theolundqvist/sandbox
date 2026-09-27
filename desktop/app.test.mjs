@@ -489,6 +489,24 @@ describe("a friend in a browser", () => {
     await playing(page);
   });
 
+  test("sam's name on a new computer, while sam is offline, asks the host, who can say no or let them in", async () => {
+    const base = page.url().replace(/\/(#.*)?$/, "");
+    await page.close();
+    await until("sam offline", async () => (await (await fetch(`${base}/api/info`)).json()).online === 1);
+    page = await friend();
+    await page.goto(link);
+    await page.fill("#join-name", "sam");
+    await page.click("#join-go");
+    await until("asking", async () => (await page.textContent("#join-error")) === "Asking the host…");
+    const ask = game.locator(".toast.asking");
+    assert.equal(await ask.evaluate((t) => t.firstChild.textContent), "sam is joining from a new computer.");
+    await ask.locator("button", { hasText: "No" }).click();
+    await until("the refusal", async () => (await page.textContent("#join-error")) === "The host didn't let you in as sam. Pick another name.");
+    await page.click("#join-go");
+    await ask.locator("button", { hasText: "Let in" }).click();
+    await playing(page);
+  });
+
   test("a password is asked once on each device, and a wrong one says so", async () => {
     await rehost(() => game.fill("#create-password", "moon"));
     assert.equal(await game.evaluate(() => localStorage.getItem("sandbox-name")), "alex");
@@ -671,7 +689,7 @@ describe("updates", () => {
   let app, shell, state, game, code;
   before(async () => {
     releases.latest = VERSION;
-    ({ app, shell, state } = await launch("update"));
+    ({ app, shell, state } = await launch("update", {}, "robin"));
   });
   after(() => close(app));
 
@@ -728,7 +746,7 @@ describe("updates", () => {
 
   test("after the update the world is back up under the same code, and the host is back in it", async () => {
     releases.latest = VERSION;
-    ({ app, shell, state } = await launch("update"));
+    ({ app, shell, state } = await launch("update", {}, "robin"));
     game = await gamePage(app);
     assert.match(game.url(), new RegExp(`^${relayUrl}/r/`));
     const res = await fetch(`${relayUrl}/join/${code}`, { headers: { "x-real-ip": "198.51.100.7" } });
@@ -756,7 +774,7 @@ describe("updates", () => {
     await until("the installer", async () => existsSync(marker));
     assert.equal(state().reopen.url.startsWith(`${other.url}/`), true);
     releases.latest = VERSION;
-    ({ app, shell, state } = await launch("update"));
+    ({ app, shell, state } = await launch("update", {}, "robin"));
     game = await gamePage(app);
     await playing(game);
     assert.equal(game.url().startsWith(`${other.url}/`), true);

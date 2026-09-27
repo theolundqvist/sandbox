@@ -59,8 +59,18 @@ let publicUrl: string | null = null;
 let joinCode: string | null = null;
 let lanUrl: string | null = null;
 
+/** A name that belongs to an offline player waits for the host to let this computer in, for up to a minute. */
 async function join(body: object) {
-  const res = await fetch("/api/join", { method: "POST", body: JSON.stringify({ ...body, host: hosting?.running?.hostKey }) });
+  const asking = "name" in body && setTimeout(() => {
+    $("join-world").textContent = info.name;
+    $("join-error").textContent = "Asking the host…";
+    $("join-form").classList.add("asking");
+    $("join").hidden = false;
+  }, 500);
+  const res = await fetch("/api/join", { method: "POST", body: JSON.stringify({ ...body, host: hosting?.running?.hostKey }) }).finally(() => {
+    if (asking) clearTimeout(asking);
+    $("join-form").classList.remove("asking");
+  });
   const data = await res.json();
   if (!res.ok) throw Object.assign(new Error(data.error), { password: !!data.password });
   localStorage.setItem(keyName, data.key);
@@ -962,6 +972,8 @@ function connect() {
         return listen();
       case "voice-failed":
         return toast(hosting && msg.refused ? `${msg.provider} refused the voice key. Add it again in Settings.` : "Voice didn't go through. Try again.", "error");
+      case "let-in":
+        return letIn(msg.id, msg.name);
       case "public":
         publicUrl = msg.url;
         joinCode = msg.code;
@@ -1797,6 +1809,24 @@ function toast(text: string, kind = "info") {
   $("toasts").append(el);
   toTop($("toasts"));
   setTimeout(() => el.remove(), 5000);
+}
+
+/** The host answers whether a new computer may play as an offline player's name; no answer in a minute means no. */
+function letIn(id: string, name: string) {
+  const el = document.createElement("div");
+  el.className = "toast asking";
+  el.textContent = `${name} is joining from a new computer.`;
+  const answer = (allow: boolean) => {
+    send({ t: "let-in", id, allow });
+    el.remove();
+  };
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.append(Object.assign(document.createElement("button"), { textContent: "Let in", onclick: () => answer(true) }), Object.assign(document.createElement("button"), { textContent: "No", onclick: () => answer(false) }));
+  el.append(actions);
+  $("toasts").append(el);
+  toTop($("toasts"));
+  setTimeout(() => el.remove(), 60_000);
 }
 
 const chat = $<HTMLInputElement>("chat");
