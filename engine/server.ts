@@ -465,6 +465,9 @@ const cli = createCli({
 const voiceKey = (): Voice | null =>
   savedVoice(process.env.SANDBOX_SECRETS) ?? (process.env.ELEVENLABS_API_KEY ? { provider: "ElevenLabs", key: process.env.ELEVENLABS_API_KEY, host: "https://api.eu.residency.elevenlabs.io" } : null);
 
+/** Joins waiting for the host to answer whether a new computer may play as a name that's already someone's. */
+const asking = new Map<string, (allow: boolean) => void>();
+
 /** The player playing on the host's computer, named when players are told who can turn voice on. */
 function hostIs(body: { host?: string }, name: string) {
   if (body.host !== config.hostKey || config.host === name) return;
@@ -604,9 +607,21 @@ const server = Bun.serve<Conn>({
         return Response.json({ error: body.password ? "That password isn't right." : "This world has a password. Ask the host for it.", password: true }, { status: 403 });
       const name = String(body.name ?? "").trim().toLowerCase();
       if (!/^[a-z0-9][a-z0-9_-]{1,15}$/.test(name)) return Response.json({ error: "Names are 2–16 letters, digits, - or _." }, { status: 400 });
-      // A name is someone's only while they play as it or their Claude works under it; claimed from another device, the old key stops working.
       if (sockets.has(name) || (claudes.get(name)?.state ?? "offline") !== "offline")
         return Response.json({ error: "Someone is playing as that name right now. If it's you, close the game there first." }, { status: 409 });
+      // An offline player's name goes to a new computer only when the host lets it in; the old key then stops working.
+      if (Object.values(keys).includes(name) && body.host !== config.hostKey) {
+        const host = config.host ? sockets.get(config.host) : undefined;
+        if (!host) return Response.json({ error: `The host isn't in the game to let you in as ${name}. Pick another name.` }, { status: 409 });
+        const id = token();
+        const allowed = await new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => resolve(false), 60_000);
+          asking.set(id, (allow) => (clearTimeout(timer), resolve(allow)));
+          host.send(JSON.stringify({ t: "let-in", id, name }));
+        });
+        asking.delete(id);
+        if (!allowed) return Response.json({ error: `The host didn't let you in as ${name}. Pick another name.` }, { status: 409 });
+      }
       for (const [old, owner] of Object.entries(keys)) if (owner === name) delete keys[old];
       const key = token() + token();
       keys[key] = name;
@@ -686,6 +701,7 @@ const server = Bun.serve<Conn>({
       if (msg.t === "m") sims.message(ws.data.name, msg.mod, msg.msg);
       else if (msg.t === "chat") chat(ws.data.name, String(msg.text));
       else if (msg.t === "resync") sims.resync(ws.data.name);
+      else if (msg.t === "let-in" && ws.data.name === config.host) asking.get(String(msg.id))?.(msg.allow === true);
       else if (msg.t === "enterGame") {
         const game = typeof msg.game === "string" ? msg.game : null;
         const refused = sims.enter(ws.data.name, game);

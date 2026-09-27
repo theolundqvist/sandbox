@@ -224,7 +224,7 @@ test("perf shows how long a player waited to join and which mods held them up", 
   expect((await json("perf")).joins.builder).toEqual({ firstFrameMs: 27470, slowestMods: { factory: 9206 } });
 });
 
-test("a name is someone's only while they or their Claude are on; claimed from another device, the old key stops working and its game goes back to the join screen", async () => {
+test("a name is someone's only while they or their Claude are on; from another computer the host lets it in, and the old key stops working and its game goes back to the join screen", async () => {
   const joinAs = (name: string) => fetch(`${BASE}/api/join`, { method: "POST", body: JSON.stringify({ invite: "test-invite", name }) });
   const first = (await (await joinAs("roamer")).json()).key;
   const laptop = new WebSocket(`ws://127.0.0.1:${PORT}/ws?key=${first}`);
@@ -246,7 +246,31 @@ test("a name is someone's only while they or their Claude are on; claimed from a
   await waiting;
   await Bun.sleep(100);
 
-  const phone = await (await joinAs("roamer")).json();
+  const hostless = await joinAs("roamer");
+  expect([hostless.status, (await hostless.json()).error]).toEqual([409, "The host isn't in the game to let you in as roamer. Pick another name."]);
+
+  const { key: bossKey } = await (await fetch(`${BASE}/api/join`, { method: "POST", body: JSON.stringify({ invite: "test-invite", name: "boss", host: "test-host" }) })).json();
+  const host = new WebSocket(`ws://127.0.0.1:${PORT}/ws?key=${bossKey}`);
+  const asked: { id: string; name: string }[] = [];
+  host.onmessage = ({ data }) => {
+    const msg = JSON.parse(String(data));
+    if (msg.t === "let-in") asked.push(msg);
+  };
+  await new Promise((resolve) => (host.onopen = resolve));
+  const answer = async (allow: boolean) => {
+    const pending = joinAs("roamer");
+    while (!asked.length) await Bun.sleep(20);
+    const { id, name } = asked.shift()!;
+    expect(name).toBe("roamer");
+    host.send(JSON.stringify({ t: "let-in", id, allow }));
+    return pending;
+  };
+  const turnedAway = await answer(false);
+  expect([turnedAway.status, (await turnedAway.json()).error]).toEqual([409, "The host didn't let you in as roamer. Pick another name."]);
+  expect((await (await fetch(`${BASE}/api/join`, { method: "POST", body: JSON.stringify({ key: first }) })).json()).name).toBe("roamer");
+
+  const phone = await (await answer(true)).json();
+  host.close();
   expect(phone.name).toBe("roamer");
   expect(phone.key).not.toBe(first);
   const status = await fetch(`${BASE}/cli/status`, { method: "POST", headers: { authorization: `Bearer ${first}` } });
