@@ -103,7 +103,7 @@ test("games are created, edited and listed through the tools, and a bad card or 
   expect(alpha).toMatchObject({ title: "Alpha", status: "live", spawn: [5, 1, 5], createdBy: "ada", mods: [], players: [], running: false });
   expect((await game("beta")).status).toBe("building");
   await until(() => players.bo!.got.some((m) => m.t === "games" && m.games.some((g: any) => g.id === "alpha" && g.status === "live")));
-  expect(players.bo!.got.some((m) => m.t === "feed" && m.text === "ada's Claude created the game Alpha")).toBe(true);
+  expect(players.bo!.got.some((m) => m.t === "feed" && m.text === "ada's agent created the game Alpha")).toBe(true);
 
   await write("mods/stray/server.ts", serverMod(`{ game: "nowhere", tick() {} }`));
   const stray = await tool("reload", { mod: "stray" });

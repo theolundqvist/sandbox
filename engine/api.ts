@@ -139,7 +139,7 @@ export interface ClientCtx {
   has(mod: string): boolean;
   /** URL of a file added with add_asset: ctx.asset("dragon.glb") for this mod's, ctx.asset("other-mod/dragon.glb") for another's. */
   asset(name: string): string;
-  /** Your block on the game menu's page with this title (Tab or Esc opens the menu), which is created if no page has it and listed on the menu under the engine's entries. Extend the engine's "Claude", "Invite", "Builders", "Mods" and "Settings" pages or another mod's page by using its title. "Resume", "Timelapse" and "Leave" are the engine's and throw. Your block stays in the page, where your CSS reaches it; the menu around it is the engine's and out of reach. Removed when this mod reloads. */
+  /** Your block on the game menu's page with this title (Tab or Esc opens the menu), which is created if no page has it and listed on the menu under the engine's entries. Extend the engine's "Agent", "Invite", "Builders", "Mods" and "Settings" pages or another mod's page by using its title. "Resume", "Timelapse" and "Leave" are the engine's and throw. Your block stays in the page, where your CSS reaches it; the menu around it is the engine's and out of reach. Removed when this mod reloads. */
   menuTab(title: string): HTMLElement;
   /** Opens the game menu, at the page with this title (as in menuTab) when given, e.g. from an interact action. close() closes it only while it is still the menu this call opened: never one the player opened or reopened. */
   openMenu(title?: string): { close(): void };

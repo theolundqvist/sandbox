@@ -792,7 +792,7 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
 
 /** The slot for mods' blocks on the menu page with this title: mods share pages by title, join the engine's by using its title, and a page no mod fills any more goes away. Resume, Timelapse and Leave are the engine's. */
 const CORE_PAGES = ["claude", "invite", "builders", "mods", "settings", "world"];
-const PAGE_ALIASES: Record<string, string> = { help: "Settings", controls: "Settings" };
+const PAGE_ALIASES: Record<string, string> = { help: "Settings", controls: "Settings", claude: "Agent" };
 const ENGINE_ENTRIES = ["resume", "timelapse", "leave"];
 let pageSeq = 0;
 const slotFor = (section: HTMLElement) => section.appendChild(Object.assign(document.createElement("slot"), { name: section.dataset.tab }));
@@ -1022,7 +1022,7 @@ function connect() {
         if (msg.kind === "error") toast(msg.text, msg.kind);
         return;
       case "announce":
-        addLine(`${msg.title}${msg.text ? ` · ${msg.text}` : ""}  (${msg.by}'s Claude)`, "mod").style.setProperty("--c", msg.color);
+        addLine(`${msg.title}${msg.text ? ` · ${msg.text}` : ""}  (${msg.by}'s agent)`, "mod").style.setProperty("--c", msg.color);
         banners.push(msg);
         askReaction(msg);
         return nextBanner();
@@ -1158,7 +1158,7 @@ function addLine(text: string, kind = "info", feed = $("feed")) {
   return line;
 }
 const chatLine = (from: string, text: string, spoken?: boolean) =>
-  [`${from}${spoken ? " (voice)" : ""}: ${text}`, from.endsWith("'s Claude") ? "claude" : spoken ? "chat spoken" : "chat"] as const;
+  [`${from}${spoken ? " (voice)" : ""}: ${text}`, /'s (Claude|agent)$/.test(from) ? "claude" : spoken ? "chat spoken" : "chat"] as const;
 
 /** After a mod arrives, players have 30 s to love it or vote it out. */
 let reacting = "";
@@ -1546,7 +1546,7 @@ function happen(activity: Activity[] | undefined, banners: boolean) {
     if (a.t === "feed") addLine(a.text, a.kind, $("replay-feed"));
     else if (a.t === "chat") addLine(...chatLine(a.from, a.text, a.spoken), $("replay-feed"));
     else {
-      addLine(`${a.title}${a.text ? ` · ${a.text}` : ""}  (${a.by}'s Claude)`, "mod", $("replay-feed")).style.setProperty("--c", a.color);
+      addLine(`${a.title}${a.text ? ` · ${a.text}` : ""}  (${a.by}'s agent)`, "mod", $("replay-feed")).style.setProperty("--c", a.color);
       if (banners) showBanner(a);
     }
   }
@@ -1792,7 +1792,7 @@ function showBanner(a: (typeof banners)[number]) {
   void el.offsetWidth;
   el.style.setProperty("--c", a.color);
   const [kicker, title, text] = el.children as unknown as HTMLElement[];
-  kicker!.textContent = `${a.mod} · by ${a.by}'s Claude`;
+  kicker!.textContent = `${a.mod} · by ${a.by}'s agent`;
   title!.textContent = a.title;
   text!.textContent = a.text;
   text!.hidden = !a.text;
@@ -2114,7 +2114,7 @@ chat.addEventListener("keydown", (e: KeyboardEvent) => {
 $("menu-button").onclick = () => openMenu();
 
 type Builder = { state: "listening" | "working" | "offline"; task?: { title: string; status: string; percent?: number; state: "working" | "done" | "blocked" } };
-const builderName = (name: string) => `${name}'s Claude`;
+const builderName = (name: string) => `${name}'s agent`;
 let claudes = new Map<string, Builder>();
 /** Everyone sees what every Claude is building: a HUD line per busy Claude and the Builders tab. */
 function showBuilders() {

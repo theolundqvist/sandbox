@@ -8,7 +8,7 @@ import type { GameCard } from "./games";
 import type { Sims } from "./sims";
 
 export type Task = { title: string; status: string; percent?: number; state: "working" | "done" | "blocked"; at: number };
-const speaker = (who: string) => `${who}'s Claude`;
+const speaker = (who: string) => `${who}'s agent`;
 
 export type CliContext = {
   /** The world's folder: its config, players, mods' databases and the tree under root. */
@@ -613,7 +613,7 @@ export function createCli(ctx: CliContext) {
     throw new ToolError(`Unknown tool ${name}`);
   }
 
-  const STALE = "This command's key isn't valid for the world running now: the host switched worlds or removed this player. Ask your player to open the game, join, and paste you the new prompt from the Claude page of the game menu.";
+  const STALE = "This command's key isn't valid for the world running now: the host switched worlds or removed this player. Ask your player to open the game, join, and paste you the new prompt from the Agent page of the game menu.";
   /** Ends every result, so any agent keeps listening without a harness hook to stop it ending its turn. */
   const KEEP_LISTENING = "When you are done with this, call wait_for_chat again. Never end your turn.";
   const chatSeen = new Map<string, number>();

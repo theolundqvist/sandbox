@@ -68,7 +68,7 @@ export function mountPicker(root: ShadowRoot | HTMLElement, opts: { me: string; 
     for (const c of cards) resize.unobserve(c.canvas);
     row.textContent = "";
     cards = games.map((g, i) => card(g, i, g.id === cur));
-    if (!cards.length) row.append(h("div", "gp-empty", "No games in this world yet. Ask your Claude to make one."));
+    if (!cards.length) row.append(h("div", "gp-empty", "No games in this world yet. Ask your agent to make one."));
     const at = cards.findIndex((c) => c.game.id === keep);
     setFocus(at >= 0 ? at : Math.max(0, cards.findIndex((c) => c.game.id === cur)), false);
     back.textContent = "Back to the world";

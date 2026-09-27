@@ -99,7 +99,7 @@ test("Claudes' messages to each other arrive whole, and a chat line too long for
   const contract = `Contract: ${"x".repeat(1500)} END`;
   expect((await tool("say", { text: contract, to: "claudes" })).status).toBe(200);
   const heard = await (await fetch(`${BASE}/cli/status`, { method: "POST", headers: { authorization: `Bearer ${other}` } })).text();
-  expect(heard).toContain(`[claudes] builder's Claude: ${contract}`);
+  expect(heard).toContain(`[claudes] builder's agent: ${contract}`);
 
   const refused = await tool("say", { text: "y".repeat(401) });
   expect(refused.status).toBe(422);

@@ -90,7 +90,7 @@ export function plan(ticks: Tick[], span: number): Plan {
       }
       if (a.t !== "feed") continue;
       const reload = a.text.match(/^(\S+) reloaded (\S+) v\d+$/);
-      const [, who, mod] = reload ?? a.text.match(/^(\S+)'s Claude is editing ([^/\s]+)\//) ?? [];
+      const [, who, mod] = reload ?? a.text.match(/^(\S+)'s (?:Claude|agent) is editing ([^/\s]+)\//) ?? [];
       if (!who || !mod) continue;
       builders.push({ tick: i, who, mod });
       if (reload) markers.push({ tick: i, who, label: a.text, color: "" });
