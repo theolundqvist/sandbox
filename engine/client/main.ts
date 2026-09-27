@@ -739,7 +739,8 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
       return game;
     },
     keys,
-    send: (msg) => !replay && send({ t: "m", mod: name, msg }),
+    // A mod of a game the player left, still running until its turn to unload comes, sends nothing.
+    send: (msg) => !replay && live.has(name) && send({ t: "m", mod: name, msg }),
     use,
     has,
     asset: (file) => `/assets/${file.includes("/") ? file : `${name}/${file}`}`,
@@ -899,13 +900,13 @@ function openPicker() {
 }
 
 // ---------- network ----------
-/** Loads the server's live client builds and unloads the rest. Every mod downloads at once, then they start in order, each import a task of its own so frames draw in between, and each mod draws the entities it takes over as it starts. */
+/** Loads the server's live client builds and unloads the rest. Mods no longer live go first, then every mod downloads at once and they start in order, each import a task of its own so frames draw in between, and each mod draws the entities it takes over as it starts. */
 async function loadLive(list: { name: string; url: string }[], progress?: (started: number, total: number) => void) {
   const wanted = new Map(list.map((m) => [m.name, m.url]));
   live = wanted;
+  for (const name of mods.keys()) if (!wanted.has(name)) queue(() => loadMod(name, null, false).then(() => reclaim(name)));
   queue(() => Promise.allSettled([...wanted.values()].map((url) => import(url))));
   const modMs: [string, number][] = [];
-  for (const name of mods.keys()) if (!wanted.has(name)) queue(() => loadMod(name, null, false).then(() => reclaim(name)));
   for (const [name, url] of wanted)
     queue(async () => {
       const started = performance.now();

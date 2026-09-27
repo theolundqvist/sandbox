@@ -297,9 +297,15 @@ function arrive(p: Player, switched: boolean, at: Vec | undefined) {
   if (at) for (const [, e] of world.query("player", "pos")) if (e.player === p.id) e.pos = [...at];
 }
 
+/** A player's body is any entity whose `player` is their id: whichever mod made it, it goes with them, so no game keeps someone who isn't in it. */
+function removeBodies(gone: (player: string) => boolean) {
+  for (const [id, e] of world.entities.raw()) if (typeof e.player === "string" && gone(e.player)) world.remove(id);
+}
+
 function depart(p: Player, switched: boolean) {
   for (const m of ordered) if (m.game) call(m, "exitGame", p);
   for (const m of ordered) if (!switched || !m.game) call(m, "leave", p);
+  removeBodies((player) => player === p.id);
   world.players.delete(p.id);
   known.delete(p.id);
 }
@@ -400,6 +406,8 @@ const receive = async (msg: any) => {
       trial = msg.trial ?? null;
       dbDir = msg.dbDir;
       world.delta();
+      // Bodies from a save or a crashed process whose players aren't in this simulation go before any mod loads; the first tick tells the world process.
+      removeBodies((player) => !world.players.has(player));
       for (const [id, e] of world.entities.raw()) physics.update(id, e);
       for (const m of msg.mods) {
         try {

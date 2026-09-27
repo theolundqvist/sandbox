@@ -277,7 +277,94 @@ test("a game nobody is in saves and stops after a while, and comes back from its
   await until(async () => (await count()) > saved);
 }, 30_000);
 
-test("a restarted world puts every player back in their game", async () => {
+/** What alpha-hunter counted: each player's bodies it hunted, tick by tick, the players it saw, and each player's messages it heard. */
+const tally = async () => (await found(["hunted"], "alpha"))[0] as { hunted: Record<string, number>; players: string[]; heard: Record<string, number> };
+const bodiesIn = async (g: string) => (await found(["player"], g)).map((e) => e.player as string);
+
+test("a player who switches games leaves no body in the old one, whose mods never see or hear them again", async () => {
+  // A movement mod that never cleans up after its players, so only the engine can.
+  await rewrite("mods/basics/server.ts", serverMod(`{ join(world, player) { world.spawn({ player: player.id, pos: [0, 1, 0] }); } }`));
+  await reload("basics");
+  await write(
+    "mods/alpha-hunter/server.ts",
+    serverMod(`{
+  game: "alpha",
+  load(world) { if (!world.query("hunted").length) world.spawn({ hunted: {}, players: [], heard: {} }); },
+  enterGame(world, player) { world.spawn({ player: player.id, mount: true }); },
+  tick(world) {
+    const [[, t]] = world.query("hunted");
+    for (const [, e] of world.query("player")) t.hunted[e.player] = (t.hunted[e.player] ?? 0) + 1;
+    t.players = [...world.players.keys()].sort();
+  },
+  message(world, player) { const [[, t]] = world.query("hunted"); t.heard[player.id] = (t.heard[player.id] ?? 0) + 1; },
+}`),
+  );
+  await reload("alpha-hunter");
+  await enter("bo", "alpha");
+  await enter("ada", null);
+  await enter("ada", "alpha");
+  await until(async () => (await tally()).hunted.ada > 0 && (await tally()).players.includes("ada"));
+
+  // Input sent right behind the switch goes to the new game, never the old one.
+  const from = players.ada!.got.length;
+  players.ada!.ws.send(JSON.stringify({ t: "enterGame", game: "beta" }));
+  for (let i = 0; i < 5; i++) players.ada!.ws.send(JSON.stringify({ t: "m", mod: "alpha-hunter", msg: {} }));
+  await until(() => players.ada!.got.slice(from).some((m) => m.t === "gameSwitch" && m.game === "beta" && m.phase === "done"));
+  await until(async () => !(await bodiesIn("alpha")).includes("ada"), 3000);
+  const left = await tally();
+  await until(async () => (await tally()).hunted.bo! > left.hunted.bo! + 20);
+  const after = await tally();
+  expect(after.hunted.ada).toBe(left.hunted.ada);
+  expect(after.players).toEqual(["bo"]);
+  expect(after.heard.ada).toBeUndefined();
+}, 30_000);
+
+test("a game that crashes as a player leaves restarts without their body", async () => {
+  await write("mods/alpha-trap/server.ts", serverMod(`{ game: "alpha", exitGame(world, player) { if (player.id === "bo") process.exit(7); } }`));
+  await reload("alpha-trap");
+  await enter("ada", "alpha");
+  expect(await bodiesIn("alpha")).toContain("bo");
+  const before = (await game("alpha")).pid;
+  // Alpha's process dies in bo's exitGame, before it removes anything of theirs.
+  await enter("bo", null);
+  await restarted("alpha", before);
+  expect((await game("alpha")).players).toEqual(["ada"]);
+  expect(await bodiesIn("alpha")).not.toContain("bo");
+  const left = await tally();
+  await until(async () => (await tally()).hunted.ada! > left.hunted.ada! + 20);
+  expect((await tally()).hunted.bo).toBe(left.hunted.bo);
+}, 30_000);
+
+test("a game that crashes again soon after restarting waits out its backoff, whatever reaches it meanwhile", async () => {
+  await write("mods/alpha-crash-a/server.ts", serverMod(`{ game: "alpha", message() { process.exit(8); } }`));
+  await write("mods/alpha-crash-b/server.ts", serverMod(`{ game: "alpha", message() { process.exit(9); } }`));
+  await reload("alpha-crash-a");
+  await reload("alpha-crash-b");
+  const first = (await game("alpha")).pid;
+  players.ada!.ws.send(JSON.stringify({ t: "m", mod: "alpha-crash-a", msg: {} }));
+  await restarted("alpha", first);
+  const second = (await game("alpha")).pid;
+  // Crashing within seconds of its start, alpha waits a moment before its next process, though ada's input keeps coming.
+  players.ada!.ws.send(JSON.stringify({ t: "m", mod: "alpha-crash-b", msg: {} }));
+  let crashed = 0;
+  let back = 0;
+  await until(async () => {
+    players.ada!.ws.send(JSON.stringify({ t: "m", mod: "alpha-hunter", msg: {} }));
+    if (!crashed && players.ada!.got.some((m) => m.t === "feed" && m.text.startsWith("alpha-crash-b was unloaded"))) crashed = performance.now();
+    const g = await game("alpha");
+    if (g.pid && g.pid !== second) back = performance.now();
+    return back;
+  });
+  expect(crashed).toBeGreaterThan(0);
+  expect(back - crashed).toBeGreaterThan(600);
+  await enter("bo", "beta");
+}, 30_000);
+
+test("a restarted world puts every player back in their game, and nobody else", async () => {
+  // cy is in alpha when the world stops, so alpha's save holds cy's body, but cy never comes back.
+  await connect("cy");
+  await enter("cy", "alpha");
+  await until(async () => (await bodiesIn("alpha")).includes("cy"));
   world.kill("SIGTERM");
   await world.exited;
   for (const p of Object.values(players)) p.ws.close();
@@ -287,6 +374,8 @@ test("a restarted world puts every player back in their game", async () => {
   expect(players.ada!.got.find((m) => m.t === "welcome").mods.map((m: any) => m.name)).toContain("alpha-world");
   await until(() => seen("ada").some((e) => e.alphaThing));
   expect(await game("alpha")).toMatchObject({ running: true, players: ["ada"] });
+  // Alpha woke from a save with cy's body and ada's old one: only the body ada got on joining is left.
+  expect((await found(["player"], "alpha")).filter((e) => !e.mount).map((e) => e.player)).toEqual(["ada"]);
 
   // Deleting a game no mod names sends its players back to the hub.
   await rewrite("mods/beta-world/server.ts", serverMod(`{ tick() {} }`));

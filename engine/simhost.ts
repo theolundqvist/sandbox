@@ -82,6 +82,10 @@ export class SimHost {
   private ready = false;
   private startedAt = 0;
   private applying = new Map<string, (error: string | null) => void>();
+  /** Set while a crashed game waits out its backoff; it counts as running, so nothing starts it early from its save. */
+  private restarting?: Timer;
+  /** Players who entered while the game was down, by id: they arrive, with their mods' hooks, once the next process has loaded. */
+  private arriving = new Map<string, object>();
 
   constructor(
     private dbDir: string,
@@ -127,7 +131,7 @@ export class SimHost {
   }
 
   get running() {
-    return !!this.channel;
+    return !!this.channel || !!this.restarting;
   }
 
   get pid() {
@@ -139,6 +143,8 @@ export class SimHost {
   }
 
   start() {
+    clearTimeout(this.restarting);
+    this.restarting = undefined;
     Atomics.store(this.beat, 1, 0);
     this.ready = false;
     this.startedAt = Date.now();
@@ -154,12 +160,16 @@ export class SimHost {
       games: this.games(),
       entities: Object.fromEntries(this.entities),
       nextId: this.nextId,
-      players: [...this.players.values()],
+      players: [...this.players.values()].filter((p) => !this.arriving.has(p.id)),
       watchers: [...this.watchers],
       creators: Object.fromEntries(this.creators),
       mods: this.mods(),
       dbDir: this.dbDir,
     });
+    for (const join of this.arriving.values()) channel.send(join);
+    this.arriving.clear();
+    // Questions the last process never answered go to this one.
+    for (const [id, { msg }] of this.asking) channel.send({ ...msg, id });
   }
 
   /** The mod running when the process died is blamed, as for a freeze, else one reloaded within the last minute; the game restarts from the last state it sent. */
@@ -171,13 +181,17 @@ export class SimHost {
     else if (suspect) this.on.fault(suspect, `its game's process crashed (${code}) within a minute of this reload, so it was undone. Its files still have the change: find what crashed it before reloading it again.`);
     this.channel = null;
     const soon = Date.now() - this.startedAt < 5000;
-    setTimeout(() => !this.channel && this.start(), soon ? CRASH_BACKOFF_MS : 0);
+    // Whatever arrives meanwhile waits for the new process instead of starting one early.
+    this.restarting = setTimeout(() => this.start(), soon ? CRASH_BACKOFF_MS : 0);
   }
 
   /** Stops the simulation and forgets its world; whoever stops it saves the world first. */
   stop() {
     this.channel?.retire();
     this.channel = null;
+    clearTimeout(this.restarting);
+    this.restarting = undefined;
+    this.arriving.clear();
     this.ready = false;
     this.perf = null;
     this.entities.clear();
@@ -210,17 +224,17 @@ export class SimHost {
       const { t, ...c } = msg;
       if (this.corrections.push(c) > 500) this.corrections.shift();
     } else if (msg.t === "answer") {
-      this.asking.get(msg.id)?.(msg.value);
+      this.asking.get(msg.id)?.resolve(msg.value);
       this.asking.delete(msg.id);
     }
   }
 
-  private asking = new Map<number, (value: any) => void>();
+  private asking = new Map<number, { resolve: (value: any) => void; msg: object }>();
   private askSeq = 0;
   private ask<T>(msg: object) {
     const id = ++this.askSeq;
     return new Promise<T>((resolve) => {
-      this.asking.set(id, resolve);
+      this.asking.set(id, { resolve, msg });
       this.channel?.send({ ...msg, id });
     });
   }
@@ -247,10 +261,15 @@ export class SimHost {
 
   send(msg: any) {
     if (msg.t === "join") this.players.set(msg.player.id, msg.player);
-    if (msg.t === "leave") this.players.delete(msg.id);
+    if (msg.t === "leave") {
+      this.players.delete(msg.id);
+      this.arriving.delete(msg.id);
+    }
     if (msg.t === "watch") this.watchers.add(msg.id);
     if (msg.t === "unwatch") this.watchers.delete(msg.id);
-    this.channel?.send(msg);
+    if (this.channel) this.channel.send(msg);
+    // A player entering a game that is down arrives in its next process; anything else sent meanwhile is stale by then, and a player leaving is left out of it.
+    else if (msg.t === "join") this.arriving.set(msg.player.id, msg);
   }
 
   /** Swaps a mod into the live simulation; resolves once its load hook ran, with that hook's error if any. */

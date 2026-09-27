@@ -41,8 +41,8 @@ export class Sims {
   private runs = new Map<string, GameRun>();
   /** The game each connected player is in; null is the hub. */
   private at = new Map<string, string | null>();
-  /** Players on their way to a game, until its first tick reaches them. */
-  private switching = new Map<string, string | null>();
+  /** Players on their way to a game, until its first tick reaches them or the switch times out. */
+  private switching = new Map<string, { game: string | null; timer: Timer }>();
 
   constructor(
     private data: string,
@@ -74,12 +74,13 @@ export class Sims {
             // Ticks still in flight from a game the player just left never reach them.
             if ((this.at.get(id) ?? null) !== game) continue;
             this.on.deliver(id, text);
-            if (this.switching.has(id) && this.switching.get(id) === game) this.arrived(id);
+            if (this.switching.get(id)?.game === game) this.arrived(id);
           }
         },
         log: (mod, level, text) => this.on.log(mod, level, text),
         fault: (mod, error) => this.on.fault(mod, error),
-        enter: (player, to) => void this.enter(player, to),
+        // A mod's request from a game the player already left is stale: they are elsewhere now.
+        enter: (player, to) => void (this.at.has(player) && this.at.get(player) === game && this.enter(player, to)),
         crashSuspect: () => (game === null ? undefined : this.on.reloadedJustBefore(game)),
       },
       game,
@@ -102,7 +103,7 @@ export class Sims {
     return run;
   }
 
-  /** A game's simulation, started from its save when nobody was in it. */
+  /** A game's simulation, started from its save when nobody was in it; a crashed one waiting out its backoff starts on its own. */
   private wake(game: string) {
     const run = this.run(game);
     if (run.idle) clearTimeout(run.idle);
@@ -144,7 +145,8 @@ export class Sims {
   }
 
   private arrived(id: string) {
-    const game = this.switching.get(id)!;
+    const { game, timer } = this.switching.get(id)!;
+    clearTimeout(timer);
     this.switching.delete(id);
     this.on.notify(id, { t: "gameSwitch", game, phase: "done" });
   }
@@ -162,6 +164,7 @@ export class Sims {
     const game = this.at.get(id);
     if (game === undefined) return;
     this.at.delete(id);
+    clearTimeout(this.switching.get(id)?.timer);
     this.switching.delete(id);
     const host = this.hostOf(game);
     this.remember(id, game, host);
@@ -205,9 +208,9 @@ export class Sims {
     old.send({ t: "leave", id, switched: true });
     this.at.set(id, to);
     this.seats.update(id, (seat) => void (seat.game = to));
-    this.switching.set(id, to);
+    // The timeout goes with this switch, so it never ends a later one.
+    this.switching.set(id, { game: to, timer: setTimeout(() => this.arrived(id), SWITCH_MS) });
     this.hostOf(to).send({ t: "join", player: { id, name: id, game: to }, switched: true, at: this.placement(id, to) });
-    setTimeout(() => this.switching.has(id) && this.switching.get(id) === to && this.arrived(id), SWITCH_MS);
     this.idleCheck(from);
     this.on.changed();
     return null;
@@ -248,6 +251,7 @@ export class Sims {
     const naming = this.mods().filter((m) => m.game === id).map((m) => m.name);
     if (naming.length) return `Live mods name the game ${id}: ${naming.join(", ")}. Remove them or move them to another game first.`;
     for (const player of this.players(id)) {
+      clearTimeout(this.switching.get(player)?.timer);
       this.switching.delete(player);
       this.enter(player, null);
     }

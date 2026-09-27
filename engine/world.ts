@@ -178,11 +178,13 @@ export function openStore(path: string) {
   const upsert = db.prepare("insert or replace into entity values (?, ?)");
   const remove = db.prepare("delete from entity where id = ?");
   return {
+    /** Replaces the world's entities with the save's, never merging into what is there, which could bring back something removed since. */
     load(world: Persisted) {
       const meta = db.query("select next_id, entities from world").get() as { next_id: number; entities: string | null } | null;
       if (!meta?.entities) {
         if (!meta) return false;
         world.nextId = meta.next_id;
+        world.entities.clear();
         for (const row of db.query("select id, data from entity").all() as { id: number; data: string }[]) world.entities.set(row.id, JSON.parse(row.data));
         return true;
       }
