@@ -250,6 +250,17 @@ test("switching runs exitGame and enterGame, and a player comes back to where th
   expect(back[2]).toBeCloseTo(left[2], 0);
   expect(await found(["entered"], "alpha")).toHaveLength(1);
 
+  // A player's chat line carries the game they said it in, for players and for agents; a line from the hub has none.
+  players.ada!.ws.send(JSON.stringify({ t: "chat", text: "hello from alpha" }));
+  await until(() => players.bo!.got.some((m) => m.t === "chat" && m.text === "hello from alpha"));
+  expect(players.bo!.got.find((m) => m.t === "chat" && m.text === "hello from alpha")).toMatchObject({ from: "ada", game: "Alpha" });
+  expect((await tool("status")).text).toContain("[Alpha] ada: hello from alpha");
+  await enter("ada", null);
+  players.ada!.ws.send(JSON.stringify({ t: "chat", text: "hello from the hub" }));
+  await until(() => players.bo!.got.some((m) => m.t === "chat" && m.text === "hello from the hub"));
+  expect(players.bo!.got.find((m) => m.t === "chat" && m.text === "hello from the hub").game).toBeUndefined();
+  await enter("ada", "alpha");
+
   // A mod moves a player with world.enter; a game mod that places them itself in enterGame wins over the game's spawn.
   expect((await tool("edit_game", { id: "beta", spawn: [7, 1, 7] })).status).toBe(200);
   await write("mods/beta-place/server.ts", serverMod(`{ game: "beta", enterGame(world, player) { for (const [, e] of world.query("player", "pos")) if (e.player === player.id) e.pos = [40, 1, 40]; } }`));

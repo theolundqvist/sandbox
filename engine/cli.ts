@@ -23,7 +23,7 @@ export type CliContext = {
   logs: { at: number; mod: string; level: string; text: string; player?: string }[];
   feed(text: string, kind?: string): void;
   chat(from: string, text: string, how?: "claudes"): void;
-  chatLog: { seq: number; from: string; text: string; spoken?: boolean; claudes?: boolean }[];
+  chatLog: { seq: number; from: string; text: string; spoken?: boolean; claudes?: boolean; game?: string }[];
   nextChat(): Promise<void>;
   presence(who: string, state: "listening" | "working" | "offline"): void;
   setTask(who: string, task: Task): void;
@@ -641,7 +641,7 @@ export function createCli(ctx: CliContext) {
     const unseen = cursor === undefined ? all.slice(-30) : all;
     const oldest = ctx.chatLog[0]?.seq ?? 0;
     const lost = cursor !== undefined && cursor < oldest - 1 ? `(${oldest - 1 - cursor} older lines are no longer kept)\n` : "";
-    const lines = unseen.map((c) => `${c.claudes ? "[claudes] " : ""}${c.from}${c.spoken ? " (said aloud)" : ""}: ${c.text}`);
+    const lines = unseen.map((c) => `${c.claudes ? "[claudes] " : ""}${c.game ? `[${c.game}] ` : ""}${c.from}${c.spoken ? " (said aloud)" : ""}: ${c.text}`);
     chatSeen.set(who, ctx.chatLog.at(-1)?.seq ?? 0);
     const spoken = unseen.some((c) => c.spoken) ? "\n(said aloud) lines are what a player said into their microphone (hold T, open chat, or leave the always-on mic on): often talk between players, not orders. See GUIDE.md, Staying with your player." : "";
     return lines.length ? [`In-game chat since your last look, oldest first:\n${lost}${lines.join("\n")}${spoken}`] : [];

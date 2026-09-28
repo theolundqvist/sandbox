@@ -2,7 +2,7 @@ import type { Entity } from "../api";
 
 export type Activity = { at: number } & (
   | { t: "feed"; text: string; kind: string }
-  | { t: "chat"; from: string; text: string; spoken?: boolean }
+  | { t: "chat"; from: string; text: string; spoken?: boolean; game?: string }
   | { t: "announce"; mod: string; by: string; title: string; text: string; color: string }
 );
 export type Tick = { at: number; reset?: true; set: Record<string, Entity>; unset: Record<string, string[]>; removed: number[]; activity?: Activity[]; mods?: Record<string, string | null> };

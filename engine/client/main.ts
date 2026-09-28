@@ -1036,7 +1036,7 @@ function connect() {
         if (!menu.hidden) refreshMenu();
         return;
       case "chat":
-        return addLine(...chatLine(msg.from, msg.text, msg.spoken));
+        return addLine(...chatLine(msg.from, msg.text, msg.spoken, msg.game));
       case "talk":
         return addTalk(msg.from, msg.text);
     }
@@ -1159,8 +1159,9 @@ function addLine(text: string, kind = "info", feed = $("feed")) {
   feed.scrollTop = 1e9;
   return line;
 }
-const chatLine = (from: string, text: string, spoken?: boolean) =>
-  [`${from}${spoken ? " (voice)" : ""}: ${text}`, /'s (Claude|agent)$/.test(from) ? "claude" : spoken ? "chat spoken" : "chat"] as const;
+/** A player's line starts with the game they said it in; the hub's and agents' lines have none. */
+const chatLine = (from: string, text: string, spoken?: boolean, game?: string) =>
+  [`${game ? `[${game}] ` : ""}${from}${spoken ? " (voice)" : ""}: ${text}`, /'s (Claude|agent)$/.test(from) ? "claude" : spoken ? "chat spoken" : "chat"] as const;
 
 /** After a mod arrives, players have 30 s to love it or vote it out. */
 let reacting = "";
@@ -1546,7 +1547,7 @@ renderer.domElement.addEventListener("wheel", (e) => {
 function happen(activity: Activity[] | undefined, banners: boolean) {
   for (const a of activity ?? []) {
     if (a.t === "feed") addLine(a.text, a.kind, $("replay-feed"));
-    else if (a.t === "chat") addLine(...chatLine(a.from, a.text, a.spoken), $("replay-feed"));
+    else if (a.t === "chat") addLine(...chatLine(a.from, a.text, a.spoken, a.game), $("replay-feed"));
     else {
       addLine(`${a.title}${a.text ? ` · ${a.text}` : ""}  (${a.by}'s agent)`, "mod", $("replay-feed")).style.setProperty("--c", a.color);
       if (banners) showBanner(a);

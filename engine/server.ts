@@ -120,21 +120,23 @@ function nameSlow(mod: string, what: "start" | "frames", text: string) {
 /** Per player, the mods that took 16 ms or more of each frame, with how many 2 s reports in a row they have. */
 const slowFrames = new Map<string, Record<string, number>>();
 const feedLog: { at: number; text: string; kind: string }[] = [];
-const chatLog: { seq: number; from: string; text: string; spoken?: boolean; claudes?: boolean }[] = [];
+const chatLog: { seq: number; from: string; text: string; spoken?: boolean; claudes?: boolean; game?: string }[] = [];
 const chatWaiters = new Set<() => void>();
 let chatSeq = 0;
 /** Feed lines, chat and banners since the last timelapse moment. */
 let happened: Activity[] = [];
-/** Lines to "claudes" reach only other Claudes' tool results and the Builders tab, never the players' chat. */
+/** Lines to "claudes" reach only other Claudes' tool results and the Builders tab, never the players' chat. A player's line carries the title of the game they said it in. */
 function chat(from: string, text: string, how?: "spoken" | "claudes") {
   const spoken = how === "spoken" || undefined;
   const claudes = how === "claudes" || undefined;
-  chatLog.push({ seq: ++chatSeq, from, text, spoken, claudes });
-  record.add("chat", from, { text, how });
-  if (!claudes) happened.push({ at: Date.now(), t: "chat", from, text: text.slice(0, 200), spoken });
-  console.log(`[chat] ${claudes ? "[claudes] " : ""}${from}${spoken ? " (voice)" : ""}: ${text}`);
+  const gameId = sockets.has(from) ? sims.gameOf(from) : null;
+  const game = (gameId && sims.games.get(gameId)?.title) || undefined;
+  chatLog.push({ seq: ++chatSeq, from, text, spoken, claudes, game });
+  record.add("chat", from, { text, how, game });
+  if (!claudes) happened.push({ at: Date.now(), t: "chat", from, text: text.slice(0, 200), spoken, game });
+  console.log(`[chat] ${claudes ? "[claudes] " : ""}${game ? `[${game}] ` : ""}${from}${spoken ? " (voice)" : ""}: ${text}`);
   if (chatLog.length > 2000) chatLog.shift();
-  broadcast(claudes ? { t: "talk", from, text } : { t: "chat", from, text, spoken });
+  broadcast(claudes ? { t: "talk", from, text } : { t: "chat", from, text, spoken, game });
   for (const wake of chatWaiters) wake();
 }
 const sockets = new Map<string, ServerWebSocket<Conn>>();

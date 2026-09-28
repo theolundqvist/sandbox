@@ -219,6 +219,6 @@ export type Tick = Moment & { at: number; reset?: true; activity?: Activity[]; m
 /** What players saw happen: feed lines, chat (typed or spoken) and mod banners. */
 export type Activity = { at: number } & (
   | { t: "feed"; text: string; kind: string }
-  | { t: "chat"; from: string; text: string; spoken?: boolean }
+  | { t: "chat"; from: string; text: string; spoken?: boolean; game?: string }
   | { t: "announce"; mod: string; by: string; title: string; text: string; color: string }
 );
