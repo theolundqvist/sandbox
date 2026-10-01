@@ -3,7 +3,7 @@ import * as THREE from "three";
 import type { ClientCtx, ClientHooks, ClientMod, Entity, Game, ReplayShot } from "../api";
 import { clock, extent, isAvatar, plan, position, type Activity, type Plan, type Tick as Moment, type Shot } from "./director";
 import { PhysicsIndex, sizeOf } from "../physics";
-import { computer, OPEN_TERMINAL } from "./front.js";
+import { COMPUTERS, computerPick, type Computer } from "./front.js";
 import { mountPicker } from "./games";
 import { phrases } from "./phrases";
 
@@ -2532,6 +2532,7 @@ const AGENT_GUIDES: AgentGuide[] = [
 ];
 const small = (text: string) => Object.assign(document.createElement("small"), { textContent: text });
 let agentGuide: AgentGuide | null = null;
+let agentComputer: Computer;
 try {
   agentGuide = AGENT_GUIDES.find((g) => g.id === localStorage.getItem("sandbox-agent")) ?? null;
 } catch {}
@@ -2549,13 +2550,14 @@ function showAgentGuide(guide: AgentGuide | null) {
   picked.querySelector("img")!.src = `/agents/${guide.id}.svg`;
   picked.querySelector(".what")!.textContent = guide.name;
   const app = "download" in guide;
-  $("agent-install-what").replaceChildren(app ? `Get the ${guide.name}` : `Install ${guide.name}`, small(app ? "Download it, open it and sign in." : `${OPEN_TERMINAL[computer]} Paste this line and press Enter.`));
+  $("agent-install-what").replaceChildren(...(app ? [`Get the ${guide.name}`, small("Download it, open it and sign in.")] : [`Install ${guide.name}`]));
+  $("agent-terminal").textContent = `${COMPUTERS[agentComputer].open} Paste this line and press Enter.`;
   $("agent-start-what").replaceChildren("Turn permissions off", small(app ? guide.setup : "Start it like this, so it can run the game's command without asking each time."));
-  $("agent-install-row").hidden = $("agent-start-row").hidden = app;
+  $("agent-os-row").hidden = $("agent-terminal").hidden = $("agent-install-row").hidden = $("agent-start-row").hidden = app;
   $("agent-download").hidden = !app;
   if (app) Object.assign($<HTMLAnchorElement>("agent-download"), { href: guide.download, textContent: `Download the ${guide.name}` });
   else {
-    $("agent-install").textContent = computer === "windows" ? guide.install.windows : guide.install.unix;
+    $("agent-install").textContent = agentComputer === "windows" ? guide.install.windows : guide.install.unix;
     $("agent-start").textContent = guide.run;
   }
   $("agent-open").hidden = !guide.open;
@@ -2592,6 +2594,10 @@ $("agent-picked").onclick = () => {
   showAgentGuide(null);
   $("agent-list").querySelectorAll<HTMLElement>(".item:not(.build)")[Math.max(0, AGENT_GUIDES.indexOf(agentGuide!))]!.focus();
 };
+computerPick($("agent-os"), (os) => {
+  agentComputer = os;
+  if (!$("agent-guide").hidden) showAgentGuide(agentGuide);
+});
 showAgentGuide(agentGuide);
 
 function showInvite() {

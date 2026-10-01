@@ -351,6 +351,10 @@ describe("hosting and joining", () => {
     assert.equal(await shown(game, "#agent-guide"), false);
     await game.locator(".item.agent:not(.build)", { hasText: "Claude Code" }).click();
     assert.deepEqual([await game.textContent("#agent-install"), await game.textContent("#agent-start")], ["curl -fsSL https://claude.ai/install.sh | bash", "claude --dangerously-skip-permissions"]);
+    assert.deepEqual([await game.textContent("#agent-os output"), await game.textContent("#agent-terminal")], ["Linux", "Press Ctrl+Alt+T. Paste this line and press Enter."]);
+    await game.click("#agent-os i:last-child");
+    assert.deepEqual([await game.textContent("#agent-os output"), await game.textContent("#agent-install")], ["Windows", "irm https://claude.ai/install.ps1 | iex"]);
+    assert.match(await game.textContent("#agent-terminal"), /^Press the Windows key, type PowerShell, press Enter\./);
     const copy = game.locator("[data-copy=claude-prompt]");
     const box = await copy.boundingBox();
     await copy.click();
@@ -839,10 +843,13 @@ describe("in a browser", () => {
   test("/menu on the host's own computer needs no key, and offers the desktop app", async () => {
     await page.goto(`${other.base}/menu`);
     await page.click("#go-app");
-    assert.deepEqual(await page.locator("#app-rows > div").evaluateAll((rows) => rows.map((r) => r.dataset.os)), ["linux", "windows", "mac"]);
-    assert.match(await page.textContent("#app-linux"), /desktop\/install \| bash -s -- '.+#key=/);
-    assert.match(await page.textContent("#app-windows"), /desktop\/install\.ps1\)\)\) '.+#key=/);
-    assert.match(await page.textContent("#app-rows .note"), /^Press Ctrl\+Alt\+T\. Paste the line/);
+    assert.equal(await page.textContent("#app-os output"), "Linux");
+    assert.equal(await page.textContent("#app-open"), "Press Ctrl+Alt+T.");
+    assert.match(await page.textContent("#app-install"), /desktop\/install \| bash -s -- '.+#key=/);
+    await page.click("#app-os i:last-child");
+    assert.equal(await page.textContent("#app-os output"), "Windows");
+    assert.match(await page.textContent("#app-open"), /^Press the Windows key, type PowerShell/);
+    assert.match(await page.textContent("#app-install"), /desktop\/install\.ps1\)\)\) '.+#key=/);
   });
 
   test("an invite link joins through the relay with a name and Play, and nothing else", async () => {

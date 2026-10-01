@@ -27,8 +27,6 @@
   .item.choice button:is(:focus, :hover) { color: var(--accent); }
   .cover video { display: block; width: 100%; height: 100%; object-fit: cover; }
   :is(#app, #invite) .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
-  #app .note { margin: 8px 0 24px; }
-  @media (max-width: 760px) { #app .copy-row > span { width: 88px; } }
 </style>
 </head>
 <body>
@@ -133,18 +131,17 @@
   <section id="app" class="screen" data-nav hidden>
     <h1>Desktop app</h1>
     <p class="lead">Full screen. Mouse look without interruptions. Right-click works.</p>
-    <div id="app-rows">
-      <div data-os="windows"><div class="copy-row"><span>Windows</span><code id="app-windows"></code><button data-copy="app-windows">Copy</button></div><p class="note"></p></div>
-      <div data-os="mac"><div class="copy-row"><span>Mac</span><code id="app-mac"></code><button data-copy="app-mac">Copy</button></div><p class="note"></p></div>
-      <div data-os="linux"><div class="copy-row"><span>Linux</span><code id="app-linux"></code><button data-copy="app-linux">Copy</button></div><p class="note"></p></div>
-    </div>
+    <div class="field"><span>Computer</span><div class="pick" id="app-os"></div></div>
+    <p class="note" id="app-open"></p>
+    <div class="copy-row"><span>Install</span><code id="app-install"></code><button data-copy="app-install">Copy</button></div>
+    <p class="note">Paste the line and press Enter.</p>
   </section>
 
   <div id="error" class="error"></div>
 </main>
 <div class="hints"><span><kbd>↑↓</kbd>Select</span><span id="enter-hint"><kbd>Enter</kbd>Open</span></div>
 <script type="module">
-  import { OPEN_TERMINAL, backdrop, computer, joinLink, joinable, logo, pick } from "/front.js";
+  import { COMPUTERS, backdrop, computerPick, joinLink, joinable, logo, pick } from "/front.js";
   const $ = (id) => document.getElementById(id);
   backdrop($("backdrop"));
   logo($("logo"));
@@ -507,16 +504,18 @@
       setTimeout(() => (button.textContent = "Copy"), 1500);
     };
 
-  /** The desktop app, a menu entry on computers. The app marks its user agent with SandboxDesktop. */
+  /** The desktop app, a menu entry on computers, installed with this host's link for whichever computer is picked. The app marks its user agent with SandboxDesktop. */
+  const installer = "https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install";
+  let appLink = "";
+  const showApp = (os) => {
+    $("app-open").textContent = COMPUTERS[os].open;
+    $("app-install").textContent = os === "windows" ? `& ([scriptblock]::Create((irm ${installer}.ps1))) '${appLink}'` : `curl -fsSL ${installer} | bash -s -- '${appLink}'`;
+  };
+  computerPick($("app-os"), showApp);
   function offerApp(link) {
     if (navigator.userAgent.includes("SandboxDesktop")) return;
-    const installer = "https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install";
-    for (const row of $("app-rows").children) {
-      const os = row.dataset.os;
-      row.querySelector("code").textContent = os === "windows" ? `& ([scriptblock]::Create((irm ${installer}.ps1))) '${link}'` : `curl -fsSL ${installer} | bash -s -- '${link}'`;
-      row.querySelector(".note").textContent = `${OPEN_TERMINAL[os]} Paste the line and press Enter.`;
-    }
-    $("app-rows").prepend($("app-rows").querySelector(`[data-os=${computer}]`));
+    appLink = link;
+    showApp($("app-os").dataset.value);
     $("go-app").hidden = false;
   }
 

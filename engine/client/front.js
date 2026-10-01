@@ -143,12 +143,21 @@ export function joinLink(text) {
 /** Whether copied text is certainly an invite link. */
 export const joinable = (text) => /^https?:\/\/\S+#(invite|key)=\S+$/.test(text);
 
-/** The visitor's computer, which goes first wherever the steps differ between computers. */
-export const computer = navigator.userAgent.includes("Windows") ? "windows" : navigator.userAgent.includes("Mac") ? "mac" : "linux";
+const platform = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent;
+/** The visitor's computer, picked first wherever the steps differ between computers; Windows when it can't tell. */
+export const computer = /mac/i.test(platform) ? "mac" : /linux|x11|cros/i.test(platform) ? "linux" : "windows";
 
-/** How someone who has never used a terminal opens one, on each computer. */
-export const OPEN_TERMINAL = {
-  windows: "Press the Windows key, type PowerShell, press Enter.",
-  mac: "Press Cmd+Space, type Terminal, press Enter.",
-  linux: "Press Ctrl+Alt+T.",
+/** Each computer, and how someone who has never used a terminal opens one there. */
+export const COMPUTERS = {
+  windows: { name: "Windows", open: "Press the Windows key, type PowerShell, press Enter." },
+  mac: { name: "Mac", open: "Press Cmd+Space, type Terminal, press Enter." },
+  linux: { name: "Linux", open: "Press Ctrl+Alt+T." },
 };
+
+/** A pick of computers, starting on the visitor's; onChange runs for that one too. */
+export function computerPick(el, onChange) {
+  el.choices = Object.entries(COMPUTERS).map(([id, c]) => [id, c.name]);
+  el.dataset.value = computer;
+  pick(el, onChange);
+  onChange(computer);
+}
