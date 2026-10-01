@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy && ./build-site.sh && wrangler pages deploy dist --project-name sandbox-community",
-    "test": "bun test worker.test.ts"
+    "test": "bun test server",
+    "deploy-site": "./build-site.sh && wrangler pages deploy dist --project-name sandbox --branch main",
+    "deploy-api": "./server/deploy.sh"
   },
   "devDependencies": {
     "wrangler": "^4.145.0"

@@ -6,7 +6,7 @@ A host shares a world from the game: Tab, World, Share. Anyone hosts or remixes 
 
 | Part | What it is |
 | --- | --- |
-| World | Exactly what Export makes: every mod and its history, the entities, each mod's database, the record and the timelapse. The invite, the host key and players' keys are never in it, and every copy of them in a database is replaced with `[secret]`. Players' names, chat and banners stay in, as in any export. |
+| World | What Export makes, without what its players did and said: every mod and its history, the entities and each mod's database, and `owners.json`, so mod authors keep their credit. Rewind and the Timelapse go with it, but without the chat in their moments; the record (chat, tool calls, sessions) and where each player sits (`seats.json`) are left out. Player names that are part of the game, in scores and items, stay. The invite, the host key and players' keys are never in it, and every copy of them in a database is replaced with `[secret]`. |
 | Cover | The world's picture (`cover.jpg`, the host's view without the HUD or name tags), or the current view. |
 | Clip | The whole timelapse played back in 12 s and recorded in the host's game: muted 640×360 WebM, without name tags. A world with nothing to replay yet goes up without one. |
 | Details | Title, a one-line description, the host's player name as author, link-only or public, the world it was remixed from, the engine version and the mod count. |
@@ -15,28 +15,30 @@ Link-only worlds open by their link and are never listed. Sharing a world again 
 
 ## Service
 
-`community/` holds the Worker (`worker.ts`, D1 table in `schema.sql`, zips, covers and clips in R2) and the site (`site/`, built into `dist/` with the game's own styles by `build-site.sh`).
+`community/server/` is a Bun API with Postgres for the rows; zips, covers and clips live in the R2 bucket `sandbox-worlds` and never pass through the server, which hands out presigned URLs signed for each file's exact size and type. `community/site/` is the site, built into `dist/` with the game's own styles by `build-site.sh`.
 
 | Endpoint | Does |
 | --- | --- |
-| `POST /worlds` | Multipart details, cover (JPEG, 2 MB) and optional clip (WebM, 6 MB). Answers `{ id, link, ownerToken }`. 10 per IP an hour. |
-| `PUT /worlds/:id` | Same, with `Authorization: Bearer <ownerToken>`; a missing cover or clip keeps the old one. |
-| `PUT /worlds/:id/zip` | The export's zip as the raw body, at most 95 MB. A world is listed and served only once it has one. |
+| `POST /worlds` | JSON details and `files: { zip, cover, clip? }` sizes (zip 200 MB, JPEG cover 2 MB, WebM clip 6 MB). Answers `{ id, link, ownerToken, uploads }`, an upload URL per file. 10 per IP an hour. |
+| `PUT /worlds/:id` | Same, with `Authorization: Bearer <ownerToken>`; a cover or clip not sent keeps the old one. 30 per IP an hour. |
+| `POST /worlds/:id/done` | Owner only, after the uploads. Checks each file landed at its size and is the kind it claims, then the world goes live; an update replaces the old files only now. |
 | `DELETE /worlds/:id` | Owner only. Removes the row and its files. |
-| `GET /worlds` | Public worlds with a zip, newest first. |
-| `GET /worlds/:id`, `/zip`, `/cover`, `/clip` | One world and its files, link-only included. |
+| `GET /worlds` | Public live worlds, newest first. |
+| `GET /worlds/:id` | One world, link-only included, with `zip`, `cover` and `clip` URLs that last the hour. |
 | `POST /worlds/:id/report` | Counts a report. 10 per IP an hour. |
 
-Test it with `cd community && bun install && bun test worker.test.ts` (wrangler dev with local D1 and R2), and the launchers against it with `bun test engine/community.test.ts`. Deploy with `bun run deploy` from `community/`.
+Shares never finished are swept after a day. The site's origin is the only one browsers may read the API from.
+
+Test it with `bun test community/server` (throwaway Postgres and SeaweedFS for S3 in Docker), and the launchers against it with `bun test engine/community.test.ts`.
+
+## Running it
+
+It runs on the `npm` box in `/opt/sandbox-api` as its own Compose project (`compose.yaml`): Postgres listening only on a socket in a volume shared with the API and the backups, password auth, no network but an internal one; the API on `127.0.0.1:9200` behind Nginx Proxy Manager at `sandbox.api.lundqvistliss.com`, non-root, read-only, no capabilities. `db.env` and `r2.env` (the bucket-scoped R2 key) exist only on the box. Deploy with `community/server/deploy.sh`; the site with `bun run deploy-site` from `community/` (Pages project `sandbox`, `sandbox.lundqvistliss.com`).
+
+Backups: every hour `pg_dump | zstd` to `sandbox-backups/pg/<time>.sql.zst`, then, only after that upload landed, older dumps are thinned to everything from 48 hours, one a day for 30 days and one a month for a year. Restore one with `zstd -dc <dump> | psql`.
 
 ## Takedown
 
-Reported worlds come first: `npx wrangler d1 execute sandbox-community --remote --command "select id, title, author, visibility, reports from worlds order by reports desc limit 20"`. To take one down:
-
-```sh
-cd community
-npx wrangler d1 execute sandbox-community --remote --command "delete from worlds where id = '<id>'"
-for f in world.zip cover.jpg clip.webm; do npx wrangler r2 object delete "sandbox-community/worlds/<id>/$f" --remote; done
-```
+On the box, `cd /opt/sandbox-api && docker compose exec app bun takedown.ts` lists the most reported worlds; `docker compose exec app bun takedown.ts <id>` deletes one and its files.
 
 Its owner's next Share puts it up again as a new world, so a world that must stay down needs its author told.

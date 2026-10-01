@@ -1,8 +1,7 @@
 // The public face of Sandbox: join a friend's world, browse Community worlds, get the app. Every screen has its own address; a world's is /w/<id>.
 import { joinLink, logo } from "/front.js";
 
-const API = "https://sandbox-community.theodor-lundqvist.workers.dev";
-const CLIPS = ["lava.mp4", "night-aurora.mp4", "giant-vote.mp4"];
+const API = "https://sandbox.api.lundqvistliss.com";
 const $ = (id) => document.getElementById(id);
 const el = (tag, props, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -11,13 +10,27 @@ const el = (tag, props, ...children) => {
 };
 logo($("logo"));
 
-/** One clip of a game built in Sandbox behind every screen, over its poster. */
+/** Stills of games built in Sandbox behind the home screen, crossfading in a random order after the first; one still when motion is reduced. */
+const STILLS = ["high-noon", "retro-cabinet", "genesis-creator", "world"];
 const backdrop = $("backdrop");
-backdrop.style.backgroundImage = "url(/clips/poster.jpg)";
+const still = (name) => el("img", { src: `/stills/${name}.webp`, alt: "" });
+let shown = still(STILLS[0]);
+shown.onload = () => shown.classList.add("on");
+backdrop.append(shown);
 if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
-  const video = el("video", { src: `/clips/${CLIPS[Math.floor(Math.random() * CLIPS.length)]}`, muted: true, loop: true, autoplay: true, playsInline: true });
-  video.onplaying = () => video.classList.add("on");
-  backdrop.append(video);
+  const rest = STILLS.slice(1).sort(() => Math.random() - 0.5);
+  let n = 0;
+  setInterval(() => {
+    if (document.body.dataset.screen !== "home") return;
+    const next = still([...rest, STILLS[0]][n++ % STILLS.length]);
+    next.onload = () => {
+      backdrop.append(next);
+      requestAnimationFrame(() => next.classList.add("on"));
+      const old = shown;
+      setTimeout(() => old.remove(), 1200);
+      shown = next;
+    };
+  }, 7000);
 }
 
 const media = (w) => (w.clip ? el("video", { src: w.clip, poster: w.cover, muted: true, loop: true, autoplay: true, playsInline: true }) : el("img", { src: w.cover, alt: "" }));
@@ -77,6 +90,7 @@ async function route() {
   const id = path.match(/^\/w\/([a-z0-9]{12})$/)?.[1];
   const screen = id ? "world" : (SCREENS[path] ?? "home");
   for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== screen;
+  document.body.dataset.screen = screen;
   $("back").hidden = screen === "home";
   $("back").href = id ? "/worlds" : "/";
   $("error").textContent = "";

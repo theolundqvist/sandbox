@@ -127,7 +127,7 @@ addEventListener("keydown", (e) => {
 // The mouse moves the focus, so one entry is ever marked; not away from a name being typed, and not by a window opening under a still mouse.
 function hover(e) {
   if (e.pointerType !== "mouse" || (!e.movementX && !e.movementY)) return;
-  const item = e.target.closest?.("[data-nav] button.item");
+  const item = e.target.closest?.("[data-nav] :is(button, a).item");
   if (item && item !== focused() && !focused()?.matches("input[type=text], textarea")) item.focus({ preventScroll: true });
 }
 addEventListener("pointermove", hover);

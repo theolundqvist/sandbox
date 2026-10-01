@@ -1161,7 +1161,7 @@ function sendCover(keepalive: boolean) {
   fetch(`/api/menu/cover?id=${info.id}`, { method: "POST", keepalive, headers: { authorization: `Bearer ${hostKey}` }, body }).catch(() => {});
 }
 setInterval(() => document.hidden || sendCover(false), 3 * 60_000);
-addEventListener("pagehide", () => sendCover(true));
+addEventListener("beforeunload", () => sendCover(true));
 
 // ---------- HUD ----------
 function addLine(text: string, kind = "info", feed = $("feed")) {
@@ -2416,7 +2416,8 @@ async function showPicture() {
   img.src = res.ok ? URL.createObjectURL(await res.blob()) : "";
   if (!res.ok) img.removeAttribute("src");
 }
-const visibility = front.pick($("share-visibility"));
+const showNames = (value: string) => ($("share-names").hidden = value !== "public");
+const visibility = front.pick($("share-visibility"), showNames);
 const coverPick = front.pick($("share-cover"), showPicture);
 async function openShare(status = "") {
   const s = await (await hostMenu("state")).json();
@@ -2427,12 +2428,13 @@ async function openShare(status = "") {
   $<HTMLInputElement>("share-title").value = shared?.title ?? info.name;
   $<HTMLInputElement>("share-description").value = shared?.description ?? (titles.length > 3 ? `${titles.slice(0, 3).join(", ")} and ${titles.length - 3} more` : titles.join(", "));
   visibility.set(shared?.visibility ?? "link");
+  showNames(visibility.dataset.value!);
   coverPick.set(w?.cover ? "world" : "view");
   $("share-shared").hidden = !shared?.link;
   $("share-link").textContent = shared?.link ?? "";
   $("share-stop").textContent = "Stop sharing";
   $("share-go").textContent = shared?.link ? "Update" : "Share";
-  $("share-status").textContent = status;
+  $("share-status").textContent = status || "The timelapse goes with it. Chat stays on this computer.";
   openPage("share");
   $("page-title").textContent = "Share";
   void showPicture();

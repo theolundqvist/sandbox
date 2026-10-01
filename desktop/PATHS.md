@@ -1,6 +1,6 @@
 # App paths
 
-Every journey through the desktop app and the browser, and the test that covers it. `app` is `desktop/app.test.mjs` (Electron and Chromium under Xvfb), `launcher` is `engine/launcher.test.ts`, `community` is `engine/community.test.ts` (two launchers and the Worker on wrangler dev), `update` is `desktop/update.test.mjs` (two real AppImage builds).
+Every journey through the desktop app and the browser, and the test that covers it. `app` is `desktop/app.test.mjs` (Electron and Chromium under Xvfb), `launcher` is `engine/launcher.test.ts`, `community` is `engine/community.test.ts` (two launchers and the community API on throwaway Postgres and S3), `update` is `desktop/update.test.mjs` (two real AppImage builds).
 
 Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and `SANDBOX_APPIMAGES=<dir with 0.2.0/ and 0.2.1/> xvfb-run -a node --test desktop/update.test.mjs`.
 

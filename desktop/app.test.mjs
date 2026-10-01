@@ -69,8 +69,8 @@ const tinyIsle = Buffer.from(zipSync({ "config.json": Buffer.from(JSON.stringify
 /** GitHub as the app sees it: the latest release and the installer script the app runs to update; Community, with one world and whatever the app shares; and ElevenLabs, which knows one key. */
 const releases = { latest: VERSION, installer: null };
 const RELEASES = port();
-const isle = { id: "tinyisle0001", title: "Tiny Isle", description: "One small island.", author: "maker", cover: `http://127.0.0.1:${RELEASES}/worlds/tinyisle0001/cover`, clip: null, link: "https://site.example/w/tinyisle0001" };
-const community = { shared: null, zip: null };
+const isle = { id: "tinyisle0001", title: "Tiny Isle", description: "One small island.", author: "maker", cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, zip: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/zip`, clip: null, link: "https://site.example/w/tinyisle0001" };
+const community = { shared: null, files: {} };
 const body = (req) => new Promise((resolve) => {
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
@@ -78,17 +78,19 @@ const body = (req) => new Promise((resolve) => {
 });
 const github = createServer(async (req, res) => {
   if (req.url === "/worlds" && req.method === "POST") {
-    community.shared = await body(req);
-    return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001", ownerToken: "owner" }));
+    community.shared = JSON.parse(await body(req));
+    const uploads = Object.fromEntries(Object.keys(community.shared.files).map((kind) => [kind, `http://127.0.0.1:${RELEASES}/upload/${kind}`]));
+    return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001", ownerToken: "owner", uploads }));
   }
+  if (req.url.startsWith("/upload/") && req.method === "PUT") {
+    community.files[req.url.slice(8)] = await body(req);
+    return res.end();
+  }
+  if (req.url === "/worlds/shared000001/done" && req.method === "POST") return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001" }));
   if (req.url === "/worlds") return res.end(JSON.stringify([isle]));
   if (req.url === "/worlds/tinyisle0001") return res.end(JSON.stringify(isle));
-  if (req.url === "/worlds/tinyisle0001/cover") return res.end(COVER);
-  if (req.url === "/worlds/tinyisle0001/zip") return res.end(tinyIsle);
-  if (req.url === "/worlds/shared000001/zip" && req.method === "PUT") {
-    community.zip = await body(req);
-    return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001" }));
-  }
+  if (req.url === "/files/tinyisle0001/cover") return res.end(COVER);
+  if (req.url === "/files/tinyisle0001/zip") return res.end(tinyIsle);
   if (req.url === "/latest") return res.end(JSON.stringify({ tag_name: `v${releases.latest}` }));
   if (req.url === "/hang") return;
   if (req.url === "/install" && releases.installer) return res.end(releases.installer);
@@ -454,13 +456,10 @@ describe("hosting and joining", () => {
     await game.fill("#share-description", "One small island, remixed.");
     await game.click("#share-go");
     await until("the shared link", async () => (await game.textContent("#share-link")) === "https://site.example/w/shared000001", 60_000);
-    const sent = community.shared.toString("latin1");
-    assert.match(sent, /name="title"\r\n\r\nTiny Isle\r\n/);
-    assert.match(sent, /name="visibility"\r\n\r\nlink\r\n/);
-    assert.match(sent, /name="remix_of"\r\n\r\ntinyisle0001\r\n/);
-    assert.ok(sent.includes(COVER.toString("latin1")), "the world's picture");
-    assert.match(sent, /name="clip"; filename="clip.webm"\r\nContent-Type: video\/webm\r\n\r\n\x1a\x45\xdf\xa3/);
-    assert.equal(community.zip.subarray(0, 2).toString(), "PK");
+    assert.deepEqual([community.shared.title, community.shared.visibility, community.shared.remixOf], ["Tiny Isle", "link", "tinyisle0001"]);
+    assert.deepEqual(community.files.cover, COVER, "the world's picture");
+    assert.deepEqual([...community.files.clip.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3]);
+    assert.equal(community.files.zip.subarray(0, 2).toString(), "PK");
     assert.equal(await game.textContent("#share-go"), "Update");
     await shell.click("#leave");
     await until("the host's view of Tiny Isle", async () => readFileSync(join(worlds, isleId, "cover.jpg")).length > COVER.length);

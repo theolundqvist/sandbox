@@ -10,6 +10,8 @@ declare var self: Worker;
 /** Everything that defines a world. keys.json, the players' signing keys, never leaves, and config.json leaves without its invite and host key. */
 const FILES = new Set(["config.json", "owners.json", "seeded.json", "about.json", "mods.json", "games.json", "seats.json", "world.sqlite", "record.sqlite", "cover.jpg"]);
 const DIRS = new Set(["world", "db", "build"]);
+/** A world shared to Community leaves out what its players did and said: the record (chat, tool calls, sessions), where each player sits, and the chat inside its Timelapse moments. */
+const PRIVATE = new Set(["record.sqlite", "seats.json"]);
 /** Packages come back with bun install, SQLite's side files are folded into each database's copy, and a lock in .git is a commit caught halfway. */
 const SKIP = /(^|\/)node_modules(\/|$)|\.sqlite-(wal|shm|journal)$|\/\.git\/.*\.lock$/;
 const DATABASE = /^(db\/)?[^/]+\.sqlite$/;
@@ -26,7 +28,7 @@ const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value, 
 const readJson = (path: string) => (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {});
 
 /** A consistent copy of a database another process may be writing, with the world's secrets out of every table, since players paste invites into chat; the last vacuum drops freed pages that still hold them. */
-function snapshot(path: string, into: string, secrets: string[]) {
+function snapshot(path: string, into: string, secrets: string[], community: boolean) {
   const source = new Database(path, { readonly: true });
   source.run("pragma busy_timeout = 5000");
   source.run("vacuum into ?", [into]);
@@ -35,6 +37,8 @@ function snapshot(path: string, into: string, secrets: string[]) {
   const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
   const scrub = (text: string) => secrets.reduce((t, s) => t.replaceAll(s, "[secret]"), text);
   let scrubbed = 0;
+  if (community && copy.query("select 1 from pragma_table_info('timelapse') where name = 'activity'").get())
+    scrubbed += copy.run(`update timelapse set activity = (select json_group_array(json(value)) from json_each(timelapse.activity) where json_extract(value, '$.t') is not 'chat') where json_valid(activity) and exists (select 1 from json_each(timelapse.activity) where json_extract(value, '$.t') = 'chat')`).changes;
   for (const { name } of copy.query("select name from sqlite_master where type = 'table' and name not like 'sqlite_%'").all() as { name: string }[]) {
     for (const { name: column } of copy.query("select name from pragma_table_info(?)").all(name) as { name: string }[]) {
       const [table, col] = [quote(name), quote(column)];
@@ -52,20 +56,21 @@ function snapshot(path: string, into: string, secrets: string[]) {
   return readFileSync(into);
 }
 
-function pack(dir: string) {
+function pack(dir: string, community: boolean) {
   const config = readJson(join(dir, "config.json"));
   const secrets = [config.hostKey, config.invite, ...Object.keys(readJson(join(dir, "keys.json")))].filter(Boolean);
   const scratch = mkdtempSync(join(tmpdir(), "sandbox-export-"));
   const files: Zippable = {};
   const add = (rel: string) => {
     const path = join(dir, rel);
+    if (community && PRIVATE.has(rel)) return;
     if (rel === "config.json") files[rel] = json({ name: config.name, rules: config.rules, start: config.start });
     else if (rel === "mods.json") {
       // Server builds are named by absolute path; relative to build/ they point at the builds wherever the world lands.
       const portable = (b: Build) => ({ ...b, server: b.server && relative(join(dir, "build"), resolve(dir, "build", b.server)).split(sep).join("/") });
       const mods: Record<string, Mod> = readJson(path);
       files[rel] = json(Object.fromEntries(Object.entries(mods).map(([name, m]) => [name, { ...m, build: portable(m.build), previous: m.previous.map(portable) }])));
-    } else if (DATABASE.test(rel) || GAME_SAVE.test(rel)) files[rel] = snapshot(path, join(scratch, rel.replaceAll("/", "-")), secrets);
+    } else if (DATABASE.test(rel) || GAME_SAVE.test(rel)) files[rel] = snapshot(path, join(scratch, rel.replaceAll("/", "-")), secrets, community);
     // Git objects are compressed already.
     else files[rel] = rel.includes("/.git/objects/") ? [readFileSync(path), { level: 0 }] : readFileSync(path);
   };
@@ -135,7 +140,7 @@ function unpack(zip: Uint8Array, into: string) {
 self.onmessage = ({ data: msg }) => {
   try {
     if (msg.t === "pack") {
-      const zip = pack(msg.dir);
+      const zip = pack(msg.dir, msg.community === true);
       return postMessage({ zip }, [zip.buffer]);
     }
     postMessage({ world: unpack(msg.zip, msg.into) });

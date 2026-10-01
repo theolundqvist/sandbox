@@ -1,0 +1,60 @@
+# The community API on the npm box. Postgres listens only on a socket in a volume it shares with the app and the backups; nothing here touches another project.
+name: sandbox-api
+services:
+  db:
+    image: postgres:17-alpine
+    command: ["postgres", "-c", "listen_addresses="]
+    env_file: db.env
+    environment:
+      POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256 --auth-host=scram-sha-256
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - pgsock:/var/run/postgresql
+    networks: [db]
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h /var/run/postgresql"]
+      interval: 10s
+  app: &app
+    build: .
+    command: ["bun", "server.ts"]
+    env_file:
+      - db.env
+      # The bucket-scoped R2 key; until it exists the API runs and lists nothing.
+      - { path: r2.env, required: false }
+    environment:
+      PORT: "9200"
+      BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0"
+      SITE: https://sandbox.lundqvistliss.com
+      R2_BUCKET: sandbox-worlds
+    ports: ["127.0.0.1:9200:9200"]
+    volumes:
+      - pgsock:/var/run/postgresql
+    networks: [egress]
+    depends_on:
+      db: { condition: service_healthy }
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 256
+  backup:
+    <<: *app
+    command: ["bun", "backup.ts"]
+    ports: []
+    environment:
+      R2_BACKUP_BUCKET: sandbox-backups
+volumes:
+  pgdata:
+  pgsock:
+networks:
+  db:
+    internal: true
+  egress:
