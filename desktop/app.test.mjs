@@ -349,7 +349,7 @@ describe("hosting and joining", () => {
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#rail [data-tab=claude]");
     assert.equal(await shown(game, "#agent-guide"), false);
-    await game.locator(".item.agent", { hasText: "Claude Code" }).click();
+    await game.locator(".item.agent:not(.build)", { hasText: "Claude Code" }).click();
     assert.deepEqual([await game.textContent("#agent-install"), await game.textContent("#agent-start")], ["curl -fsSL https://claude.ai/install.sh | bash", "claude --dangerously-skip-permissions"]);
     const copy = game.locator("[data-copy=claude-prompt]");
     const box = await copy.boundingBox();
@@ -528,6 +528,7 @@ describe("a friend in a browser", () => {
     assert.equal(await shown(page, "#join-password-field"), false);
     await joinAs(page, "sam");
     await playing(page);
+    assert.equal(await page.locator(".item.agent.build").count(), 0);
   });
 
   test("sam's name on a new computer, while sam is offline, asks the host, who can say no or let them in", async () => {
@@ -1147,6 +1148,56 @@ describe("Continue", () => {
     await shell.click("#forget-yes");
     await shell.keyboard.press("Escape");
     await until("the title without Continue", async () => (await title()).join() === "Worlds,Join world,Host world,Settings,Quit");
+  });
+});
+
+describe("building with an agent", () => {
+  // The agent is a stand-in on this computer's PATH, saying what it was started with and then waiting as an agent would.
+  const home = join(dir, "builder-home");
+  const said = join(home, "said");
+  let app, shell, game;
+  before(async () => {
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(join(home, ".local", "bin", "claude"), `#!/bin/sh\necho "$$" > '${said}'\necho "claude $1"\nprintf '%s\\n' "$2" | cut -c1-40\nexec sleep 600\n`, { mode: 0o755 });
+    ({ app, shell } = await launch("builder", { HOME: home, SHELL: "/bin/sh" }, "builder"));
+    await shell.click("text=Join world");
+    await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
+    await shell.press("#join-link", "Enter");
+    game = await gamePage(app);
+    await playing(game);
+  });
+  after(() => close(app));
+
+  test("Build with asks first in the app's own dialog, then runs the agent beside the game with the world's prompt, and Stop ends it", async () => {
+    await game.locator("#menu-button").dispatchEvent("click");
+    await game.click("#rail [data-tab=claude]");
+    assert.deepEqual(await game.locator(".item.agent.build").allTextContents(), ["Build with Claude Code", "Build with Codex"]);
+    await answer(app, 1);
+    await game.click("text=Build with Claude Code");
+    const [question] = await until("the question", () => asked(app).then((a) => a.length && a));
+    assert.deepEqual([question.message, question.buttons], ["Build with Claude Code?", ["Start", "Cancel"]]);
+    assert.equal(await shown(game, "#menu"), true);
+    assert.equal(app.windows().some((w) => w.url().endsWith("/agent.html")), false);
+
+    await answer(app, 0);
+    await game.click("text=Build with Claude Code");
+    await until("the menu closed", async () => !(await shown(game, "#menu")));
+    const pane = await until("the agent pane", async () => app.windows().find((w) => w.url().endsWith("/agent.html")));
+    await until("the agent started with the prompt", async () => /claude --dangerously-skip-permissions\s*First install the command for our game/.test(await pane.textContent("#term")));
+    assert.equal(await pane.textContent("#name"), "Claude Code");
+    const pid = Number(readFileSync(said, "utf8"));
+    await pane.click("#close");
+    await until("the pane closed", async () => !app.windows().some((w) => w.url().endsWith("/agent.html")));
+    assert.equal(app.windows().includes(game), true);
+    assert.equal(await app.evaluate(({ webContents }) => webContents.getFocusedWebContents()?.getURL()), game.url());
+    await until("the agent stopped", async () => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    });
   });
 });
 

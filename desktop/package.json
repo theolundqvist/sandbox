@@ -10,11 +10,19 @@
     "start": "electron .",
     "test": "xvfb-run -a node --test app.test.mjs"
   },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "node-pty": "^1.1.0"
+  },
   "devDependencies": {
     "electron": "^44.4.5",
     "electron-builder": "^26.15.3",
     "playwright-core": "^1.63.0"
   },
+  "trustedDependencies": [
+    "node-pty"
+  ],
   "build": {
     "appId": "com.theolundqvist.sandbox",
     "artifactName": "Sandbox-${os}-${arch}.${ext}",
@@ -22,7 +30,9 @@
       "main.cjs",
       "preload.cjs",
       "game-preload.cjs",
-      "shell.html"
+      "agent-preload.cjs",
+      "shell.html",
+      "agent.html"
     ],
     "mac": {
       "target": "zip",

@@ -2354,7 +2354,7 @@ for (const keysList of $("howto").querySelectorAll(".keys")) $("help-keys").appe
 /** Leaving closes this world: the host goes back to their main menu, anyone else to this world's join screen. */
 let leaving = false;
 /** The desktop app says when a newer release is out, and installs it when asked. */
-const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void; leave(): void } }).sandboxDesktop;
+const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void; leave(): void; agents: { id: string; name: string }[]; build(id: string, key: string | null): Promise<boolean | string> } }).sandboxDesktop;
 desktop?.onUpdate((version) => ($("menu-update").hidden = !version));
 $("menu-update").onclick = async () => {
   const error = await desktop?.update();
@@ -2500,15 +2500,14 @@ setVolume(savedVolume);
 $("volume").oninput = () => setVolume(Number($<HTMLInputElement>("volume").value));
 $("volume-exact").onchange = () => setVolume(Number($<HTMLInputElement>("volume-exact").value));
 
-const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "sandbox";
-
-const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
-/** One prompt for any coding agent with a shell: it installs this world's command, signed with this player's key, then plays. */
-function connectPrompt() {
-  const base = link?.split("/#")[0] ?? origin;
-  const bin = `~/.local/bin/${slug(world)}`;
-  const install = `mkdir -p ~/.local/bin && curl -fsS -H ${shellQuote(`Authorization: Bearer ${key}`)} ${shellQuote(`${base}/cli?name=${slug(world)}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin}`;
-  return `First install the command for our game by running \`${install}\`. Then run \`${bin}\` alone to list its tools, call one as \`${bin} <tool> name=value\`, and give wait_for_chat calls a shell timeout of at least 300 seconds. We are playing ${world} together right now: a live multiplayer game my friends and I build while we play it, each with our own coding agent. I am ${me} in the game. Anything you reload goes live for every player at once, so make it one coherent game: extend what the others built instead of building it again, and see a thing work before you call it done. Start with status and read GUIDE.md, then say one short greeting like "Hey everyone" so we see you are in: that is the only thing you ever say in chat, which belongs to us players. From then on I talk to you only through the in-game chat, where my voice is transcribed too when I hold T: act when I ask for something or clearly want a change, not on every word. Then loop forever: wait_for_chat seconds=240, get what I (${me}) ask for built, and wait_for_chat again. We follow your work on the Builders line, never in chat: set task when you start (a short title and percent), update it as it progresses, and end it done once every check you can run passes, with what to try in its status, or blocked with the reason, never left waiting for us to try it; when a task goes done and we can try something new, call announce with what to try. If you can start subagents or background tasks, be the orchestrator and never build or test yourself: give each request, or each part of a big one, to its own subagent owning its own mod, which builds, reloads and checks it in play, keep calling wait_for_chat while they work, and keep task updated from what they report (GUIDE.md, Subagents). Nothing ever arrives in this terminal, so never end your turn.`;
+/** One prompt for any coding agent with a shell, from the world, which signs it with this player's key. */
+let prompt = "";
+async function loadPrompt() {
+  const res = await fetch(`/api/prompt?base=${encodeURIComponent(origin)}`, { headers: { authorization: `Bearer ${key}` } });
+  if (!res.ok) return;
+  prompt = await res.text();
+  $("claude-prompt").textContent = prompt;
+  if (agentGuide?.open) $<HTMLAnchorElement>("agent-open").href = agentGuide.open.url(prompt);
 }
 
 /** The coding agents that can run this world's command, each with its own install, its own way to stop asking before every command, and a documented link that opens it with the prompt typed in. Evidence: ~/.config/journal/2026-10-01/coding-agents-shell-access.md. */
@@ -2560,10 +2559,20 @@ function showAgentGuide(guide: AgentGuide | null) {
     $("agent-start").textContent = guide.run;
   }
   $("agent-open").hidden = !guide.open;
-  $("agent-open").textContent = guide.open?.label ?? "";
+  if (guide.open) Object.assign($<HTMLAnchorElement>("agent-open"), { textContent: guide.open.label, href: guide.open.url(prompt) });
 }
-// The link carries the prompt as it is when clicked, with this player's name and key.
-$("agent-open").onclick = () => agentGuide?.open && ($<HTMLAnchorElement>("agent-open").href = agentGuide.open.url(connectPrompt()));
+/** In the app, one click starts an agent in a terminal beside the game, installing it first when it is missing. */
+const buildRows = (desktop?.agents ?? []).map(({ id, name }) => {
+  const row = Object.assign(document.createElement("button"), { className: "item agent build" });
+  row.append(Object.assign(document.createElement("img"), { src: `/agents/${id}.svg`, alt: "" }), Object.assign(document.createElement("span"), { className: "what", textContent: `Build with ${name}` }));
+  row.onclick = async () => {
+    const started = await desktop!.build(id, key);
+    if (typeof started === "string") toast(started, "error");
+    else if (started) closeMenu();
+  };
+  return row;
+});
+if (buildRows.length) $("agent-list").append(...buildRows, Object.assign(document.createElement("div"), { className: "gap" }));
 $("agent-list").append(
   ...AGENT_GUIDES.map((guide) => {
     const row = Object.assign(document.createElement("button"), { className: "item agent" });
@@ -2581,7 +2590,7 @@ $("agent-list").append(
 );
 $("agent-picked").onclick = () => {
   showAgentGuide(null);
-  ($("agent-list").children[Math.max(0, AGENT_GUIDES.indexOf(agentGuide!))] as HTMLElement).focus();
+  $("agent-list").querySelectorAll<HTMLElement>(".item:not(.build)")[Math.max(0, AGENT_GUIDES.indexOf(agentGuide!))]!.focus();
 };
 showAgentGuide(agentGuide);
 
@@ -2605,7 +2614,7 @@ async function openMenu() {
   }
   if (document.pointerLockElement) document.exitPointerLock();
   $("menu-world").textContent = world;
-  $("claude-prompt").textContent = connectPrompt();
+  if (info.agents !== false) void loadPrompt();
   showBuilders();
   await refreshMenu();
 }

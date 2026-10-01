@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { basename, join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { frontFile } from "./front";
-import { createCli, type Task } from "./cli";
+import { connectPrompt, createCli, type Task } from "./cli";
 import { ENGINE_KEYS, hasGit, Mods } from "./mods";
 import { latencies, openRecord, route } from "./record";
 import { Sims } from "./sims";
@@ -568,6 +568,14 @@ const server = Bun.serve<Conn>({
       }
     }
     if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json(status()) : new Response(null, { status: 401 });
+    if (path === "/api/prompt") {
+      const who = nameByKey(bearer(req));
+      if (!who) return new Response(null, { status: 401 });
+      if (config.agents === false) return new Response("The host turned agents off for this world.\n", { status: 403 });
+      // Players reach the world by its invite link; without one, at the address their game came from.
+      const base = invite.link?.split("/#")[0] ?? url.searchParams.get("base");
+      return base ? new Response(connectPrompt(config.name, base, who, bearer(req)!)) : new Response("Give ?base=<this world's address>.\n", { status: 400 });
+    }
     if (path === "/api/voice" && req.method === "POST") {
       const who = nameByKey(bearer(req));
       if (!who) return new Response(null, { status: 401 });

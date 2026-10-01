@@ -702,6 +702,15 @@ export function createCli(ctx: CliContext) {
 
 const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
 
+const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "sandbox";
+
+/** One prompt for any coding agent with a shell: it installs this world's command, signed with this player's key, then plays. `base` is the world's address players reach. */
+export function connectPrompt(world: string, base: string, me: string, key: string) {
+  const bin = `~/.local/bin/${slug(world)}`;
+  const install = `mkdir -p ~/.local/bin && curl -fsS -H ${quote(`Authorization: Bearer ${key}`)} ${quote(`${base}/cli?name=${slug(world)}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin}`;
+  return `First install the command for our game by running \`${install}\`. Then run \`${bin}\` alone to list its tools, call one as \`${bin} <tool> name=value\`, and give wait_for_chat calls a shell timeout of at least 300 seconds. We are playing ${world} together right now: a live multiplayer game my friends and I build while we play it, each with our own coding agent. I am ${me} in the game. Anything you reload goes live for every player at once, so make it one coherent game: extend what the others built instead of building it again, and see a thing work before you call it done. Start with status and read GUIDE.md, then say one short greeting like "Hey everyone" so we see you are in: that is the only thing you ever say in chat, which belongs to us players. From then on I talk to you only through the in-game chat, where my voice is transcribed too when I hold T: act when I ask for something or clearly want a change, not on every word. Then loop forever: wait_for_chat seconds=240, get what I (${me}) ask for built, and wait_for_chat again. We follow your work on the Builders line, never in chat: set task when you start (a short title and percent), update it as it progresses, and end it done once every check you can run passes, with what to try in its status, or blocked with the reason, never left waiting for us to try it; when a task goes done and we can try something new, call announce with what to try. If you can start subagents or background tasks, be the orchestrator and never build or test yourself: give each request, or each part of a big one, to its own subagent owning its own mod, which builds, reloads and checks it in play, keep calling wait_for_chat while they work, and keep task updated from what they report (GUIDE.md, Subagents). Nothing ever arrives in this terminal, so never end your turn.`;
+}
+
 /** The command a player installs: POSIX sh and curl, so it runs on any Mac or Linux box without installing anything. */
 const script = (url: string, key: string, name: string) => `#!/bin/sh
 # Sandbox world ${name} from the command line. Run it alone for the tools and how to call them.

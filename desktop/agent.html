@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<title>Agent</title>
+<link rel="stylesheet" href="/front.css">
+<link rel="stylesheet" href="/xterm/xterm.css">
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0b0c; color: var(--text); overflow: hidden; }
+  body { display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+  #bar { flex: none; height: 44px; display: flex; align-items: center; gap: 12px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--line); font: 700 12px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; }
+  #name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #state { color: var(--dim); }
+  #close { height: 32px; padding: 0 12px; background: none; border: 0; color: var(--text); font: inherit; letter-spacing: inherit; text-transform: uppercase; cursor: pointer; outline: none; }
+  #close:hover, #close:focus-visible { background: var(--accent); color: #0b0b0c; }
+  #term { flex: 1; min-height: 0; padding: 8px 0 0 10px; }
+</style>
+</head>
+<body>
+<div id="bar"><span id="name"></span><span id="state"></span><button id="close">Stop</button></div>
+<div id="term"></div>
+<script src="/xterm/xterm.js"></script>
+<script src="/xterm/addon-fit.js"></script>
+<script>
+  const term = new Terminal({ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 13, cursorBlink: true, theme: { background: "#0b0b0c", foreground: "#e9e4d8", cursor: "#ffb547", selectionBackground: "#ffb54755" } });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById("term"));
+  const resize = () => {
+    fit.fit();
+    agent.resize(term.cols, term.rows);
+  };
+  new ResizeObserver(resize).observe(document.getElementById("term"));
+  document.getElementById("name").textContent = agent.name;
+  term.onData((data) => agent.input(data));
+  agent.onOutput((data) => term.write(data));
+  agent.onExit(() => {
+    document.getElementById("state").textContent = "Stopped";
+    document.getElementById("close").textContent = "Close";
+  });
+  document.getElementById("close").onclick = () => agent.close();
+  resize();
+  term.focus();
+</script>
+</body>
+</html>

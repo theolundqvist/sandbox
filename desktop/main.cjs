@@ -1,10 +1,10 @@
 // A thin shell around the web client: one window, a trusted launch screen and title bar, and the game in a view with no extra powers.
 const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, session, shell: desktop } = require("electron");
-const { spawn } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } = require("node:fs");
 const { createServer } = require("node:net");
-const { userInfo } = require("node:os");
-const { join, normalize } = require("node:path");
+const { homedir, userInfo } = require("node:os");
+const { delimiter, join, normalize } = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 const mac = process.platform === "darwin";
@@ -19,6 +19,11 @@ const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write
 const OUTSIDE = /^https:\/\/((console\.groq\.com|platform\.openai\.com|aistudio\.google\.com|elevenlabs\.io|console\.deepgram\.com)\/|(claude|chatgpt)\.com\/download$)/;
 /** The Agent page's Open in ChatGPT, which only types the prompt into a new Codex chat. */
 const AGENT_LINK = /^codex:\/\/new\?prompt=/;
+/** The agents this app starts in its own terminal, each from its maker's installer. The game asks only by id; what runs is decided here. */
+const AGENTS = {
+  "claude-code": { name: "Claude Code", maker: "Anthropic", bin: "claude", args: "--dangerously-skip-permissions", install: "curl -fsSL https://claude.ai/install.sh | bash" },
+  codex: { name: "Codex", maker: "OpenAI", bin: "codex", args: "--dangerously-bypass-approvals-and-sandbox", install: "curl -fsSL https://chatgpt.com/codex/install.sh | sh" },
+};
 
 /** An invite or personal link passed on the command line, e.g. `sandbox http://host:7777/#invite=…`. */
 const linkIn = (argv) => argv.slice(1).find((a) => /^https?:\/\//.test(a));
@@ -64,13 +69,16 @@ const suggestedName = () => {
 /** @type {BaseWindow} */ let win;
 /** @type {WebContentsView} */ let shell;
 /** @type {{ view: WebContentsView, name: string } | null} */ let game = null;
+/** @type {{ view: WebContentsView, name: string, pty: import("node-pty").IPty | null, start(cols: number, rows: number): void } | null} The agent running in the terminal pane beside the game. */ let agent = null;
 let quitting = false;
 
 function layout() {
   const { width, height } = win.contentView.getBounds();
   const top = game && !win.isFullScreen() ? BAR : 0;
+  const pane = agent ? Math.round(Math.min(Math.max(width * 0.4, 420), 640)) : 0;
   shell.setBounds({ x: 0, y: 0, width, height: game ? top : height });
-  game?.view.setBounds({ x: 0, y: top, width, height: height - top });
+  game?.view.setBounds({ x: 0, y: top, width: width - pane, height: height - top });
+  agent?.view.setBounds({ x: width - pane, y: top, width: pane, height: height - top });
 }
 
 const toggleFullscreen = () => win.setFullScreen(!win.isFullScreen());
@@ -357,6 +365,7 @@ async function games() {
 function leave() {
   clearTimeout(waiting);
   waiting = null;
+  stopAgent();
   if (!game) return;
   win.contentView.removeChildView(game.view);
   // Closing as a browser tab would lets the page finish: the host's game sends its world's picture as it goes.
@@ -374,6 +383,88 @@ async function askMic(origin) {
   state.mic.push(origin);
   save();
   return true;
+}
+
+/** PATH as the player's own terminal has it, which an app opened from the dock doesn't get, plus where the makers' installers put their agents. */
+async function terminalPath() {
+  const env = await new Promise((resolve) => execFile(process.env.SHELL || "/bin/sh", ["-ilc", "env"], { encoding: "utf8", timeout: 5000 }, (_e, stdout) => resolve(stdout ?? "")));
+  const path = env.split("\n").find((l) => l.startsWith("PATH="))?.slice(5) || process.env.PATH || "";
+  return [join(homedir(), ".local", "bin"), ...path.split(delimiter)].join(delimiter);
+}
+
+/** Starts an agent beside the game, once the player says yes in a dialog no game can draw: it signs in through its own terminal, so the app never sees its login. True once it runs, false when the player said no, or why it can't start. */
+async function buildWith(id, key) {
+  const kind = AGENTS[id];
+  if (!kind || !game) return false;
+  if (agent) {
+    agent.view.webContents.focus();
+    return true;
+  }
+  const base = worldBase(new URL(game.view.webContents.getURL()));
+  const res = await ask(`${base}/api/prompt?base=${encodeURIComponent(base)}`, String(key), 5000).catch(() => null);
+  if (!res?.ok) return res?.status === 403 ? "The host turned agents off for this world." : "The world didn't answer. Try again.";
+  const prompt = await res.text();
+  const PATH = await terminalPath();
+  const installed = PATH.split(delimiter).some((dir) => dir && existsSync(join(dir, kind.bin)));
+  const { response } = await dialog.showMessageBox(win, {
+    type: "question",
+    buttons: [installed ? "Start" : "Install and start", "Cancel"],
+    defaultId: 0,
+    cancelId: 1,
+    message: `Build with ${kind.name}?`,
+    detail: `${installed ? "" : `Sandbox installs ${kind.name} with ${kind.maker}'s installer first. `}${kind.name} runs beside the game with permissions off, so it can run commands on this computer without asking. It builds in ${game.name} as you. Stop closes it.`,
+  });
+  if (response !== 0 || !game || agent) return false;
+  const view = new WebContentsView({ webPreferences: { preload: join(__dirname, "agent-preload.cjs"), sandbox: true, contextIsolation: true } });
+  view.setBackgroundColor("#0b0b0c");
+  view.webContents.on("will-navigate", (event) => event.preventDefault());
+  view.webContents.setWindowOpenHandler(({ url }) => {
+    // A sign-in link the agent prints opens in the browser, where the player signs in with its maker.
+    if (/^https:\/\//.test(url)) void desktop.openExternal(url);
+    return { action: "deny" };
+  });
+  view.webContents.on("before-input-event", keys);
+  const dir = join(app.getPath("userData"), "agents", id);
+  mkdirSync(dir, { recursive: true });
+  const script = `${installed ? "" : `${kind.install} && `}exec ${kind.bin} ${kind.args} "$SANDBOX_PROMPT"`;
+  agent = {
+    view,
+    name: kind.name,
+    pty: null,
+    start(cols, rows) {
+      const pty = (this.pty = require("node-pty").spawn("/bin/sh", ["-c", script], { name: "xterm-256color", cols, rows, cwd: dir, env: { ...process.env, PATH, TERM: "xterm-256color", SANDBOX_PROMPT: prompt } }));
+      pty.onData((data) => view.webContents.send("agent-output", data));
+      pty.onExit(() => {
+        if (agent?.pty === pty && !view.webContents.isDestroyed()) view.webContents.send("agent-exit");
+      });
+    },
+  };
+  win.contentView.addChildView(view);
+  layout();
+  view.webContents.once("did-finish-load", () => view.webContents.focus());
+  void view.webContents.loadURL("sandbox://app/agent.html");
+  return true;
+}
+
+/** Stop ends the agent and everything it started: its terminal leads its own process group. */
+function stopAgent() {
+  if (!agent) return;
+  const { view, pty } = agent;
+  agent = null;
+  if (pty) {
+    try {
+      process.kill(-pty.pid, "SIGHUP");
+    } catch {}
+    setTimeout(() => {
+      try {
+        process.kill(-pty.pid, "SIGKILL");
+      } catch {}
+    }, 3000).unref();
+  }
+  win.contentView.removeChildView(view);
+  view.webContents.close();
+  layout();
+  game?.view.webContents.focus();
 }
 
 function createWindow() {
@@ -470,10 +561,24 @@ app.whenReady().then(() => {
   ipcMain.handle("update", (event) => (fromShell(event) || event.sender === game?.view.webContents) && install());
   ipcMain.on("quit", (event) => fromShell(event) && app.quit());
   ipcMain.handle("ready", (event) => fromShell(event) && ready);
+  const fromGame = (event) => event.sender === game?.view.webContents;
+  const fromAgent = (event) => event.sender === agent?.view.webContents;
+  ipcMain.on("agents", (event) => (event.returnValue = fromGame(event) ? Object.entries(AGENTS).map(([id, a]) => ({ id, name: a.name })) : []));
+  ipcMain.handle("build", (event, id, key) => (fromGame(event) ? buildWith(String(id), key) : false));
+  ipcMain.on("agent-name", (event) => (event.returnValue = fromAgent(event) ? agent.name : ""));
+  ipcMain.on("agent-input", (event, data) => fromAgent(event) && agent.pty?.write(String(data)));
+  ipcMain.on("agent-resize", (event, cols, rows) => {
+    if (!fromAgent(event) || !(cols > 0 && rows > 0)) return;
+    if (agent.pty) agent.pty.resize(cols, rows);
+    else agent.start(cols, rows);
+  });
+  ipcMain.on("agent-close", (event) => fromAgent(event) && stopAgent());
 
   protocol.handle("sandbox", (req) => {
     const path = decodeURIComponent(new URL(req.url).pathname);
-    if (path === "/shell.html") return net.fetch(pathToFileURL(join(__dirname, "shell.html")).href);
+    if (path === "/shell.html" || path === "/agent.html") return net.fetch(pathToFileURL(join(__dirname, path)).href);
+    const xterm = { "/xterm/xterm.js": "@xterm/xterm/lib/xterm.js", "/xterm/xterm.css": "@xterm/xterm/css/xterm.css", "/xterm/addon-fit.js": "@xterm/addon-fit/lib/addon-fit.js" }[path];
+    if (xterm) return net.fetch(pathToFileURL(require.resolve(xterm)).href);
     if (/^\/cover\/[a-z0-9-]+$/.test(path)) return net.fetch(pathToFileURL(join(DATA, "worlds", path.slice(7), "cover.jpg")).href);
     if (path === "/clips/") return Response.json(readdirSync(join(FRONT, "clips")).filter((f) => f.endsWith(".mp4")));
     const file = normalize(join(FRONT, path));
@@ -573,6 +678,7 @@ async function install() {
   state.reopen = { hosting: !!hosting, url: game?.view.webContents.getURL() || null };
   state.updatedTo = update;
   quitting = true;
+  stopAgent();
   await stopServer();
   save();
   app.quit();
@@ -590,6 +696,7 @@ function quit() {
       if (response !== 0) return;
     }
     quitting = true;
+    stopAgent();
     await stopServer();
     app.quit();
   })().finally(() => (confirming = null));
