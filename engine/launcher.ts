@@ -344,7 +344,7 @@ async function publish() {
   if (running) await world("public", invite(running.id));
 }
 
-type Secrets = { voice?: Voice; elevenlabs?: { key: string; host: string } };
+type Secrets = { voice?: Voice; elevenlabs?: { key: string; host: string }; install?: { token: string; host: string } };
 const secrets = (): Secrets => readJson(SECRETS);
 function saveSecrets(next: Secrets) {
   writeFileSync(SECRETS, JSON.stringify(next, null, 2), { mode: 0o600 });
@@ -361,6 +361,24 @@ async function setVoiceKey(raw: unknown) {
   else delete next.voice;
   saveSecrets(next);
   if (running) await world("voice", {});
+}
+
+/** Signs this computer up for free voice once, so a host without a key of their own has voice; tried again on the next start when Community can't be reached. */
+async function signUp() {
+  if (secrets().install) return;
+  const res = await community("/installs", { method: "POST" }).catch(() => null);
+  if (!res?.ok) return console.log(`Free voice isn't set up yet: Community answered ${res?.status ?? "nothing"}.`);
+  const { token } = await res.json();
+  saveSecrets({ ...secrets(), install: { token, host: COMMUNITY } });
+  if (running) await world("voice", {});
+}
+
+/** How much of this computer's free voice is used, while it is the voice the host's worlds use. */
+async function freeVoiceUsed() {
+  const { voice, install } = secrets();
+  if (voice || !install) return null;
+  const res = await fetch(`${install.host}/ai/usage`, { headers: { authorization: `Bearer ${install.token}` }, signal: AbortSignal.timeout(10_000) }).catch(() => null);
+  return res?.ok ? await res.json() : null;
 }
 
 async function menuState() {
@@ -396,6 +414,7 @@ async function menuApi(req: Request, action: string) {
   const body = req.method === "POST" && action !== "import" ? await req.json() : {};
   try {
     if (action === "community") return Response.json(await communityList());
+    if (action === "free-voice") return Response.json(await freeVoiceUsed());
     if (action === "community-world") return Response.json(await communityWorld(body.link));
     if (action === "create") await host(create(body));
     else if (action === "community-get") {
@@ -595,6 +614,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutdown
 if (process.env.SANDBOX_EXIT_WITH_STDIN) void Bun.stdin.stream().pipeTo(new WritableStream()).then(shutdown);
 
 if (state.hosting && existsSync(join(WORLDS, state.hosting))) await host(state.hosting).catch((e) => console.error(e.message));
+void signUp();
 const menuLink = `http://localhost:${PORT}/menu#key=${state.hostKey}`;
 // The link carries the host key, so it goes only to a terminal, never into a log file; on this computer the menu finds the key by itself.
 console.log(process.stdout.isTTY ? `\n  Main menu (keep private): ${menuLink}\n` : `Main menu: http://localhost:${PORT}/menu`);

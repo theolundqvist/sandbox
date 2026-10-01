@@ -1,6 +1,7 @@
 // Community worlds end to end: two throwaway launchers and the community API on throwaway Postgres and S3. One shares a world, the other hosts and remixes it.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { SQL } from "bun";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,8 +13,26 @@ const dir = mkdtempSync(join(tmpdir(), "sandbox-community-"));
 const procs: Subprocess[] = [];
 let stack: Awaited<ReturnType<typeof startStack>>;
 let COMMUNITY: string;
+/** ElevenLabs for both Community's free voice (its key is "community-key") and a host's own key: it says what it heard and who paid. */
+const MP3 = new Uint8Array([0xff, 0xfb, 7, 7]);
+const KEYS = ["community-key", "sk_own_elevenlabs"];
+const elevenLabs = { spoken: [] as { key: string; text: string }[], heard: [] as string[] };
+const voiceStub = Bun.serve({
+  port: 0,
+  async fetch(req) {
+    const key = req.headers.get("xi-api-key") ?? "";
+    if (!KEYS.includes(key)) return Response.json({ detail: { type: "authentication_error" } }, { status: 401 });
+    if (new URL(req.url).pathname.startsWith("/v1/text-to-speech/")) {
+      elevenLabs.spoken.push({ key, text: (await req.json()).text });
+      return new Response(MP3, { headers: { "content-type": "audio/mpeg" } });
+    }
+    const file = (await req.formData()).get("file") as File;
+    if (file.size) elevenLabs.heard.push(key);
+    return Response.json({ text: "the lava rises", words: [{ text: "rises", end: 3.2 }] });
+  },
+});
 /** No relay answers here, so hosted worlds stay off the public one. */
-const env = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY"))), SANDBOX_RELAY: "http://127.0.0.1:1", SANDBOX_COMMUNITY: COMMUNITY, SANDBOX_NO_OPEN: "1" });
+const env = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY"))), SANDBOX_RELAY: "http://127.0.0.1:1", SANDBOX_COMMUNITY: COMMUNITY, SANDBOX_STT: voiceStub.url.origin, SANDBOX_NO_OPEN: "1" });
 const COVER = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]).toString("base64");
 const CLIP = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 4, 5, 6]).toString("base64");
 
@@ -34,7 +53,7 @@ async function launcher(name: string): Promise<Launcher> {
 
 let ana: Launcher, ben: Launcher;
 beforeAll(async () => {
-  stack = await startStack();
+  stack = await startStack("https://sandbox.example", { ELEVENLABS_URL: voiceStub.url.origin, ELEVENLABS_API_KEY: "community-key" });
   COMMUNITY = stack.api;
   [ana, ben] = await Promise.all([launcher("ana"), launcher("ben")]);
 }, 120_000);
@@ -42,6 +61,7 @@ afterAll(async () => {
   for (const p of procs) p.kill();
   await Promise.allSettled(procs.map((p) => p.exited));
   await stack?.stop();
+  voiceStub.stop(true);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -127,3 +147,56 @@ test("a shared world goes up as its export, comes down on another computer as a 
   expect((await menu(ana, "state")).worlds.find((w: any) => w.id === id).shared).toBeNull();
   expect((await fetch(benShared.link.replace(/^.*\/w\//, `${COMMUNITY}/worlds/`))).status).toBe(200);
 }, 120_000);
+
+test("a host without a voice key gets free voice from Community, counted against their computer, and their own key goes around it", async () => {
+  const secrets = join(ana.data, "secrets.json");
+  for (let i = 0; i < 100 && !existsSync(secrets); i++) await Bun.sleep(100);
+  const { install } = JSON.parse(readFileSync(secrets, "utf8"));
+  expect(install.host).toBe(COMMUNITY);
+  expect(await menu(ana, "free-voice")).toEqual({ status: 200, used: 0, of: 1 });
+
+  const created = await menu(ana, "create", { name: "Voice Keep", start: "blank" });
+  const player = await (await fetch(`${ana.base}/api/join`, { method: "POST", body: JSON.stringify({ invite: created.running.invite, name: "ana", host: created.running.hostKey }) })).json();
+  const auth = { authorization: `Bearer ${player.key}` };
+  expect((await (await fetch(`${ana.base}/api/status`, { headers: auth })).json()).voice).toStartWith("on");
+  const speak = async (text: string, headers: Record<string, string> = auth) => {
+    const res = await fetch(`${ana.base}/api/speak`, { method: "POST", headers, body: JSON.stringify({ text }) });
+    return { status: res.status, ...(res.status === 401 ? {} : await res.json()) };
+  };
+  const used = async () => (await (await fetch(`${COMMUNITY}/ai/usage`, { headers: { authorization: `Bearer ${install.token}` } })).json()).used;
+
+  // ctx.speak: each line is made once, however many players ask for it at once, and this world serves it.
+  const first = await speak("Round two!");
+  expect(first.url).toMatch(/^\/speech\/[0-9a-f]{64}\.mp3$/);
+  const [a, b, again] = await Promise.all([speak("Lava rises."), speak("Lava rises."), speak("Round two!")]);
+  expect([a.url, again.url]).toEqual([b.url, first.url]);
+  const mp3 = await fetch(`${ana.base}${first.url}`);
+  expect(mp3.headers.get("content-type")).toBe("audio/mpeg");
+  expect(new Uint8Array(await mp3.arrayBuffer())).toEqual(MP3);
+  expect(elevenLabs.spoken).toEqual([{ key: "community-key", text: "Round two!" }, { key: "community-key", text: "Lava rises." }]);
+  expect(await used()).toBeCloseTo((10 + 11) * 0.00004, 8);
+  expect((await speak("Hi", {})).status).toBe(401);
+
+  // What a player says goes through Community too, counted by how long they spoke.
+  await fetch(`${ana.base}/api/voice`, { method: "POST", headers: auth, body: new Blob([new Uint8Array(2000)], { type: "audio/webm" }) });
+  for (let i = 0; i < 100 && !elevenLabs.heard.length; i++) await Bun.sleep(50);
+  expect(elevenLabs.heard).toEqual(["community-key"]);
+  for (let i = 0; i < 100 && (await used()) < 0.001; i++) await Bun.sleep(50);
+  expect(await used()).toBeCloseTo((10 + 11) * 0.00004 + Math.ceil((4 * 220_000) / 3600) / 1e6, 8);
+
+  // The host's own ElevenLabs key wins, and Community counts none of it.
+  const before = await used();
+  expect((await menu(ana, "voice", { key: "sk_own_elevenlabs" })).voiceKey).toBe("ElevenLabs ••••labs");
+  expect(await menu(ana, "free-voice")).toEqual({ status: 200 });
+  await speak("My own voice.");
+  expect(elevenLabs.spoken.at(-1)).toEqual({ key: "sk_own_elevenlabs", text: "My own voice." });
+  expect(await used()).toBe(before);
+  expect((await menu(ana, "voice", { key: "" })).voiceKey).toBeNull();
+
+  // Once this computer's dollar is spent, mods and players are told so in plain words.
+  const db = new SQL(stack.env.DATABASE_URL);
+  await db`update installs set spent = 1000000`;
+  await db.close();
+  expect(await speak("One more line.")).toEqual({ status: 400, error: "Free voice is used up on this computer." });
+  expect((await menu(ana, "stop", {})).status).toBe(200);
+}, 60_000);

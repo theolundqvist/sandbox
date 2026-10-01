@@ -3,7 +3,7 @@ import { SQL } from "bun";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { bucketFromEnv, client, presign } from "./r2";
+import { bucketFromEnv, client as s3, presign } from "./r2";
 
 const MB = 1 << 20;
 const LIMITS = { zip: 200 * MB, cover: 2 * MB, clip: 6 * MB };
@@ -13,13 +13,13 @@ const KINDS = {
   clip: { name: "clip.webm", type: "video/webm", magic: [0x1a, 0x45, 0xdf, 0xa3], refusal: "A clip is a WebM under 6 MB." },
 } as const;
 type Kind = keyof typeof KINDS;
-/** Per IP, per hour. */
-const RATE = { publish: 10, update: 30, report: 10 };
+/** How often each action may happen: per IP, or per install for voice. */
+const RATE = { publish: [10, "1 hour"], update: [30, "1 hour"], report: [10, "1 hour"], install: [5, "1 hour"], voice: [30, "1 minute"] } as const;
 const ID = /^[a-z0-9]{12}$/;
 
 const SITE = process.env.SITE!;
 const worlds = bucketFromEnv(process.env.R2_BUCKET!);
-const files = client(worlds);
+const files = s3(worlds);
 export const sql = process.env.DATABASE_URL
   ? new SQL(process.env.DATABASE_URL)
   : new SQL({ path: "/var/run/postgresql/.s.PGSQL.5432", username: process.env.POSTGRES_USER, password: process.env.POSTGRES_PASSWORD, database: process.env.POSTGRES_DB });
@@ -37,11 +37,13 @@ const json = (body: unknown, status = 200) => Response.json(body, { status, head
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 const randomId = (length: number) => [...randomBytes(length)].map((b) => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join("");
 
-/** Counts this action for this IP and refuses it over the hour's limit. NPM, in front, names the client in X-Real-IP. */
-async function limit(req: Request, ip: string, action: keyof typeof RATE, refusal: string) {
-  const who = sha256(`sandbox-community:${req.headers.get("x-real-ip") ?? ip}`);
-  const [{ n }] = await sql`select count(*)::int n from hits where ip = ${who} and action = ${action} and at > now() - interval '1 hour'`;
-  if (n >= RATE[action]) throw new Refusal(refusal, 429);
+/** The client's IP, hashed; NPM, in front, names it in X-Real-IP. */
+const client = (req: Request, ip: string) => sha256(`sandbox-community:${req.headers.get("x-real-ip") ?? ip}`);
+/** Counts this action for whoever it is and refuses it over the limit. */
+async function limit(who: string, action: keyof typeof RATE, refusal: string) {
+  const [max, window] = RATE[action];
+  const [{ n }] = await sql`select count(*)::int n from hits where ip = ${who} and action = ${action} and at > now() - ${window}::interval`;
+  if (n >= max) throw new Refusal(refusal, 429);
   await sql`insert into hits (ip, action) values (${who}, ${action})`;
 }
 
@@ -97,7 +99,7 @@ const forget = async (pending: { keys: Record<string, string> } | null | undefin
 };
 
 async function publish(req: Request, ip: string) {
-  await limit(req, ip, "publish", "Too many worlds shared from here this hour. Try again later.");
+  await limit(client(req, ip), "publish", "Too many worlds shared from here this hour. Try again later.");
   const { meta, sizes } = details(await req.json(), false);
   const id = randomId(12);
   const ownerToken = randomBytes(24).toString("hex");
@@ -108,7 +110,7 @@ async function publish(req: Request, ip: string) {
 
 async function update(req: Request, ip: string, id: string) {
   await owned(req, id);
-  await limit(req, ip, "update", "Too many updates from here this hour. Try again later.");
+  await limit(client(req, ip), "update", "Too many updates from here this hour. Try again later.");
   const { meta, sizes } = details(await req.json(), true);
   return json({ id, link: `${SITE}/w/${id}`, uploads: await prepare(id, meta, sizes) });
 }
@@ -179,8 +181,108 @@ async function sweep() {
   await sql`delete from hits where at < now() - interval '1 hour'`;
 }
 
+/** Free voice for every install of the app: speech to text and text to speech through ElevenLabs, never a language model. Each install has a lifetime allowance, and everyone together a daily cap. */
+const ELEVENLABS = process.env.ELEVENLABS_URL ?? "https://api.elevenlabs.io";
+/** ElevenLabs' pay-as-you-go list prices, https://elevenlabs.io/pricing/api: Flash v2.5 at $0.04 per 1,000 characters, Scribe v2 at $0.22 per hour. Money is in millionths of a dollar. */
+const PRICES = { ttsPerCharacter: 40, sttPerHour: 220_000 };
+const ALLOWANCE = 1_000_000;
+const DAILY_CAP = 20_000_000;
+/** A spoken line at most, and a recording of 60 s at most, which at the 64 kbit/s browsers record speech at is under 512 KB. */
+const SPEECH = { characters: 2000, seconds: 60, bytes: 512 * 1024 };
+const VOICE_ID = /^[A-Za-z0-9]{8,40}$/;
+const DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb";
+const sttCost = (seconds: number) => Math.ceil((seconds * PRICES.sttPerHour) / 3600);
+
+async function register(req: Request, ip: string) {
+  await limit(client(req, ip), "install", "Too many new installs from here this hour. Try again later.");
+  const id = randomId(12);
+  const token = randomBytes(32).toString("base64url");
+  await sql`insert into installs (id, token_hash) values (${id}, ${sha256(token)})`;
+  return json({ id, token }, 201);
+}
+
+async function installOf(req: Request) {
+  const token = req.headers.get("authorization")?.match(/^Bearer (\S+)$/)?.[1] ?? "";
+  const [row] = await sql`select id, spent from installs where token_hash = ${sha256(token)}`;
+  if (!row) throw new Refusal("This computer isn't signed up for free voice.", 401);
+  return row as { id: string; spent: string };
+}
+
+/** Counts the cost against this install's allowance and today's cap, or refuses when either would go over (see reserve_voice in schema.sql). Returns the day it was counted on. One statement, not sql.begin: Bun 1.3's pool can hand a transaction's connection to another query under a burst, which leaves the transaction hanging. */
+async function reserve(install: string, cost: number) {
+  try {
+    const [{ day }] = await sql`select reserve_voice(${install}, ${cost}, ${ALLOWANCE}, ${DAILY_CAP}) as day`;
+    return day as string;
+  } catch (e) {
+    if ((e as { errno?: string }).errno === "SV001") throw new Refusal("Free voice is used up on this computer.", 402);
+    if ((e as { errno?: string }).errno === "SV002") throw new Refusal("Free voice is paused for today.", 429);
+    throw e;
+  }
+}
+/** Corrects a reservation by what the call cost after all: its whole cost back when the call failed. */
+const settle = (install: string, day: string, change: number) =>
+  change && sql`with mine as (update installs set spent = spent + ${change} where id = ${install}) update voice_days set spent = spent + ${change} where day = ${day}::date`;
+
+function available() {
+  if (!process.env.ELEVENLABS_API_KEY) throw new Refusal("Free voice isn't available right now.", 503);
+}
+function elevenLabs(path: string, body: BodyInit, headers: Record<string, string> = {}) {
+  return fetch(`${ELEVENLABS}${path}`, { method: "POST", headers: { "xi-api-key": process.env.ELEVENLABS_API_KEY!, ...headers }, body, signal: AbortSignal.timeout(60_000) }).catch(() => new Response(null, { status: 502 }));
+}
+
+async function speak(req: Request) {
+  available();
+  const install = await installOf(req);
+  await limit(install.id, "voice", "Too much voice at once. Wait a minute.");
+  const body = await req.json();
+  const text = String(body.text ?? "").trim();
+  if (!text) throw new Refusal("Give text to speak.");
+  if (text.length > SPEECH.characters) throw new Refusal("Speech is 2,000 characters at most at a time.", 413);
+  const voice = VOICE_ID.test(body.voice ?? "") ? body.voice : DEFAULT_VOICE;
+  const cost = text.length * PRICES.ttsPerCharacter;
+  const day = await reserve(install.id, cost);
+  const res = await elevenLabs(`/v1/text-to-speech/${voice}/stream?output_format=mp3_44100_64`, JSON.stringify({ text, model_id: "eleven_flash_v2_5" }), { "content-type": "application/json" });
+  if (!res.ok || !res.body) {
+    await settle(install.id, day, -cost);
+    console.error("tts", res.status, (await res.text()).slice(0, 300));
+    throw new Refusal("Speech didn't go through. Try again.", 502);
+  }
+  return new Response(res.body, { headers: { "content-type": "audio/mpeg" } });
+}
+
+async function listen(req: Request) {
+  available();
+  const install = await installOf(req);
+  if (Number(req.headers.get("content-length") ?? Infinity) > SPEECH.bytes) throw new Refusal("A recording is 60 seconds at most.", 413);
+  await limit(install.id, "voice", "Too much voice at once. Wait a minute.");
+  const audio = new Blob([await req.arrayBuffer()], { type: req.headers.get("content-type") ?? "audio/webm" });
+  if (audio.size > SPEECH.bytes) throw new Refusal("A recording is 60 seconds at most.", 413);
+  // Reserved as the longest recording, settled by how long the speech ran.
+  const most = sttCost(SPEECH.seconds);
+  const day = await reserve(install.id, most);
+  const form = new FormData();
+  form.append("file", new File([audio], `speech.${audio.type.split(/[/;]/)[1] || "webm"}`, { type: audio.type }));
+  form.append("model_id", "scribe_v2");
+  form.append("language_code", "eng");
+  form.append("tag_audio_events", "true");
+  const res = await elevenLabs("/v1/speech-to-text", form);
+  if (!res.ok) {
+    await settle(install.id, day, -most);
+    console.error("stt", res.status, (await res.text()).slice(0, 300));
+    throw new Refusal("Voice didn't go through. Try again.", 502);
+  }
+  const heard = await res.json();
+  const seconds = Math.min(SPEECH.seconds, Math.max(1, Math.ceil(Math.max(0, ...(heard.words ?? []).map((w: { end?: number }) => w.end ?? 0)))));
+  await settle(install.id, day, sttCost(seconds) - most);
+  return json({ text: String(heard.text ?? "") });
+}
+
 async function route(req: Request, ip: string) {
   const url = new URL(req.url);
+  if (req.method === "POST" && url.pathname === "/installs") return register(req, ip);
+  if (req.method === "POST" && url.pathname === "/ai/tts") return speak(req);
+  if (req.method === "POST" && url.pathname === "/ai/stt") return listen(req);
+  if (req.method === "GET" && url.pathname === "/ai/usage") return json({ used: Number((await installOf(req)).spent) / 1e6, of: ALLOWANCE / 1e6 });
   const [top, id, sub, ...rest] = url.pathname.split("/").filter(Boolean);
   if (top !== "worlds" || rest.length) throw new Refusal("Not found.", 404);
   if (id && !ID.test(id)) throw new Refusal("There is no such world.", 404);
@@ -202,7 +304,7 @@ async function route(req: Request, ip: string) {
     case "DELETE :id":
       return remove(req, id!);
     case "POST :id/report": {
-      await limit(req, ip, "report", "Thanks, we have your reports.");
+      await limit(client(req, ip), "report", "Thanks, we have your reports.");
       const [row] = await sql`update worlds set reports = reports + 1 where id = ${id} and zip_key is not null returning id`;
       if (!row) throw new Refusal("There is no such world.", 404);
       return json({ reported: true });
@@ -215,7 +317,8 @@ if (import.meta.main) {
   setInterval(() => sweep().catch((e) => console.error("sweep", e)), 3600_000);
   const server = Bun.serve({
     port: Number(process.env.PORT ?? 9200),
-    maxRequestBodySize: 64 * 1024,
+    // Room for a 60 s recording; every other body is a little JSON.
+    maxRequestBodySize: 600 * 1024,
     async fetch(req, server) {
       if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...cors, "access-control-allow-methods": "GET, POST", "access-control-allow-headers": "content-type" } });
       try {

@@ -13,7 +13,7 @@ const LAUNCHER = 17000 + Math.floor(Math.random() * 1000);
 const RELAY = LAUNCHER + 1000;
 const procs: Subprocess[] = [];
 /** This machine's own service keys never reach a test world, and its worlds share through the test relay, never the public one. */
-const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY"))), SANDBOX_RELAY: `http://127.0.0.1:${RELAY}` };
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY"))), SANDBOX_RELAY: `http://127.0.0.1:${RELAY}`, SANDBOX_COMMUNITY: "http://127.0.0.1:1" };
 
 async function up(url: string) {
   for (let i = 0; i < 100; i++) {
@@ -136,7 +136,7 @@ test("a computer without git hosts worlds, reloads mods, and says history needs 
   const bun = join(bin, basename(process.execPath));
   (process.platform === "win32" ? linkSync : symlinkSync)(process.execPath, bun);
   const port = LAUNCHER + 500;
-  procs.push(Bun.spawn([bun, join(import.meta.dir, "launcher.ts")], { env: { PATH: bin, HOME: dir, SANDBOX_RELAY: env.SANDBOX_RELAY, PORT: String(port), SANDBOX_DATA: join(dir, "nogit"), SANDBOX_NO_OPEN: "1" }, stdout: "ignore", stderr: "ignore" }));
+  procs.push(Bun.spawn([bun, join(import.meta.dir, "launcher.ts")], { env: { PATH: bin, HOME: dir, SANDBOX_RELAY: env.SANDBOX_RELAY, SANDBOX_COMMUNITY: env.SANDBOX_COMMUNITY, PORT: String(port), SANDBOX_DATA: join(dir, "nogit"), SANDBOX_NO_OPEN: "1" }, stdout: "ignore", stderr: "ignore" }));
   await up(`http://127.0.0.1:${port}/menu`);
   const { key } = await (await localKey(`http://127.0.0.1:${port}`)).json();
   const s = await (await fetch(`http://127.0.0.1:${port}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ name: "No Git", start: "basics" }) })).json();

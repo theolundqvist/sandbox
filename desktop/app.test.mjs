@@ -56,7 +56,8 @@ const closePage = (page) => {
 };
 
 /** This machine's own service keys never reach the app under test. */
-const ownEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY")));
+// Nothing here signs up for free voice with the real Community server.
+const ownEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY"))), SANDBOX_COMMUNITY: "http://127.0.0.1:1" };
 const VOICE_KEY = "sk_test_voice_key";
 
 /** A small real JPEG, standing in for a world's picture. */

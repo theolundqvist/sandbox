@@ -746,6 +746,12 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
     use,
     has,
     asset: (file) => `/assets/${file.includes("/") ? file : `${name}/${file}`}`,
+    speak: async (text, voice) => {
+      const res = await fetch("/api/speak", { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ text, voice }) });
+      const data = await res.json().catch(() => ({ error: "Speech didn't go through. Try again." }));
+      if (!res.ok) throw new Error(data.error);
+      return data.url;
+    },
     menuTab: (title) => {
       const block = Object.assign(document.createElement("div"), { slot: menuPage(title) });
       ui.append(block);
@@ -975,7 +981,7 @@ function connect() {
         voiceAvailable = msg.on;
         return listen();
       case "voice-failed":
-        return toast(hosting && msg.refused ? `${msg.provider} refused the voice key. Add it again in Settings.` : "Voice didn't go through. Try again.", "error");
+        return toast(msg.reason ?? (hosting && msg.refused ? `${msg.provider} refused the voice key. Add it again in Settings.` : "Voice didn't go through. Try again."), "error");
       case "let-in":
         return letIn(msg.id, msg.name);
       case "public":
@@ -2376,6 +2382,12 @@ $("leave").onclick = leave;
 if (hostsThisWorld) $("rail").querySelector<HTMLElement>("[data-tab=world]")!.hidden = false;
 async function showWorld() {
   $("world-stop").textContent = "Stop hosting";
+  void hostMenu("free-voice")
+    .then((res) => res.json())
+    .then((free: { used: number; of: number } | null) => {
+      $("world-voice").hidden = !free;
+      if (free) $("world-voice").textContent = `Free voice: $${free.used.toFixed(2)} of $${free.of} used`;
+    });
   const s = await (await hostMenu("state")).json();
   const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   $("world-snapshots").replaceChildren(

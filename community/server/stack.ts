@@ -18,7 +18,7 @@ const until = async (what: string, ok: () => Promise<boolean>) => {
   throw new Error(`${what} didn't start`);
 };
 
-export async function startStack(site = "https://sandbox.example") {
+export async function startStack(site = "https://sandbox.example", extra: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "community-stack-"));
   const name = `community-test-${process.pid}-${Date.now().toString(36)}`;
   const s3 = { accessKeyId: "test", secretAccessKey: "test-secret" };
@@ -30,7 +30,7 @@ export async function startStack(site = "https://sandbox.example") {
   await until("Postgres", async () => (await run("docker", "exec", `${name}-db`, "pg_isready", "-h", "127.0.0.1"), true));
   await until("SeaweedFS", async () => (await run("bash", "-c", `echo "s3.bucket.create -name sandbox-worlds" | docker exec -i ${name}-s3 weed shell`), true));
   await until("the bucket", async () => (await fetch(`${endpoint}/sandbox-worlds`)).status !== 404);
-  const env = { SITE: site, DATABASE_URL: db, R2_ENDPOINT: endpoint, R2_REGION: "us-east-1", R2_BUCKET: "sandbox-worlds", R2_ACCESS_KEY_ID: s3.accessKeyId, R2_SECRET_ACCESS_KEY: s3.secretAccessKey };
+  const env = { SITE: site, DATABASE_URL: db, R2_ENDPOINT: endpoint, R2_REGION: "us-east-1", R2_BUCKET: "sandbox-worlds", R2_ACCESS_KEY_ID: s3.accessKeyId, R2_SECRET_ACCESS_KEY: s3.secretAccessKey, ...extra };
   const port = 20000 + Math.floor(Math.random() * 10000);
   const server = Bun.spawn(["bun", join(import.meta.dir, "server.ts")], { env: { ...process.env, ...env, PORT: String(port) }, stdout: "inherit", stderr: "inherit" });
   const api = `http://127.0.0.1:${port}`;

@@ -113,14 +113,42 @@ export async function identify(key: string): Promise<Voice> {
   throw new Error(refusers.length === 1 ? `${refusers[0]!.name} didn't accept that key. Copy it again from ${new URL(refusers[0]!.keys).hostname}.` : `${either(refusers.map((p) => p.name))} didn't accept that key. Copy all of it again.`);
 }
 
+const readSecrets = (secrets: string | undefined) => (secrets && existsSync(secrets) ? JSON.parse(readFileSync(secrets, "utf8")) : {});
 /** The key the host added in the game, kept by the launcher outside every world's folder. */
-export const savedVoice = (secrets: string | undefined): Voice | null => (secrets && existsSync(secrets) ? (JSON.parse(readFileSync(secrets, "utf8")).voice ?? null) : null);
+export const savedVoice = (secrets: string | undefined): Voice | null => readSecrets(secrets).voice ?? null;
+/** Free voice from the Community server for a host without a key: this computer's install token, metered there. */
+export const freeVoice = (secrets: string | undefined): Voice | null => {
+  const install = readSecrets(secrets).install;
+  return install ? { provider: "Sandbox", key: install.token, host: install.host } : null;
+};
+
+/** A failed call the player is told about in the server's own words when it gives them, such as free voice being used up. */
+async function failed(what: string, res: Response, provider: string) {
+  const body = await res.text();
+  const reason = provider === "Sandbox" ? (JSON.parse(body || "{}").error as string | undefined) : undefined;
+  return Object.assign(new Error(`${provider} ${what} failed: ${res.status} ${body}`), { refused: res.status === 401 || res.status === 403, provider, reason });
+}
+
+const DEFAULT_SPEAKER = "JBFqnCBsd6RMkjVDRZzb";
+/** Spoken text as MP3, with the host's ElevenLabs key or free voice; null when the host's key can only transcribe. */
+export async function speak(voice: Voice, text: string, speaker = DEFAULT_SPEAKER): Promise<Uint8Array | null> {
+  const res =
+    voice.provider === "Sandbox"
+      ? await post(`${voice.host}/ai/tts`, { authorization: `Bearer ${voice.key}`, "content-type": "application/json" }, JSON.stringify({ text, voice: speaker }))
+      : voice.provider === "ElevenLabs"
+        ? await post(`${voice.host}/v1/text-to-speech/${speaker}/stream?output_format=mp3_44100_64`, { "xi-api-key": voice.key, "content-type": "application/json" }, JSON.stringify({ text, model_id: "eleven_flash_v2_5" }))
+        : null;
+  if (!res) return null;
+  if (!res.ok) throw await failed("speech", res, voice.provider);
+  return new Uint8Array(await res.arrayBuffer());
+}
 
 /** One spoken phrase as text; ElevenLabs tags sounds like [laughter], and a phrase with nothing but tags was only noise. */
 export async function transcribe(voice: Voice, audio: Blob) {
-  const p = provider(voice.provider);
-  const res = await p.transcribe(audio, voice.key, voice.host);
-  if (!res.ok) throw Object.assign(new Error(`${p.name} transcription failed: ${res.status} ${await res.text()}`), { refused: res.status === 401 || res.status === 403, provider: p.name });
-  const text = p.text(await res.json()) ?? "";
+  const p = voice.provider === "Sandbox" ? null : provider(voice.provider);
+  const res = p ? await p.transcribe(audio, voice.key, voice.host) : await post(`${voice.host}/ai/stt`, { authorization: `Bearer ${voice.key}`, "content-type": audio.type }, audio);
+  if (!res.ok) throw await failed("transcription", res, voice.provider);
+  const body = await res.json();
+  const text = (p ? p.text(body) : body.text) ?? "";
   return /\p{L}/u.test(text.replace(/\[[^\]]*\]|\([^)]*\)/g, "")) ? text.trim() : "";
 }

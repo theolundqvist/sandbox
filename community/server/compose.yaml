@@ -26,6 +26,8 @@ services:
       - db.env
       # The bucket-scoped R2 key; until it exists the API runs and lists nothing.
       - { path: r2.env, required: false }
+      # The ElevenLabs key for free voice; until it exists free voice says it isn't available.
+      - { path: providers.env, required: false }
     environment:
       PORT: "9200"
       BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0"
@@ -49,6 +51,9 @@ services:
     <<: *app
     command: ["bun", "backup.ts"]
     ports: []
+    env_file:
+      - db.env
+      - { path: r2.env, required: false }
     environment:
       R2_BACKUP_BUCKET: sandbox-backups
 volumes:

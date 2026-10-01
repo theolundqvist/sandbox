@@ -7,13 +7,14 @@ import { ENGINE_KEYS, hasGit, Mods } from "./mods";
 import { latencies, openRecord, route } from "./record";
 import { Sims } from "./sims";
 import type { Perf } from "./simhost";
-import { savedVoice, transcribe, type Voice } from "./voice";
+import { freeVoice, savedVoice, speak, transcribe, type Voice } from "./voice";
 import { openStore, type Activity, type Tick } from "./world";
 
 const ENGINE = import.meta.dir;
 const DATA = process.env.SANDBOX_DATA ?? join(ENGINE, "../data");
 const ROOT = join(DATA, "world");
 const BUILD = join(DATA, "build");
+const SPEECH = join(DATA, "speech");
 const DB = join(DATA, "db");
 const PORT = Number(process.env.PORT ?? 7777);
 
@@ -467,8 +468,35 @@ const cli = createCli({
 });
 
 /** The key the host added in the game, else an ElevenLabs one from the environment, which belongs to its EU data-residency stack. */
-const voiceKey = (): Voice | null =>
+const ownVoice = (): Voice | null =>
   savedVoice(process.env.SANDBOX_SECRETS) ?? (process.env.ELEVENLABS_API_KEY ? { provider: "ElevenLabs", key: process.env.ELEVENLABS_API_KEY, host: "https://api.eu.residency.elevenlabs.io" } : null);
+/** The host's own key wins; without one, free voice. */
+const voiceKey = (): Voice | null => ownVoice() ?? freeVoice(process.env.SANDBOX_SECRETS);
+
+/** ctx.speak: each line is made once and served from this world, so every player hearing it costs one call. */
+const speaking = new Map<string, Promise<string>>();
+async function speech(text: string, speaker: string | undefined) {
+  if (!text) throw new Error("Give ctx.speak some text.");
+  if (text.length > 2000) throw new Error("ctx.speak takes 2,000 characters at most.");
+  if (speaker !== undefined && !/^[A-Za-z0-9]{8,40}$/.test(speaker)) throw new Error("A voice is an ElevenLabs voice id.");
+  const id = sha(`${speaker ?? ""}\n${text}`);
+  const url = `/speech/${id}.mp3`;
+  if (existsSync(join(SPEECH, `${id}.mp3`))) return url;
+  if (!speaking.has(id))
+    speaking.set(
+      id,
+      (async () => {
+        const own = ownVoice();
+        const voice = own?.provider === "ElevenLabs" ? own : freeVoice(process.env.SANDBOX_SECRETS);
+        const mp3 = voice && (await speak(voice, text, speaker));
+        if (!mp3) throw new Error("Speech needs an ElevenLabs key, or free voice, which this host doesn't have.");
+        mkdirSync(SPEECH, { recursive: true });
+        writeFileSync(join(SPEECH, `${id}.mp3`), mp3);
+        return url;
+      })().finally(() => speaking.delete(id)),
+    );
+  return speaking.get(id)!;
+}
 
 /** Joins waiting for the host to answer whether a new computer may play as a name that's already someone's. */
 const asking = new Map<string, (allow: boolean) => void>();
@@ -506,6 +534,10 @@ const server = Bun.serve<Conn>({
       const file = Bun.file(join(ROOT, "mods", mod ?? "", "assets", name ?? ""));
       if (![mod, name].every((part) => /^\w[\w.-]*$/.test(part ?? "")) || !(await file.exists())) return new Response("not found", { status: 404 });
       return new Response(file);
+    }
+    if (/^\/speech\/[0-9a-f]{64}\.mp3$/.test(path)) {
+      const file = Bun.file(join(SPEECH, path.slice("/speech/".length)));
+      return (await file.exists()) ? new Response(file, { headers: { "content-type": "audio/mpeg", "cache-control": "max-age=31536000, immutable" } }) : new Response("not found", { status: 404 });
     }
     if (path.startsWith("/build/")) {
       const file = Bun.file(join(BUILD, path.slice("/build/".length).replaceAll("..", "")));
@@ -594,11 +626,22 @@ const server = Bun.serve<Conn>({
         },
         (error) => {
           console.log(`[voice] ${who}: ${error.message}`);
-          sockets.get(who)?.send(JSON.stringify({ t: "voice-failed", refused: !!error.refused, provider: voice.provider }));
+          sockets.get(who)?.send(JSON.stringify({ t: "voice-failed", refused: !!error.refused, provider: voice.provider, reason: error.reason }));
           record.add("error", who, { mod: "voice", level: "error", text: String(error.message).slice(0, 500) });
         },
       );
       return new Response(null, { status: 204 });
+    }
+    if (path === "/api/speak" && req.method === "POST") {
+      if (!nameByKey(bearer(req))) return new Response(null, { status: 401 });
+      const body = await req.json();
+      return speech(String(body.text ?? "").trim(), body.voice).then(
+        (url) => Response.json({ url }),
+        (error) => {
+          console.log(`[speak] ${error.message}`);
+          return Response.json({ error: error.reason ?? (error.provider ? "Speech didn't go through. Try again." : error.message) }, { status: 400 });
+        },
+      );
     }
     if (path === "/api/info") return Response.json({ id: basename(DATA), name: config.name, rules: config.rules, online: sockets.size, build, password: !!config.password, agents: config.agents !== false });
     if (path === "/api/join" && req.method === "POST") {

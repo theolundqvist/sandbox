@@ -29,11 +29,24 @@ Link-only worlds open by their link and are never listed. Sharing a world again 
 
 Shares never finished are swept after a day. The site's origin is the only one browsers may read the API from.
 
+## Free voice
+
+The same API gives every install of the app voice without a key of its own: speech to text and text to speech through ElevenLabs, never a language model. On first start the launcher signs up with `POST /installs` and keeps the token it gets in `data/secrets.json`; Postgres keeps only its hash.
+
+| Endpoint | Does |
+| --- | --- |
+| `POST /installs` | Answers `{ id, token }`. 5 per IP an hour. |
+| `POST /ai/tts` | `{ text, voice? }`, 2,000 characters at most; answers MP3. |
+| `POST /ai/stt` | The recording as the body, 60 s (512 KB) at most; answers `{ text }`. |
+| `GET /ai/usage` | `{ used, of }` in dollars. |
+
+Each takes `Authorization: Bearer <token>`, 30 calls a minute. Calls are charged at ElevenLabs' list price (the table is in `server.ts`) against $1 per install for good and $20 for everyone per UTC day, both counted in one Postgres statement so calls at the same moment can't go over; a transcript is held at a minute's price and settled to its length, and a call ElevenLabs fails costs nothing. Past either limit the call is refused with "Free voice is used up on this computer." or "Free voice is paused for today." The ElevenLabs key lives in `providers.env` on the box, passed only to the API container.
+
 Test it with `bun test community/server` (throwaway Postgres and SeaweedFS for S3 in Docker), and the launchers against it with `bun test engine/community.test.ts`.
 
 ## Running it
 
-It runs on the `npm` box in `/opt/sandbox-api` as its own Compose project (`compose.yaml`): Postgres listening only on a socket in a volume shared with the API and the backups, password auth, no network but an internal one; the API on `127.0.0.1:9200` behind Nginx Proxy Manager at `sandbox.api.lundqvistliss.com`, non-root, read-only, no capabilities. `db.env` and `r2.env` (the bucket-scoped R2 key) exist only on the box. Deploy with `community/server/deploy.sh`; the site with `bun run deploy-site` from `community/` (Pages project `sandbox`, `sandbox.lundqvistliss.com`).
+It runs on the `npm` box in `/opt/sandbox-api` as its own Compose project (`compose.yaml`): Postgres listening only on a socket in a volume shared with the API and the backups, password auth, no network but an internal one; the API on `127.0.0.1:9200` behind Nginx Proxy Manager at `sandbox.api.lundqvistliss.com`, non-root, read-only, no capabilities. `db.env`, `r2.env` (the bucket-scoped R2 key) and `providers.env` (the ElevenLabs key) exist only on the box. Deploy with `community/server/deploy.sh`; the site with `bun run deploy-site` from `community/` (Pages project `sandbox`, `sandbox.lundqvistliss.com`).
 
 Backups: every hour `pg_dump | zstd` to `sandbox-backups/pg/<time>.sql.zst`, then, only after that upload landed, older dumps are thinned to everything from 48 hours, one a day for 30 days and one a month for a year. Restore one with `zstd -dc <dump> | psql`.
 

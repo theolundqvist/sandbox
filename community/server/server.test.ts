@@ -6,7 +6,7 @@ let stack: Awaited<ReturnType<typeof startStack>>;
 beforeAll(async () => {
   stack = await startStack();
 }, 120_000);
-afterAll(() => stack?.stop());
+afterAll(() => stack?.stop(), 30_000);
 
 const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
 const webm = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 9, 9]);
