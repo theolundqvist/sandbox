@@ -337,7 +337,7 @@ test("a world that crashes within a minute of a reload comes back without that r
   let status: any;
   for (let i = 0; i < 100 && status?.mods?.[0]?.version !== 3; i++) {
     await Bun.sleep(200);
-    status = await fetch(`${base}/api/status`, { headers: { authorization: `Bearer ${player.key}` } }).then((r) => r.json(), () => null);
+    status = await fetch(`${base}/api/status`, { headers: { authorization: `Bearer ${player.key}` } }).then((r) => (r.ok ? r.json() : null), () => null);
   }
   expect(status.mods).toMatchObject([{ name: "wobbly", version: 3 }]);
   expect(status.recent).toContain("The world crashed and restarted by itself without the last change to wobbly. Anything from the last few seconds before the crash may be gone.");
