@@ -142,3 +142,13 @@ export function joinLink(text) {
 
 /** Whether copied text is certainly an invite link. */
 export const joinable = (text) => /^https?:\/\/\S+#(invite|key)=\S+$/.test(text);
+
+/** The visitor's computer, which goes first wherever the steps differ between computers. */
+export const computer = navigator.userAgent.includes("Windows") ? "windows" : navigator.userAgent.includes("Mac") ? "mac" : "linux";
+
+/** How someone who has never used a terminal opens one, on each computer. */
+export const OPEN_TERMINAL = {
+  windows: "Press the Windows key, type PowerShell, press Enter.",
+  mac: "Press Cmd+Space, type Terminal, press Enter.",
+  linux: "Press Ctrl+Alt+T.",
+};

@@ -27,6 +27,8 @@
   .item.choice button:is(:focus, :hover) { color: var(--accent); }
   .cover video { display: block; width: 100%; height: 100%; object-fit: cover; }
   :is(#app, #invite) .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
+  #app .note { margin: 8px 0 24px; }
+  @media (max-width: 760px) { #app .copy-row > span { width: 88px; } }
 </style>
 </head>
 <body>
@@ -131,15 +133,18 @@
   <section id="app" class="screen" data-nav hidden>
     <h1>Desktop app</h1>
     <p class="lead">Full screen. Mouse look without interruptions. Right-click works.</p>
-    <div class="copy-row"><span>Install</span><code id="app-install"></code><button data-copy="app-install">Copy</button></div>
-    <p class="note">Mac and Linux. On Windows, in WSL.</p>
+    <div id="app-rows">
+      <div data-os="windows"><div class="copy-row"><span>Windows</span><code id="app-windows"></code><button data-copy="app-windows">Copy</button></div><p class="note"></p></div>
+      <div data-os="mac"><div class="copy-row"><span>Mac</span><code id="app-mac"></code><button data-copy="app-mac">Copy</button></div><p class="note"></p></div>
+      <div data-os="linux"><div class="copy-row"><span>Linux</span><code id="app-linux"></code><button data-copy="app-linux">Copy</button></div><p class="note"></p></div>
+    </div>
   </section>
 
   <div id="error" class="error"></div>
 </main>
 <div class="hints"><span><kbd>↑↓</kbd>Select</span><span id="enter-hint"><kbd>Enter</kbd>Open</span></div>
 <script type="module">
-  import { backdrop, joinLink, joinable, logo, pick } from "/front.js";
+  import { OPEN_TERMINAL, backdrop, computer, joinLink, joinable, logo, pick } from "/front.js";
   const $ = (id) => document.getElementById(id);
   backdrop($("backdrop"));
   logo($("logo"));
@@ -505,7 +510,13 @@
   /** The desktop app, a menu entry on computers. The app marks its user agent with SandboxDesktop. */
   function offerApp(link) {
     if (navigator.userAgent.includes("SandboxDesktop")) return;
-    $("app-install").textContent = `curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '${link}'`;
+    const installer = "https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install";
+    for (const row of $("app-rows").children) {
+      const os = row.dataset.os;
+      row.querySelector("code").textContent = os === "windows" ? `& ([scriptblock]::Create((irm ${installer}.ps1))) '${link}'` : `curl -fsSL ${installer} | bash -s -- '${link}'`;
+      row.querySelector(".note").textContent = `${OPEN_TERMINAL[os]} Paste the line and press Enter.`;
+    }
+    $("app-rows").prepend($("app-rows").querySelector(`[data-os=${computer}]`));
     $("go-app").hidden = false;
   }
 

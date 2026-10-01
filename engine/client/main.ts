@@ -3,6 +3,7 @@ import * as THREE from "three";
 import type { ClientCtx, ClientHooks, ClientMod, Entity, Game, ReplayShot } from "../api";
 import { clock, extent, isAvatar, plan, position, type Activity, type Plan, type Tick as Moment, type Shot } from "./director";
 import { PhysicsIndex, sizeOf } from "../physics";
+import { computer, OPEN_TERMINAL } from "./front.js";
 import { mountPicker } from "./games";
 import { phrases } from "./phrases";
 
@@ -2529,7 +2530,6 @@ const AGENT_GUIDES: AgentGuide[] = [
   { id: "pi", name: "Pi", install: { unix: "curl -fsSL https://pi.dev/install.sh | sh", windows: "npm install -g --ignore-scripts @earendil-works/pi-coding-agent" }, run: "pi" },
   { id: "opencode", name: "opencode", install: { unix: "curl -fsSL https://opencode.ai/install | bash", windows: "npm install -g opencode-ai" }, run: "opencode --auto" },
 ];
-const windows = navigator.userAgent.includes("Windows");
 const small = (text: string) => Object.assign(document.createElement("small"), { textContent: text });
 let agentGuide: AgentGuide | null = null;
 try {
@@ -2549,13 +2549,13 @@ function showAgentGuide(guide: AgentGuide | null) {
   picked.querySelector("img")!.src = `/agents/${guide.id}.svg`;
   picked.querySelector(".what")!.textContent = guide.name;
   const app = "download" in guide;
-  $("agent-install-what").replaceChildren(app ? `Get the ${guide.name}` : `Install ${guide.name}`, small(app ? "Download it, open it and sign in." : `Open ${windows ? "PowerShell" : "a terminal"} and run this.`));
+  $("agent-install-what").replaceChildren(app ? `Get the ${guide.name}` : `Install ${guide.name}`, small(app ? "Download it, open it and sign in." : `${OPEN_TERMINAL[computer]} Paste this line and press Enter.`));
   $("agent-start-what").replaceChildren("Turn permissions off", small(app ? guide.setup : "Start it like this, so it can run the game's command without asking each time."));
   $("agent-install-row").hidden = $("agent-start-row").hidden = app;
   $("agent-download").hidden = !app;
   if (app) Object.assign($<HTMLAnchorElement>("agent-download"), { href: guide.download, textContent: `Download the ${guide.name}` });
   else {
-    $("agent-install").textContent = windows ? guide.install.windows : guide.install.unix;
+    $("agent-install").textContent = computer === "windows" ? guide.install.windows : guide.install.unix;
     $("agent-start").textContent = guide.run;
   }
   $("agent-open").hidden = !guide.open;
