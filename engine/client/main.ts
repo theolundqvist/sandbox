@@ -2163,7 +2163,7 @@ function addTalk(from: string, text: string) {
   $("talk-count").textContent = String($("menu-talk").children.length);
 }
 
-const claudeLabels = { listening: "Agent listening", working: "Agent working…", offline: "Connect your agent" };
+const claudeLabels = { listening: "Agent listening", working: "Agent working…", offline: "Connect to build" };
 function showClaude(state: keyof typeof claudeLabels) {
   $("claude").textContent = claudeLabels[state];
   $("claude").dataset.state = state;
@@ -2417,6 +2417,80 @@ function connectPrompt() {
   return `First install the command for our game by running \`${install}\`. Then run \`${bin}\` alone to list its tools, call one as \`${bin} <tool> name=value\`, and give wait_for_chat calls a shell timeout of at least 300 seconds. We are playing ${world} together right now: a live multiplayer game my friends and I build while we play it, each with our own coding agent. I am ${me} in the game. Anything you reload goes live for every player at once, so make it one coherent game: extend what the others built instead of building it again, and see a thing work before you call it done. Start with status and read GUIDE.md, then say one short greeting like "Hey everyone" so we see you are in: that is the only thing you ever say in chat, which belongs to us players. From then on I talk to you only through the in-game chat, where my voice is transcribed too when I hold T: act when I ask for something or clearly want a change, not on every word. Then loop forever: wait_for_chat seconds=240, get what I (${me}) ask for built, and wait_for_chat again. We follow your work on the Builders line, never in chat: set task when you start (a short title and percent), update it as it progresses, and end it done once every check you can run passes, with what to try in its status, or blocked with the reason, never left waiting for us to try it; when a task goes done and we can try something new, call announce with what to try. If you can start subagents or background tasks, be the orchestrator and never build or test yourself: give each request, or each part of a big one, to its own subagent owning its own mod, which builds, reloads and checks it in play, keep calling wait_for_chat while they work, and keep task updated from what they report (GUIDE.md, Subagents). Nothing ever arrives in this terminal, so never end your turn.`;
 }
 
+/** The coding agents that can run this world's command, each with its own install, its own way to stop asking before every command, and a documented link that opens it with the prompt typed in. Evidence: ~/.config/journal/2026-10-01/coding-agents-shell-access.md. */
+type AgentGuide = { id: string; name: string; open?: { label: string; url: (prompt: string) => string } } & ({ install: { unix: string; windows: string }; run: string } | { download: string; setup: string });
+const AGENT_GUIDES: AgentGuide[] = [
+  { id: "claude-code", name: "Claude Code", install: { unix: "curl -fsSL https://claude.ai/install.sh | bash", windows: "irm https://claude.ai/install.ps1 | iex" }, run: "claude --dangerously-skip-permissions" },
+  { id: "claude", name: "Claude app", download: "https://claude.com/download", setup: "In Settings, Claude Code, turn on Allow bypass permissions mode. Then open the Code tab and pick Bypass permissions next to Send." },
+  { id: "codex", name: "Codex", install: { unix: "curl -fsSL https://chatgpt.com/codex/install.sh | sh", windows: `powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"` }, run: "codex --yolo" },
+  {
+    id: "chatgpt",
+    name: "ChatGPT app",
+    download: "https://chatgpt.com/download",
+    setup: "In Settings, General, Permissions, turn on Full access. Then open Codex, start a New chat and pick Full access below the message box.",
+    open: { label: "Open in ChatGPT", url: (prompt) => `codex://new?prompt=${encodeURIComponent(prompt)}` },
+  },
+  { id: "cursor", name: "Cursor", install: { unix: "curl https://cursor.com/install -fsS | bash", windows: "irm 'https://cursor.com/install?win32=true' | iex" }, run: "agent --force" },
+  { id: "copilot", name: "GitHub Copilot", install: { unix: "curl -fsSL https://gh.io/copilot-install | bash", windows: "winget install GitHub.Copilot" }, run: "copilot --allow-all-tools" },
+  { id: "omp", name: "OMP", install: { unix: "curl -fsSL https://omp.sh/install | sh", windows: "irm https://omp.sh/install.ps1 | iex" }, run: "omp --approval-mode=yolo" },
+  { id: "pi", name: "Pi", install: { unix: "curl -fsSL https://pi.dev/install.sh | sh", windows: "npm install -g --ignore-scripts @earendil-works/pi-coding-agent" }, run: "pi" },
+  { id: "opencode", name: "opencode", install: { unix: "curl -fsSL https://opencode.ai/install | bash", windows: "npm install -g opencode-ai" }, run: "opencode --auto" },
+];
+const windows = navigator.userAgent.includes("Windows");
+const small = (text: string) => Object.assign(document.createElement("small"), { textContent: text });
+let agentGuide: AgentGuide | null = null;
+try {
+  agentGuide = AGENT_GUIDES.find((g) => g.id === localStorage.getItem("sandbox-agent")) ?? null;
+} catch {}
+
+/** Connect to build: the player picks the agent they have, then gets its three steps, the last one the prompt. */
+function showAgentGuide(guide: AgentGuide | null) {
+  agentGuide = guide ?? agentGuide;
+  try {
+    if (guide) localStorage.setItem("sandbox-agent", guide.id);
+  } catch {}
+  $("agent-pick").hidden = !!guide;
+  $("agent-guide").hidden = !guide;
+  if (!guide) return;
+  const picked = $("agent-picked");
+  picked.querySelector("img")!.src = `/agents/${guide.id}.svg`;
+  picked.querySelector(".what")!.textContent = guide.name;
+  const app = "download" in guide;
+  $("agent-install-what").replaceChildren(app ? `Get the ${guide.name}` : `Install ${guide.name}`, small(app ? "Download it, open it and sign in." : `Open ${windows ? "PowerShell" : "a terminal"} and run this.`));
+  $("agent-start-what").replaceChildren("Turn permissions off", small(app ? guide.setup : "Start it like this, so it can run the game's command without asking each time."));
+  $("agent-install-row").hidden = $("agent-start-row").hidden = app;
+  $("agent-download").hidden = !app;
+  if (app) Object.assign($<HTMLAnchorElement>("agent-download"), { href: guide.download, textContent: `Download the ${guide.name}` });
+  else {
+    $("agent-install").textContent = windows ? guide.install.windows : guide.install.unix;
+    $("agent-start").textContent = guide.run;
+  }
+  $("agent-open").hidden = !guide.open;
+  $("agent-open").textContent = guide.open?.label ?? "";
+}
+// The link carries the prompt as it is when clicked, with this player's name and key.
+$("agent-open").onclick = () => agentGuide?.open && ($<HTMLAnchorElement>("agent-open").href = agentGuide.open.url(connectPrompt()));
+$("agent-list").append(
+  ...AGENT_GUIDES.map((guide) => {
+    const row = Object.assign(document.createElement("button"), { className: "item agent" });
+    row.append(
+      Object.assign(document.createElement("img"), { src: `/agents/${guide.id}.svg`, alt: "" }),
+      Object.assign(document.createElement("span"), { className: "what", textContent: guide.name }),
+      Object.assign(document.createElement("span"), { className: "value", textContent: "download" in guide ? "App" : "Terminal" }),
+    );
+    row.onclick = () => {
+      showAgentGuide(guide);
+      $("agent-picked").focus();
+    };
+    return row;
+  }),
+);
+$("agent-picked").onclick = () => {
+  showAgentGuide(null);
+  ($("agent-list").children[Math.max(0, AGENT_GUIDES.indexOf(agentGuide!))] as HTMLElement).focus();
+};
+showAgentGuide(agentGuide);
+
 function showInvite() {
   $("invite-link").textContent = link ?? `${origin}/#invite=${invite}`;
   $("invite-wifi").hidden = !wifiOnly;
@@ -2479,6 +2553,7 @@ async function refreshMenu() {
 
 for (const button of all<HTMLButtonElement>("[data-copy]"))
   button.onclick = async () => {
+    const label = button.dataset.label ??= button.textContent!;
     const code = $(button.dataset.copy!);
     // Plain-http LAN links have no clipboard API, and an unfocused page is refused it.
     if (!(await navigator.clipboard?.writeText(code.textContent!).then(() => true, () => false))) {
@@ -2486,7 +2561,7 @@ for (const button of all<HTMLButtonElement>("[data-copy]"))
       document.execCommand("copy");
     }
     button.textContent = "Copied";
-    setTimeout(() => (button.textContent = "Copy"), 1500);
+    setTimeout(() => (button.textContent = label), 1500);
   };
 
 // ---------- loop ----------

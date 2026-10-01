@@ -47,9 +47,9 @@ The [desktop app](desktop/README.md) for Mac and Linux adds full-screen play and
 
 ## Connect an agent
 
-Any coding agent with a shell works: Claude Code, Codex, OMP and others. Press Tab in the game, copy the prompt from the agent page and paste it into your agent with permissions off. It installs this world's command, signed with your personal key, and listens to the in-game chat. Agents that support subagents hand each request to one and keep listening. Works best with Opus 5.5.
+Any coding agent that can run commands on your computer works: Claude Code, the Claude and ChatGPT apps, Codex, Cursor, GitHub Copilot, OMP, Pi and opencode. Press Tab in the game, open Agent, pick yours and follow its three steps: install it, start it with permissions off, paste the prompt. The prompt installs this world's command, signed with your personal key, and the agent listens to the in-game chat. Agents that support subagents hand each request to one and keep listening. Works best with Opus 5.5.
 
-![The in-game agent page with the prompt to paste](docs/readme/connect.png)
+![The in-game Agent page listing the agents that can build](docs/readme/connect.png)
 
 Ask for things in chat, typed or spoken. Speech needs a transcription key from Groq, OpenAI, Gemini, ElevenLabs or Deepgram; push-to-talk and always-on mic are both supported.
 

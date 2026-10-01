@@ -15,8 +15,10 @@ const RELEASES = process.env.SANDBOX_UPDATES ?? "https://api.github.com/repos/th
 const INSTALLER = (version) => process.env.SANDBOX_INSTALLER ?? `https://raw.githubusercontent.com/theolundqvist/sandbox/v${version}/desktop/install`;
 const DOWNLOADS = (version) => process.env.SANDBOX_RELEASE ?? `https://github.com/theolundqvist/sandbox/releases/download/v${version}`;
 const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"]);
-/** Pages a game may open in the browser: where the host gets a speech key, from each provider in engine/voice.ts. */
-const OUTSIDE = /^https:\/\/(console\.groq\.com|platform\.openai\.com|aistudio\.google\.com|elevenlabs\.io|console\.deepgram\.com)\//;
+/** Pages a game may open in the browser: where the host gets a speech key, from each provider in engine/voice.ts, and where a player downloads an agent app from the Agent page. */
+const OUTSIDE = /^https:\/\/((console\.groq\.com|platform\.openai\.com|aistudio\.google\.com|elevenlabs\.io|console\.deepgram\.com)\/|(claude|chatgpt)\.com\/download$)/;
+/** The Agent page's Open in ChatGPT, which only types the prompt into a new Codex chat. */
+const AGENT_LINK = /^codex:\/\/new\?prompt=/;
 
 /** An invite or personal link passed on the command line, e.g. `sandbox http://host:7777/#invite=…`. */
 const linkIn = (argv) => argv.slice(1).find((a) => /^https?:\/\//.test(a));
@@ -132,7 +134,9 @@ function play(raw) {
   // Lets the web client skip its "get the desktop app" offer.
   wc.setUserAgent(`${wc.getUserAgent()} SandboxDesktop`);
   const stayHome = (event, to) => {
-    if (new URL(to).origin !== url.origin) event.preventDefault();
+    if (new URL(to).origin === url.origin) return;
+    event.preventDefault();
+    if (AGENT_LINK.test(to)) void desktop.openExternal(to);
   };
   wc.on("will-navigate", stayHome);
   wc.on("will-redirect", stayHome);

@@ -179,6 +179,21 @@
   .field input[type=password]:focus { border-color: var(--accent); }
   .field input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
   #menu #voice-where { margin: 12px 0 16px; }
+  .item.agent { align-items: center; gap: 18px; padding-top: 7px; padding-bottom: 7px; font-size: 24px; }
+  .item.agent img { width: 32px; height: 32px; flex: none; object-fit: contain; opacity: .7; transition: opacity .12s ease-out; }
+  .item.agent:is(:focus, :hover, .active) img, #agent-picked img { opacity: 1; }
+  .item.agent .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #agent-picked { color: var(--text); font-size: 34px; margin-bottom: 8px; }
+  #agent-picked img { width: 44px; height: 44px; }
+  .steps { list-style: none; counter-reset: step; margin: 0; padding: 0; }
+  .steps > li { display: block; counter-increment: step; position: relative; padding: 22px 0 18px 64px; border-bottom: 1px solid var(--line); }
+  .steps > li::before { content: counter(step); position: absolute; left: 0; top: 14px; font: 800 40px/1 var(--display); color: var(--accent); }
+  .steps b { display: block; font: 700 18px/1.3 var(--display); letter-spacing: .04em; text-transform: uppercase; }
+  .steps b small { display: block; margin-top: 6px; color: var(--dim); font: 500 14px/1.4 system-ui, sans-serif; letter-spacing: normal; text-transform: none; }
+  .steps .copy-row { border: 0; min-height: 44px; }
+  .steps a.quiet { display: inline-block; margin-top: 8px; color: var(--text); text-decoration: none; border-bottom: 1px solid var(--accent); padding: 6px 0; }
+  #agent-guide [data-copy=claude-prompt] { background: var(--text); color: #0b0b0c; padding: 12px 18px; min-width: 170px; text-align: center; }
+  #agent-guide [data-copy=claude-prompt]:hover, #agent-guide [data-copy=claude-prompt]:focus { background: var(--accent); color: #0b0b0c; }
   #voice-where a { color: var(--text); }
   .field em { font-style: normal; color: var(--dim); font-weight: 700; }
   @media (max-width: 760px) {
@@ -188,6 +203,8 @@
     #menu.paging #rail { display: none; }
     #pages .screen-title { font-size: 32px; }
     #menu .copy-row > span { width: 88px; }
+    #agent-picked { font-size: 24px; }
+    .steps > li { padding-left: 44px; }
   }
   .row { display: block; }
   .row > div { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
@@ -346,8 +363,25 @@
     <h1 id="page-title" class="screen-title"></h1>
     <section data-tab="claude" hidden>
       <p class="note" id="agents-off" hidden>The host turned agents off for this world.</p>
-      <div class="copy-row agents-on"><span>Prompt</span><code id="claude-prompt"></code><button data-copy="claude-prompt">Copy</button></div>
-      <p class="note agents-on">Works best with Opus 5.5. Paste it into Claude Code, Codex or OMP started with permissions off: <code>claude --dangerously-skip-permissions</code>, <code>codex --dangerously-bypass-approvals-and-sandbox</code> or <code>omp --approval-mode=yolo</code>.</p>
+      <div class="agents-on">
+        <div id="agent-pick">
+          <div id="agent-list" class="items"></div>
+          <p class="note">ChatGPT and Claude in a browser can't run commands, so they can't build. Have ChatGPT? Codex comes with it. Have Claude Pro or Max? Claude Code comes with it.</p>
+        </div>
+        <div id="agent-guide" hidden>
+          <button id="agent-picked" class="item agent"><img alt=""><span class="what"></span><span class="value">Change</span></button>
+          <ol class="steps">
+            <li><b id="agent-install-what"></b>
+              <div class="copy-row" id="agent-install-row"><code id="agent-install"></code><button data-copy="agent-install">Copy</button></div>
+              <a id="agent-download" class="quiet" target="_blank" rel="noopener"></a></li>
+            <li><b id="agent-start-what"></b>
+              <div class="copy-row" id="agent-start-row"><code id="agent-start"></code><button data-copy="agent-start">Copy</button></div></li>
+            <li><b>Paste this prompt into it</b>
+              <div class="copy-row"><code id="claude-prompt"></code><button data-copy="claude-prompt">Copy prompt</button></div>
+              <a id="agent-open" class="quiet" href="codex://new" hidden></a></li>
+          </ol>
+        </div>
+      </div>
     </section>
     <section data-tab="invite" hidden>
       <div class="copy-row"><span>Link</span><code id="invite-link"></code><button data-copy="invite-link">Copy</button></div>

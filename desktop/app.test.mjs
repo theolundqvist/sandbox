@@ -293,7 +293,7 @@ describe("hosting and joining", () => {
     assert.notEqual(world, "Sandbox");
     await until("the world's name in the title bar", async () => (await shell.textContent("#world")) === world);
     assert.equal(await shown(game, "#rules"), false);
-    assert.equal(await game.textContent("#claude"), "Connect your agent");
+    assert.equal(await game.textContent("#claude"), "Connect to build");
     assert.equal(await game.textContent("#howto .cmd"), "Ctrl");
     assert.equal(await game.evaluate(() => localStorage.getItem("sandbox-name")), "host");
   });
@@ -337,10 +337,13 @@ describe("hosting and joining", () => {
     await game.keyboard.press("Escape");
   });
 
-  test("connecting an agent: Copy copies the one prompt in place, and it installs this world's command first", async () => {
+  test("connecting an agent: the player picks theirs, gets its install and start, and Copy prompt copies the one prompt in place", async () => {
     const game = await gamePage(app);
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#rail [data-tab=claude]");
+    assert.equal(await shown(game, "#agent-guide"), false);
+    await game.locator(".item.agent", { hasText: "Claude Code" }).click();
+    assert.deepEqual([await game.textContent("#agent-install"), await game.textContent("#agent-start")], ["curl -fsSL https://claude.ai/install.sh | bash", "claude --dangerously-skip-permissions"]);
     const copy = game.locator("[data-copy=claude-prompt]");
     const box = await copy.boundingBox();
     await copy.click();
@@ -349,6 +352,13 @@ describe("hosting and joining", () => {
     const prompt = await app.evaluate(({ clipboard }) => clipboard.readText());
     assert.equal(prompt, await game.textContent("#claude-prompt"));
     assert.match(prompt, /^First install the command for our game by running `mkdir -p ~\/\.local\/bin && curl .*\/cli\?name=/);
+    await until("Copy prompt again", async () => (await copy.textContent()) === "Copy prompt");
+    // The page remembers the pick, and Change goes back to the list on that agent.
+    await game.keyboard.press("Escape");
+    await game.click("#rail [data-tab=claude]");
+    assert.equal(await shown(game, "#agent-guide"), true);
+    await game.click("#agent-picked");
+    assert.equal(await game.evaluate(() => document.querySelector("#ui").shadowRoot.activeElement?.textContent), "Claude CodeTerminal");
     await game.keyboard.press("Escape");
     await game.keyboard.press("Escape");
   });
