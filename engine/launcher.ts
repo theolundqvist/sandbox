@@ -3,9 +3,9 @@ import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { Server, ServerWebSocket, Subprocess } from "bun";
 import { frontFile } from "./front";
+import { hasGit } from "./mods";
 import { latencies, openRecord, route, type Recorder } from "./record";
 import type { Config } from "./server";
-import { importWorld, readTarball } from "./share";
 import { identify, PROVIDERS, type Voice } from "./voice";
 
 const ENGINE = import.meta.dir;
@@ -40,6 +40,7 @@ const readJson = (path: string) => (existsSync(path) ? JSON.parse(readFileSync(p
 const config = (id: string): Config => readJson(join(WORLDS, id, "config.json"));
 
 function worlds() {
+  const shared = sharedWorlds();
   return readdirSync(WORLDS)
     .filter((id) => existsSync(join(WORLDS, id, "config.json")))
     .map((id) => {
@@ -57,6 +58,7 @@ function worlds() {
         players: Object.keys(readJson(join(dir, "keys.json"))).length,
         played: statSync(saved).mtimeMs,
         cover: existsSync(join(dir, "cover.jpg")) ? statSync(join(dir, "cover.jpg")).mtimeMs : null,
+        shared: shared[id]?.link ? { link: shared[id].link, visibility: shared[id].visibility, title: shared[id].title, description: shared[id].description } : null,
       };
     })
     .sort((a, b) => b.played - a.played);
@@ -393,14 +395,15 @@ async function menuApi(req: Request, action: string) {
   if (action === "cover") return cover(req, new URL(req.url).searchParams.get("id") ?? "");
   const body = req.method === "POST" && action !== "import" ? await req.json() : {};
   try {
-    if (action === "browse") return Response.json(await market());
-    if (action === "check") {
-      const repo = repoOf(body.repo);
-      const listed = (await market().catch(() => [])).some((w) => w.repo.toLowerCase() === repo.toLowerCase());
-      return Response.json({ repo, owner: repo.split("/")[0], listed });
-    }
+    if (action === "community") return Response.json(await communityList());
+    if (action === "community-world") return Response.json(await communityWorld(body.link));
     if (action === "create") await host(create(body));
-    else if (action === "install") await host(await install(body.repo, body.trust === true));
+    else if (action === "community-get") {
+      const id = await download(body.id, body.trust === true, body.host === true);
+      if (body.host === true) await host(id);
+      return Response.json({ ...(await menuState()), world: id });
+    } else if (action === "share") return Response.json(await shareWorld(body));
+    else if (action === "unshare") await unshareWorld(body.id);
     else if (action === "export") return await packWorld(body.id);
     else if (action === "import") await unpackWorld(await req.bytes());
     else if (action === "host") {
@@ -430,50 +433,96 @@ async function menuApi(req: Request, action: string) {
   }
 }
 
-/** The worlds anyone can play from Browse: a list in the main repository, which only its maintainers change. */
-const MARKET = process.env.SANDBOX_MARKET ?? "https://raw.githubusercontent.com/theolundqvist/sandbox/master/worlds.json";
-const RAW = process.env.SANDBOX_RAW ?? "https://raw.githubusercontent.com";
-const CODELOAD = process.env.SANDBOX_CODELOAD ?? "https://codeload.github.com";
+/** Community worlds: a Worker anyone can publish a world to, with no sign-in; this launcher keeps each world's owner token, so only this computer changes what it shared. */
+const COMMUNITY = process.env.SANDBOX_COMMUNITY ?? "https://sandbox-community.theodor-lundqvist.workers.dev";
+/** Per world here: where it is shared and the token that changes it, and the community world it was downloaded from. Never in a world's folder, so no export carries it. */
+const SHARED = join(DATA, "community.json");
+type Shared = { id?: string; ownerToken?: string; link?: string; visibility?: "link" | "public"; title?: string; description?: string; from?: string };
+const sharedWorlds = (): Record<string, Shared> => readJson(SHARED);
+function saveShared(id: string, next: Shared | null) {
+  const all = sharedWorlds();
+  if (next) all[id] = next;
+  else delete all[id];
+  writeFileSync(SHARED, JSON.stringify(all, null, 2), { mode: 0o600 });
+  chmodSync(SHARED, 0o600);
+}
+const COMMUNITY_ID = /^[a-z0-9]{12}$/;
+const ENGINE_VERSION =
+  process.env.SANDBOX_VERSION ?? ((hasGit && Bun.spawnSync(["git", "rev-parse", "--short", "HEAD"], { cwd: ENGINE, stdout: "pipe", stderr: "ignore" }).stdout.toString().trim()) || "dev");
 
-/** owner/name from a GitHub link however it was pasted: github.com/o/r, a URL into the repo, or o/r. */
-function repoOf(link: unknown) {
-  const m = String(link ?? "").trim().match(/^(?:(?:https?:\/\/)?(?:www\.)?github\.com\/)?([A-Za-z0-9-]{1,39})\/([\w.-]{1,100}?)(?:\.git)?\/?(?:[/?#].*)?$/i);
-  if (!m) throw new Error("Paste a GitHub link, like github.com/someone/their-world.");
-  return `${m[1]}/${m[2]}`;
+async function community(path: string, init?: RequestInit) {
+  const res = await fetch(`${COMMUNITY}${path}`, { ...init, signal: AbortSignal.timeout(init?.body ? 300_000 : 15_000) }).catch(() => null);
+  if (!res) throw new Error("Can't reach Community. Check your connection.");
+  return res;
+}
+async function communityJson(path: string, init?: RequestInit) {
+  const res = await community(path, init);
+  const data = await res.json().catch(() => ({ error: `Community answered ${res.status}. Try again.` }));
+  if (!res.ok) throw Object.assign(new Error(data.error), { status: res.status });
+  return data;
+}
+/** Which of these this computer shared, so it can say Shared rather than ask to trust its own world. */
+const mine = (id: string) => Object.values(sharedWorlds()).some((s) => s.id === id && s.ownerToken);
+
+async function communityList() {
+  const list: { id: string }[] = await communityJson("/worlds");
+  return list.map((w) => ({ ...w, mine: mine(w.id) }));
 }
 
-async function market() {
-  const res = await fetch(MARKET, { signal: AbortSignal.timeout(10_000) }).catch(() => null);
-  if (!res?.ok) throw new Error("Can't reach GitHub. Check your connection.");
-  const list: { repo: string; name: string; description: string }[] = await res.json();
-  return list.flatMap((w) => {
-    try {
-      const repo = repoOf(w.repo);
-      return [{ repo, name: String(w.name), description: String(w.description ?? ""), cover: `${RAW}/${repo}/HEAD/cover.jpg` }];
-    } catch {
-      return [];
-    }
-  });
+/** A community world from its link, however it was pasted: the page's address or the id alone. */
+async function communityWorld(link: unknown) {
+  const id = String(link ?? "").trim().match(/(?:^|\/w\/)([a-z0-9]{12})(?:[/?#].*)?$/)?.[1];
+  if (!id) throw new Error("Paste a Community link, like sandbox-community.pages.dev/w/….");
+  const world = await communityJson(`/worlds/${id}`);
+  return { ...world, mine: mine(id) };
 }
 
-/** Downloads a world from GitHub as a tarball, so hosting one needs no git, and makes it a new world here. */
-async function install(link: unknown, trust: boolean) {
-  const repo = repoOf(link);
-  const listed = (await market().catch(() => [])).some((w) => w.repo.toLowerCase() === repo.toLowerCase());
-  if (!listed && !trust) throw new Error(`This world runs code from ${repo.split("/")[0]}. Only play worlds from people you trust.`);
-  const res = await fetch(`${CODELOAD}/${repo}/tar.gz/HEAD`).catch(() => null);
-  if (!res) throw new Error("Can't reach GitHub. Check your connection.");
-  if (!res.ok) throw new Error(res.status === 404 ? `There is no public world at github.com/${repo}.` : `GitHub answered ${res.status}. Try again.`);
-  const files = await readTarball(await res.bytes());
-  const name = String((await files.get("world.json")?.json().catch(() => null))?.name ?? "");
-  const id = newId(name);
-  try {
-    await importWorld(files, join(WORLDS, id), token);
-  } catch (e) {
-    rmSync(join(WORLDS, id), { recursive: true, force: true });
-    throw e;
-  }
-  return id;
+/** A community world as a world here. Hosting one again reuses the copy made last time; a remix is always a new world of this computer's, credited to the one it came from. */
+async function download(id: unknown, trust: boolean, hosting: boolean) {
+  if (typeof id !== "string" || !COMMUNITY_ID.test(id)) throw new Error("That world isn't in Community.");
+  const world = await communityJson(`/worlds/${id}`);
+  if (!trust && !mine(id)) throw new Error(`This world runs code from ${world.author}. Only play worlds from people you trust.`);
+  const copy = hosting && Object.entries(sharedWorlds()).find(([local, s]) => s.from === id && !s.ownerToken && exists(local))?.[0];
+  if (copy) return copy;
+  const res = await community(`/worlds/${id}/zip`);
+  if (!res.ok) throw new Error(res.status === 404 ? "That world isn't in Community any more." : `Community answered ${res.status}. Try again.`);
+  const local = await unpackWorld(await res.bytes());
+  saveShared(local, { from: id });
+  return local;
+}
+
+/** Shares a world of this computer's: its export, exactly as Export makes it, with a cover and the timelapse's clip. Sharing it again updates the same community world. */
+async function shareWorld(body: any) {
+  if (!exists(body.id)) throw new Error("That world doesn't exist.");
+  const visibility = body.visibility === "public" ? "public" : "link";
+  const coverPath = join(WORLDS, body.id, "cover.jpg");
+  const cover = body.cover ? Buffer.from(String(body.cover), "base64") : existsSync(coverPath) ? readFileSync(coverPath) : null;
+  const before = sharedWorlds()[body.id] ?? {};
+  // An update without a new picture keeps the one Community has.
+  if (!cover && !before.ownerToken) throw new Error("This world has no picture yet. Pick Current view.");
+  const form = new FormData();
+  const fields = { title: String(body.title ?? "").trim() || config(body.id).name, description: String(body.description ?? "").trim(), author: String(body.author ?? "").trim(), visibility, remix_of: before.from ?? "", engine_version: ENGINE_VERSION, mods: String(Object.keys(readJson(join(WORLDS, body.id, "mods.json"))).length) };
+  for (const [k, v] of Object.entries(fields)) form.set(k, v);
+  if (cover) form.set("cover", new Blob([cover], { type: "image/jpeg" }), "cover.jpg");
+  if (body.clip) form.set("clip", new Blob([Buffer.from(String(body.clip), "base64")], { type: "video/webm" }), "clip.webm");
+  const { zip } = await archive({ t: "pack", dir: join(WORLDS, body.id) });
+  const auth = (token: string) => ({ authorization: `Bearer ${token}` });
+  let shared = before.id && before.ownerToken ? { id: before.id, ownerToken: before.ownerToken } : null;
+  // A world taken down from Community is shared again as a new one.
+  if (shared) await communityJson(`/worlds/${shared.id}`, { method: "PUT", body: form, headers: auth(shared.ownerToken) }).catch((e) => (e.status === 404 ? (shared = null) : Promise.reject(e)));
+  shared ??= await communityJson("/worlds", { method: "POST", body: form });
+  const { link } = await communityJson(`/worlds/${shared!.id}/zip`, { method: "PUT", body: zip, headers: { ...auth(shared!.ownerToken), "content-type": "application/zip" } });
+  const saved = { ...before, id: shared!.id, ownerToken: shared!.ownerToken, link, visibility, title: fields.title, description: fields.description } as Shared;
+  saveShared(body.id, saved);
+  return { link, visibility };
+}
+
+async function unshareWorld(id: unknown) {
+  const shared = typeof id === "string" ? sharedWorlds()[id] : undefined;
+  if (!shared?.id || !shared.ownerToken) throw new Error("That world isn't shared.");
+  const res = await community(`/worlds/${shared.id}`, { method: "DELETE", headers: { authorization: `Bearer ${shared.ownerToken}` } });
+  if (!res.ok && res.status !== 404) throw new Error(`Community answered ${res.status}. Try again.`);
+  saveShared(id as string, shared.from ? { from: shared.from } : null);
 }
 
 const page = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });

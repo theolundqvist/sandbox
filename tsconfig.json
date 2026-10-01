@@ -13,6 +13,6 @@
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": false
   },
-  "include": ["engine", "relay"],
+  "include": ["engine", "relay", "community/*.ts"],
   "exclude": ["engine/seed"]
 }

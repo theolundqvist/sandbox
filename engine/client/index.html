@@ -245,6 +245,9 @@
   /* Over the live game, every entry reads at a glance. */
   #join .item { color: rgba(243,241,236,.8); text-shadow: 0 1px 2px rgba(0,0,0,.85), 0 0 1px rgba(0,0,0,.9); }
   #join .item:focus, #join .item:focus-within { color: var(--text); }
+  #share-picture { display: block; width: 320px; aspect-ratio: 16 / 9; object-fit: cover; margin: 20px 0 0; background: #1b1c1f; }
+  #share-picture:not([src]) { visibility: hidden; }
+  #share-go { width: auto; }
   :is(#join, #menu) .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
   #menu .note code { white-space: nowrap; }
   code { display: block; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d9d6cf; word-break: break-all; }
@@ -395,10 +398,21 @@
     </section>
     <section data-tab="mods" hidden><ul id="menu-mods"></ul></section>
     <section data-tab="world" hidden>
-      <div class="copy-row"><button id="world-export">Export</button></div>
+      <div class="copy-row"><button id="world-share">Share</button><button id="world-export">Export</button></div>
       <div class="copy-row"><button id="world-stop" class="danger">Stop hosting</button></div>
       <div class="gap"></div>
       <div id="world-snapshots"></div>
+    </section>
+    <section data-tab="share" hidden>
+      <label class="field"><span>Title</span><input type="text" id="share-title" maxlength="60" autocomplete="off" spellcheck="false"></label>
+      <label class="field"><span>About</span><input type="text" id="share-description" maxlength="200" placeholder="One line" autocomplete="off"></label>
+      <div class="field"><span>Who sees it</span><div class="pick" id="share-visibility" data-options="link:Link only,public:Everyone"></div></div>
+      <div class="field"><span>Picture</span><div class="pick" id="share-cover" data-options="world:World picture,view:Current view"></div></div>
+      <img id="share-picture" alt="">
+      <div class="copy-row" id="share-shared" hidden><span>Link</span><code id="share-link"></code><button data-copy="share-link">Copy</button><button id="share-stop" class="danger">Stop sharing</button></div>
+      <div class="gap"></div>
+      <button id="share-go" class="item">Share</button>
+      <p class="note" id="share-status"></p>
     </section>
     <section data-tab="settings" hidden>
       <label class="field" id="voice-field" hidden><span>Voice key</span><input type="password" id="voice-key" autocomplete="off" spellcheck="false"></label>

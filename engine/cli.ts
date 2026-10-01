@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { dirname, join, relative, resolve } from "node:path";
 import { hasGit, type Mods } from "./mods";
 import { brief, type Recorder } from "./record";
-import { exportWorld } from "./share";
 import type { GameCard } from "./games";
 import type { Sims } from "./sims";
 
@@ -279,19 +278,6 @@ const tools = [
     inputSchema: { type: "object", properties: { mod: { type: "string", description: "The live mod it is part of." }, ...BANNER }, required: ["mod", "title"] },
   },
   {
-    name: "publish",
-    description:
-      "Package this world to share on GitHub: saves it into a folder and prints the folder's path. It holds world.json, the live mods, the packages they use, the entities and the mods' databases, never keys, recordings, chat or anything that names a player. GUIDE.md, Publishing this world, says how to put it on GitHub.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        handle: { type: "string", description: "Your player's GitHub user name, credited as the world's author." },
-        description: { type: "string", description: "One line on what the world is, shown under its name in Browse." },
-      },
-      required: ["handle", "description"],
-    },
-  },
-  {
     name: "say",
     description:
       "Post a short message (at most 400 characters) in the in-game chat, shown as your player's Claude. Chat belongs to the players: use it once, for a greeting like Hey everyone when you connect, so they see you are in, and never again; progress and results go through task, reveals through announce. To coordinate with other Claudes (who owns what, the exact export you need, who builds what), pass to: \"claudes\" instead, with no length limit: players don't see it in chat, other Claudes get it with their chat and it wakes their wait_for_chat when it names their player, claudes or everyone.",
@@ -383,7 +369,7 @@ export function createCli(ctx: CliContext) {
   /** Runs a tool and records who called it, how long it took, how much it returned and any error. */
   async function call(name: string, args: any, who: string) {
     const started = performance.now();
-    let result: string | { image: string } | { archive: Blob } | undefined;
+    let result: string | { image: string } | undefined;
     let error: string | undefined;
     try {
       return (result = await run(name, args, who));
@@ -391,7 +377,7 @@ export function createCli(ctx: CliContext) {
       error = String(e.message).slice(0, 300);
       throw e;
     } finally {
-      ctx.record.add("tool", who, { tool: name, args: brief(args), ms: Math.round(performance.now() - started), bytes: typeof result === "string" ? result.length : result && "image" in result ? result.image.length : result?.archive.size, error });
+      ctx.record.add("tool", who, { tool: name, args: brief(args), ms: Math.round(performance.now() - started), bytes: typeof result === "string" ? result.length : result?.image.length, error });
     }
   }
 
@@ -405,7 +391,7 @@ export function createCli(ctx: CliContext) {
 
   const card = (args: Record<string, unknown>) => Object.fromEntries(CARD_FIELDS.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
 
-  async function run(name: string, args: any, who: string): Promise<string | { image: string } | { archive: Blob }> {
+  async function run(name: string, args: any, who: string): Promise<string | { image: string }> {
     switch (name) {
       case "list_games":
         return JSON.stringify(ctx.sims.summary(), null, 2);
@@ -582,13 +568,6 @@ export function createCli(ctx: CliContext) {
             throw new ToolError(e.message);
           }),
         };
-      case "publish":
-        try {
-          const files = exportWorld({ data: ctx.data, entities: ctx.sims.hub.entities, nextId: ctx.sims.hub.nextId }, String(args.handle ?? ""), String(args.description ?? ""));
-          return { archive: await new Bun.Archive(files, { compress: "gzip" }).blob() };
-        } catch (e: any) {
-          throw new ToolError(e.message);
-        }
       case "add_package": {
         const spec = String(args.name);
         if (!/^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(@[\w.^~<>=*-]+)?$/.test(spec)) throw new ToolError("Give an npm package name, optionally with @version.");
@@ -684,7 +663,6 @@ export function createCli(ctx: CliContext) {
     const answer = async (): Promise<{ status: number; body: string | Blob; type?: string }> => {
       try {
         const result = await call(command, args, who);
-        if (typeof result !== "string" && "archive" in result) return { status: 200, body: result.archive, type: "application/gzip" };
         if (typeof result !== "string") return { status: 200, body: new Blob([Buffer.from(result.image, "base64")]), type: "image/jpeg" };
         return { status: 200, body: [result, ...takeChat(who), KEEP_LISTENING].join("\n\n") + "\n" };
       } catch (e: any) {
@@ -744,12 +722,6 @@ for arg do
     *) set -- "$@" --form-string "$name=$value" ;;
   esac
 done
-if [ "$tool" = publish ]; then
-  out="\${TMPDIR:-/tmp}/${name}-world"
-  curl -sS --fail-with-body -X POST -H "$auth" "$@" -o "$out.tar.gz" "$URL/cli/publish" || { cat "$out.tar.gz"; rm -f "$out.tar.gz"; exit 1; }
-  rm -rf "$out" && mkdir -p "$out" && tar xzf "$out.tar.gz" -C "$out" && rm "$out.tar.gz" && echo "$out"
-  exit
-fi
 if [ "$tool" = screenshot ]; then
   out="\${TMPDIR:-/tmp}/${name}-screenshot.jpg"
   curl -sS --fail-with-body -X POST -H "$auth" "$@" -o "$out" "$URL/cli/screenshot" && echo "$out"

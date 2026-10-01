@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sandbox</title>
+<meta name="description" content="Friends dream up their most epic game together, live.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='6' y='6' width='20' height='20' fill='%23ffb547'/></svg>">
+<link rel="preload" as="image" href="/clips/poster.jpg">
+<link rel="stylesheet" href="/front.css">
+<style>
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; min-height: 100%; background: #101113; color: var(--text); font: 16px/1.5 system-ui, sans-serif; }
+  a { color: inherit; }
+  .front { position: relative; inset: auto; min-height: 100vh; overflow: visible; }
+  .backdrop { position: fixed; }
+  #home .logo { margin-bottom: 20px; }
+  #home .lead { margin: 0 0 56px; font-size: 20px; color: var(--text); }
+  a.item { text-decoration: none; }
+  .note { margin: 20px 0 0; color: var(--dim); font-size: 14px; max-width: 560px; }
+  .note b { color: var(--text); font-weight: 600; }
+  .copy-row code { white-space: nowrap; }
+  ol.steps { margin: 12px 0 0; padding-left: 20px; color: var(--text); max-width: 560px; }
+  ol.steps li { margin: 6px 0; }
+  h2 { margin: 40px 0 8px; font: 700 14px/1.2 var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
+
+  /* Community: each world is its clip, its name and who made it. */
+  .worlds { display: flex; flex-direction: column; width: min(960px, 100%); }
+  .world { display: flex; align-items: center; gap: 24px; padding: 12px 0; border-bottom: 1px solid var(--line); color: var(--faint); text-decoration: none; }
+  .world .cover { width: 240px; opacity: .85; }
+  .world:is(:hover, :focus-within) .cover { opacity: 1; }
+  .world .what { flex: 1; min-width: 0; }
+  .world b { display: block; color: var(--text); font: 800 26px/1.15 var(--display); letter-spacing: .03em; text-transform: uppercase; overflow-wrap: break-word; }
+  .world small { display: block; margin-top: 6px; color: var(--dim); font-size: 15px; }
+  .world .quiet { margin: 10px 0 0; padding-left: 0; }
+  .cover video, .cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  #empty { margin-top: 8px; }
+
+  /* A world's own page. */
+  #world .stage { width: min(960px, 100%); aspect-ratio: 16 / 9; background: #1b1c1f; margin-bottom: 28px; }
+  #world .stage :is(video, img) { display: block; width: 100%; height: 100%; object-fit: cover; }
+  #world-by { margin: -24px 0 20px; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .12em; text-transform: uppercase; }
+  #world-about { margin: 0 0 28px; font-size: 18px; max-width: 640px; }
+  #world-tip { color: var(--text); }
+  .actions { display: flex; gap: 8px 24px; flex-wrap: wrap; align-items: center; margin-top: 20px; }
+  #report:disabled { opacity: .5; cursor: default; }
+
+  @media (max-width: 760px) {
+    #home .lead { font-size: 17px; margin-bottom: 40px; }
+    .world { flex-wrap: wrap; gap: 10px 16px; padding: 16px 0; }
+    .world .cover { width: 100%; }
+    .world b { font-size: 22px; }
+    .item { white-space: normal; }
+    .copy-row { flex-wrap: wrap; gap: 4px 12px; padding: 10px 0; }
+    .copy-row > span { width: 100%; }
+    .copy-row code { white-space: normal; word-break: break-all; }
+  }
+</style>
+</head>
+<body>
+<div id="backdrop" class="backdrop"></div>
+<main class="front">
+  <a class="back" id="back" href="/" hidden>Back</a>
+
+  <section id="home" class="screen" data-nav hidden>
+    <svg class="logo" id="logo"></svg>
+    <p class="lead">Friends dream up their most epic game together, live.</p>
+    <div class="items">
+      <a class="item" href="/join">Join world</a>
+      <a class="item" href="/worlds">Community worlds</a>
+      <a class="item" href="/host">Host world</a>
+    </div>
+  </section>
+
+  <section id="join" class="screen" data-nav hidden>
+    <h1>Join world</h1>
+    <form id="join-form"><label class="item entry"><input type="text" id="join-link" placeholder="Invite link" autocomplete="off" spellcheck="false"></label></form>
+    <p class="note">Paste the link your host sent, then press Enter.</p>
+    <div id="join-error" class="error"></div>
+  </section>
+
+  <section id="worlds" class="screen" data-nav hidden>
+    <h1>Community</h1>
+    <div class="worlds" id="world-list"></div>
+    <p id="empty" class="status" hidden></p>
+  </section>
+
+  <section id="world" class="screen" data-nav hidden>
+    <div class="stage" id="world-stage"></div>
+    <h1 id="world-title"></h1>
+    <p id="world-by"></p>
+    <p id="world-about"></p>
+    <div class="items"><button class="item" id="world-get">Host or remix it in the app</button></div>
+    <p class="note" id="world-tip" hidden>Link copied. In Sandbox, open <b>Worlds</b>, then <b>Community</b>, and paste it.</p>
+    <div class="actions"><a class="quiet" href="/host">Get the app</a><button class="quiet" id="report">Report</button></div>
+  </section>
+
+  <section id="host" class="screen" data-nav hidden>
+    <h1>Host world</h1>
+    <p class="lead">Download the desktop app.</p>
+    <div class="copy-row"><span>Mac and Linux</span><code id="install">curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash</code><button data-copy="install">Copy</button></div>
+    <div class="copy-row"><span>Windows</span><code>Not available yet</code></div>
+    <p class="note">Paste the line into Terminal. It installs Sandbox and opens it; run it again to update.</p>
+    <h2>If your Mac won't open it</h2>
+    <ol class="steps">
+      <li>Open System Settings, then Privacy &amp; Security.</li>
+      <li>Scroll down to “Sandbox” was blocked, and click Open Anyway.</li>
+      <li>Click Open. Your Mac remembers it from then on.</li>
+    </ol>
+  </section>
+
+  <div id="error" class="error"></div>
+</main>
+<script type="module" src="/site.js"></script>
+</body>
+</html>

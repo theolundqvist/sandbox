@@ -1,5 +1,5 @@
 // The real Electron app on a throwaway relay and launcher and a stand-in GitHub; run with `xvfb-run -a node --test desktop/app.test.mjs`.
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -15,7 +15,8 @@ const ELECTRON = createRequire(import.meta.url)("electron");
 const VERSION = JSON.parse(readFileSync(join(DESKTOP, "package.json"), "utf8")).version;
 const dir = mkdtempSync(join(tmpdir(), "sandbox-app-"));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const port = () => 20000 + Math.floor(Math.random() * 20000);
+// Below the kernel's ephemeral range (32768 and up), where outgoing connections already hold ports.
+const port = () => 20000 + Math.floor(Math.random() * 12000);
 const children = [];
 
 async function until(what, check, ms = 20000) {
@@ -61,27 +62,33 @@ const VOICE_KEY = "sk_test_voice_key";
 /** A small real JPEG, standing in for a world's picture. */
 const COVER = Buffer.from("/9j/4AAQSkZJRgABAgAAAQABAAD//gARTGF2YzU4LjEzNC4xMDAA/9sAQwAIFBQXFBcbGxsbGxsgHiAhISEgICAgISEhJCQkKioqJCQkISEkJCgoKiouLy4rKyorLy8yMjI8PDk5RkZIVlZn/8QASwABAQAAAAAAAAAAAAAAAAAAAAUBAQAAAAAAAAAAAAAAAAAAAAUQAQAAAAAAAAAAAAAAAAAAAAARAQAAAAAAAAAAAAAAAAAAAAD/wAARCAAIABADASIAAhEAAxEA/9oADAMBAAIRAxEAPwCGAIGP/9k=", "base64");
 
-/** A world published to GitHub, as the tarball GitHub serves: its files inside one folder named after the repo. */
-function publishedWorld() {
-  const root = join(dir, "published", "maker-tiny-isle-abc1234");
-  mkdirSync(join(root, "mods/isle"), { recursive: true });
-  mkdirSync(join(root, "state"));
-  writeFileSync(join(root, "world.json"), JSON.stringify({ name: "Tiny Isle", description: "One small island.", author: "maker", engine: "test", start: "blank", rules: "open" }));
-  writeFileSync(join(root, "mods/isle/server.ts"), `export default { load() {} };`);
-  writeFileSync(join(root, "cover.jpg"), COVER);
-  writeFileSync(join(root, "state/entities.json"), JSON.stringify({ nextId: 2, entities: { 1: { pos: [0, 0, 0], mesh: { shape: "box", size: [4, 1, 4], color: "#c9b27c" } } } }));
-  execFileSync("tar", ["czf", join(dir, "published", "tiny-isle.tgz"), "-C", join(dir, "published"), "maker-tiny-isle-abc1234"]);
-  return readFileSync(join(dir, "published", "tiny-isle.tgz"));
-}
-const tinyIsle = publishedWorld();
+/** A world shared to Community: an export's zip, as the Worker serves it. */
+const { zipSync } = createRequire(join(DESKTOP, "../package.json"))("fflate");
+const tinyIsle = Buffer.from(zipSync({ "config.json": Buffer.from(JSON.stringify({ name: "Tiny Isle", rules: "open", start: "blank" })), "cover.jpg": COVER, "world/mods/isle/server.ts": Buffer.from("export default { load() {} };") }));
 
-/** GitHub as the app sees it: the latest release, the installer script the app runs to update, the worlds in Browse and their tarballs; and ElevenLabs, which knows one key. */
+/** GitHub as the app sees it: the latest release and the installer script the app runs to update; Community, with one world and whatever the app shares; and ElevenLabs, which knows one key. */
 const releases = { latest: VERSION, installer: null };
 const RELEASES = port();
-const github = createServer((req, res) => {
-  if (req.url === "/worlds.json") return res.end(JSON.stringify([{ repo: "maker/tiny-isle", name: "Tiny Isle", description: "One small island." }, { repo: "maker/bare-rock", name: "Bare Rock", description: "No picture yet." }]));
-  if (req.url === "/raw/maker/tiny-isle/HEAD/cover.jpg") return res.end(COVER);
-  if (/^\/codeload\/(maker|stranger)\/tiny-isle\/tar\.gz\/HEAD$/.test(req.url)) return res.end(tinyIsle);
+const isle = { id: "tinyisle0001", title: "Tiny Isle", description: "One small island.", author: "maker", cover: `http://127.0.0.1:${RELEASES}/worlds/tinyisle0001/cover`, clip: null, link: "https://site.example/w/tinyisle0001" };
+const community = { shared: null, zip: null };
+const body = (req) => new Promise((resolve) => {
+  const chunks = [];
+  req.on("data", (c) => chunks.push(c));
+  req.on("end", () => resolve(Buffer.concat(chunks)));
+});
+const github = createServer(async (req, res) => {
+  if (req.url === "/worlds" && req.method === "POST") {
+    community.shared = await body(req);
+    return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001", ownerToken: "owner" }));
+  }
+  if (req.url === "/worlds") return res.end(JSON.stringify([isle]));
+  if (req.url === "/worlds/tinyisle0001") return res.end(JSON.stringify(isle));
+  if (req.url === "/worlds/tinyisle0001/cover") return res.end(COVER);
+  if (req.url === "/worlds/tinyisle0001/zip") return res.end(tinyIsle);
+  if (req.url === "/worlds/shared000001/zip" && req.method === "PUT") {
+    community.zip = await body(req);
+    return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001" }));
+  }
   if (req.url === "/latest") return res.end(JSON.stringify({ tag_name: `v${releases.latest}` }));
   if (req.url === "/hang") return;
   if (req.url === "/install" && releases.installer) return res.end(releases.installer);
@@ -143,7 +150,7 @@ async function launch(name, env = {}, player = "host") {
   const app = await _electron.launch({
     executablePath: ELECTRON,
     args: [DESKTOP, "--no-sandbox", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
-    env: { ...ownEnv, SANDBOX_STT: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_MARKET: `http://127.0.0.1:${RELEASES}/worlds.json`, SANDBOX_RAW: `http://127.0.0.1:${RELEASES}/raw`, SANDBOX_CODELOAD: `http://127.0.0.1:${RELEASES}/codeload`, ...env },
+    env: { ...ownEnv, SANDBOX_STT: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_COMMUNITY: `http://127.0.0.1:${RELEASES}`, ...env },
   });
   await app.context().addInitScript(OPEN_UI);
   const shell = await until("the start screen", async () => app.windows().find((w) => w.url().startsWith("sandbox://app/shell.html")));
@@ -416,29 +423,43 @@ describe("hosting and joining", () => {
     assert.equal(bare, "https://sandbox-relay.example.com/r/ab12cd/");
   });
 
-  test("Browse plays a listed world after one download, and a pasted link to another asks for trust first", async () => {
+  test("Community hosts a shared world after the trust question, and Share sends a world up with its picture and a clip of its timelapse", async () => {
     await shell.click("text=Worlds");
-    await shell.click("#go-browse");
+    await shell.click("#go-community");
     const game = await gamePage(app);
-    const listed = game.locator("#market .item");
-    await until("the listed worlds", async () => (await listed.count()) === 2);
-    assert.equal(await listed.first().textContent(), "Tiny IsleOne small island.Play");
-    assert.equal(await listed.first().locator("img").getAttribute("src"), `http://127.0.0.1:${RELEASES}/raw/maker/tiny-isle/HEAD/cover.jpg`);
-    assert.deepEqual(await until("the pictures", async () => (await pictures(game.locator("#market")))[0] && pictures(game.locator("#market"))), [16, null]);
-    await game.fill("#repo-link", "https://github.com/stranger/tiny-isle");
-    await game.press("#repo-link", "Enter");
-    await until("the trust question", async () => (await game.textContent("#ask-note")) === "This world runs code from stranger. Only play worlds from people you trust.");
-    await game.click("#ask-no");
-    await listed.first().click();
+    const listed = game.locator("#community-list .item");
+    await until("the community worlds", async () => (await listed.count()) === 1);
+    assert.equal(await listed.first().textContent(), "Tiny Isleby makerHostRemix");
+    await listed.first().locator("button", { hasText: "Host" }).click();
+    await until("the trust question", async () => (await game.textContent("#ask-note")) === "This world runs code from maker. Only play worlds from people you trust.");
+    await game.click("#ask-yes");
     await until("Stop the hosted world?", async () => /^Stop .+\?$/.test(await game.textContent("#ask-title")));
     await game.click("#ask-yes");
     await playing(game);
     assert.equal(await game.textContent("#world-name"), "Tiny Isle");
     const worlds = join(dir, "host", "Sandbox", "data", "worlds");
-    const isle = readdirSync(worlds).find((id) => id.startsWith("tiny-isle-"));
-    assert.deepEqual(readFileSync(join(worlds, isle, "cover.jpg")), COVER);
+    const isleId = readdirSync(worlds).find((id) => id.startsWith("tiny-isle-"));
+    assert.deepEqual(readFileSync(join(worlds, isleId, "cover.jpg")), COVER);
+
+    // The timelapse records a moment every two seconds; the clip needs two.
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    await game.locator("#menu-button").dispatchEvent("click");
+    await game.click("#rail [data-tab=world]");
+    await game.click("#world-share");
+    await until("the share page", async () => (await game.inputValue("#share-title")) === "Tiny Isle");
+    await game.fill("#share-description", "One small island, remixed.");
+    await game.click("#share-go");
+    await until("the shared link", async () => (await game.textContent("#share-link")) === "https://site.example/w/shared000001", 60_000);
+    const sent = community.shared.toString("latin1");
+    assert.match(sent, /name="title"\r\n\r\nTiny Isle\r\n/);
+    assert.match(sent, /name="visibility"\r\n\r\nlink\r\n/);
+    assert.match(sent, /name="remix_of"\r\n\r\ntinyisle0001\r\n/);
+    assert.ok(sent.includes(COVER.toString("latin1")), "the world's picture");
+    assert.match(sent, /name="clip"; filename="clip.webm"\r\nContent-Type: video\/webm\r\n\r\n\x1a\x45\xdf\xa3/);
+    assert.equal(community.zip.subarray(0, 2).toString(), "PK");
+    assert.equal(await game.textContent("#share-go"), "Update");
     await shell.click("#leave");
-    await until("the host's view of Tiny Isle", async () => readFileSync(join(worlds, isle, "cover.jpg")).length > COVER.length);
+    await until("the host's view of Tiny Isle", async () => readFileSync(join(worlds, isleId, "cover.jpg")).length > COVER.length);
   });
 
   test("a hosted world opens straight into the game, and Stop hosting in its World tab ends it and goes back to the title", async () => {
@@ -1160,7 +1181,7 @@ describe("the host closes the game", () => {
 
   test("when the host comes back with an updated game, players reload into it", async () => {
     const updated = join(dir, "updated");
-    for (const f of ["engine", "package.json", "tsconfig.json", "worlds.json"]) cpSync(join(ROOT, f), join(updated, f), { recursive: true });
+    for (const f of ["engine", "package.json", "tsconfig.json"]) cpSync(join(ROOT, f), join(updated, f), { recursive: true });
     symlinkSync(join(ROOT, "node_modules"), join(updated, "node_modules"));
     appendFileSync(join(updated, "engine", "client", "main.ts"), '\nconsole.debug("updated");\n');
     await game.evaluate(() => (window.before = true));

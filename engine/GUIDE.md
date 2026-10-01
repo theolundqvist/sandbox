@@ -240,12 +240,6 @@ Hooks must return quickly. `world.later(ms, (world) => ...)` runs something late
 - A reload test-runs your mod together with every live mod, so a mod that depends on another's exports is tested for real. Only errors in your mod fail the test.
 - Every accepted reload is committed. Use `history` and `restore` to go back.
 
-## Publishing this world
+## Sharing this world
 
-When your player wants to share the world, it goes to GitHub as a repository anyone can play from Sandbox's Browse screen.
-
-1. `publish handle=<their GitHub user name> description="<one line on the world>"` saves the world into a folder and prints its path: `world.json`, a README, the live mods, the packages they use, the entities and the mods' databases. Keys, recordings, chat, the player list and every entity or database row that names a player stay on the host's computer, and a file holding anything that looks like a key stops the publish.
-2. Mod code and banners keep what builders wrote. Search the folder for every player's name, show your player each hit, and change the mod before publishing again if they want it gone.
-3. Look at `cover.jpg`, the picture Worlds and Browse show: the host's own view of the world, which their game saves every few minutes and as they leave, without the HUD or anyone's name. If there is none yet or your player wants another, have them play where the world looks best and leave, then publish again.
-4. Push it with `gh`: in the folder, `git init -b main && git add -A && git commit -m "<world name>" && gh repo create <handle>/<repo> --public --source . --push`. To update it later, publish again and copy the new folder over your clone, keeping its `.git`.
-5. Anyone plays it by pasting the repository's link in Worlds, Browse. To list it there for everyone, open a pull request on theolundqvist/sandbox that adds `{ "repo": "<handle>/<repo>", "name": "<world name>", "description": "<one line>" }` to `worlds.json`.
+When your player wants to share the world, the host does it in the game: Tab, World, Share. It uploads the world's export with its picture and a clip of its timelapse to Community, as a link for friends or listed for everyone, and sharing again updates it. Anyone hosts or remixes it from Worlds, Community. Mod code and banners go as builders wrote them, so take players' names out of them first if they should stay private.

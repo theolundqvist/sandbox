@@ -1,6 +1,6 @@
 # App paths
 
-Every journey through the desktop app and the browser, and the test that covers it. `app` is `desktop/app.test.mjs` (Electron and Chromium under Xvfb), `launcher` is `engine/launcher.test.ts`, `update` is `desktop/update.test.mjs` (two real AppImage builds).
+Every journey through the desktop app and the browser, and the test that covers it. `app` is `desktop/app.test.mjs` (Electron and Chromium under Xvfb), `launcher` is `engine/launcher.test.ts`, `community` is `engine/community.test.ts` (two launchers and the Worker on wrangler dev), `update` is `desktop/update.test.mjs` (two real AppImage builds).
 
 Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and `SANDBOX_APPIMAGES=<dir with 0.2.0/ and 0.2.1/> xvfb-run -a node --test desktop/update.test.mjs`.
 
@@ -41,6 +41,12 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | Joined, host unreachable | Worlds, Continue | "Snow Race isn't answering. Ask the host if it's running, then retry." | app: host closes the game (silent path shares the screen) |
 | Joined, this computer offline | Worlds, Continue | "You're offline. Check your internet, then retry." | manual |
 | Forget joined | Worlds, Forget | row removed | app: Forget removes it |
+| Community | Worlds, Community | rows: looping clip, title, by author, Host, Remix | app: Community hosts a shared world; community |
+| Someone else's world | Community, Host or Remix | "This world runs code from <author>. Only play worlds from people you trust." first | app: Community hosts a shared world; community |
+| Remix | Community, Remix | a new world of this computer's, opened at its screen; shared later, it names the world it came from | community |
+| Pasted link | Community, Community link | the world's screen with Host and Remix, link-only worlds too | community |
+| Share | World tab or a world's Share | title and one line prefilled, Link only or Everyone, World picture or Current view; Share plays the timelapse for 12 s to record its clip, then Uploading…, then the link; again it says Update and changes the same world | app: Share sends a world up; community |
+| Stop sharing | Share, Stop sharing | "Remove from Community?", then gone from Community | community |
 | Continue, hosted | title, Continue (first item, focused) | the world last played is one this computer hosts; opens as from Worlds: Starting your server… when it isn't running, then the world | app: the title starts on Continue |
 | Continue, joined | title, Continue (first item, focused) | the world last played was joined; opens as from Worlds, with the saved key, so no name asked; a closed or unreachable host waits as from Worlds | app: the title starts on Continue |
 | Continue, world removed | Forget or Delete in Worlds | no Continue; title is Worlds, Join world, Host world, Settings, Quit | app: the title starts on Continue |

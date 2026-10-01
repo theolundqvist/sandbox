@@ -19,6 +19,13 @@
   .copy-row b { flex: 1; min-width: 0; font: 700 18px/1.2 var(--display); overflow: hidden; text-overflow: ellipsis; }
   .dot { width: 8px; height: 8px; background: #55524c; flex: none; } .dot.on { background: var(--ok); }
   #create .field { min-height: 56px; }
+  /* A community world: its clip, its name and who made it, then Host and Remix. */
+  .item.choice { cursor: default; }
+  .item.choice:focus-within { color: var(--text); }
+  .item.choice:focus-within::before, .item.choice:focus-within .cover { scale: 1; opacity: 1; }
+  .item.choice button { flex: none; background: none; border: 0; padding: 8px 6px; color: var(--dim); font: 700 16px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; cursor: pointer; outline: none; }
+  .item.choice button:is(:focus, :hover) { color: var(--accent); }
+  .cover video { display: block; width: 100%; height: 100%; object-fit: cover; }
   :is(#app, #invite) .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
 </style>
 </head>
@@ -39,7 +46,7 @@
 
   <section id="worlds" class="screen" data-nav hidden>
     <h1>Worlds</h1>
-    <div class="items"><button class="item" id="go-browse" data-to="browse">Browse</button></div>
+    <div class="items"><button class="item" id="go-community" data-to="community">Community</button></div>
     <div class="items" id="world-list"></div>
     <p id="no-worlds" class="status" hidden>No worlds yet</p>
     <div class="gap"></div>
@@ -47,11 +54,18 @@
     <input type="file" id="import-file" accept=".zip,application/zip" hidden>
   </section>
 
-  <section id="browse" class="screen" data-nav hidden>
-    <h1>Browse</h1>
-    <div class="items" id="market"></div>
-    <label class="item entry"><input type="text" id="repo-link" placeholder="GitHub link" autocomplete="off" spellcheck="false"></label>
-    <p id="market-status" class="status" hidden></p>
+  <section id="community" class="screen" data-nav hidden>
+    <h1>Community</h1>
+    <div class="items" id="community-list"></div>
+    <p id="community-status" class="status" hidden></p>
+    <div class="gap"></div>
+    <label class="item entry"><input type="text" id="community-link" placeholder="Community link" autocomplete="off" spellcheck="false"></label>
+  </section>
+
+  <section id="community-world" class="screen" data-nav hidden>
+    <h1 id="community-title"></h1>
+    <p class="lead" id="community-by"></p>
+    <div class="items"><button class="item" id="community-host">Host</button><button class="item" id="community-remix">Remix</button></div>
   </section>
 
   <section id="join" class="screen" data-nav hidden>
@@ -65,6 +79,7 @@
       <button class="item" id="world-play">Play</button>
       <button class="item" id="world-invite" data-to="invite">Invite</button>
       <button class="item" id="world-timelapse">Timelapse</button>
+      <button class="item" id="world-share">Share</button>
       <button class="item" id="world-rewind" data-to="rewind">Rewind</button>
       <button class="item" id="world-settings" data-to="configure">Settings</button>
       <button class="item" id="world-export">Export</button>
@@ -192,7 +207,7 @@
       document.activeElement.blur();
       if (current()?.id === "create") $("create-go").focus();
       if (current()?.id === "join") joinGame();
-      if (current()?.id === "browse") playLink($("repo-link").value);
+      if (current()?.id === "community") openLink($("community-link").value);
     }
   });
   for (const b of document.querySelectorAll("[data-to]")) b.onclick = () => show(b.dataset.to);
@@ -293,9 +308,9 @@
         }
         renderWorld();
         show("world");
-      } else if (jump.get("screen") === "browse") {
+      } else if (jump.get("screen") === "community") {
         if (!inApp) show("worlds");
-        $("go-browse").click();
+        $("go-community").click();
       } else if (jump.get("screen") === "create" || inApp) {
         pickWorld("new");
         show("create");
@@ -338,41 +353,61 @@
   $("go-create").addEventListener("click", () => pickWorld("new"));
   $("world-play").onclick = () => hostWorld(selected);
 
-  /** Browse and pasted GitHub links answer with data, not the menu's state. */
+  /** Community and pasted links answer with data, not the menu's state. */
   async function lookup(action, body) {
-    const res = await fetch(`/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: body && JSON.stringify(body) });
+    const res = await request(action, body);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     return data;
   }
-  const marketStatus = (text) => {
-    $("market-status").textContent = text;
-    $("market-status").hidden = !text;
+  const communityStatus = (text) => {
+    $("community-status").textContent = text;
+    $("community-status").hidden = !text;
   };
-  $("go-browse").addEventListener("click", () => {
-    marketStatus($("market").children.length ? "" : "Loading");
+  /** A world's clip looping over its picture, or the picture alone. */
+  const clipTile = (w) => {
+    const tile = coverTile(w.clip ? null : w.cover);
+    if (w.clip) tile.append(el("video", { src: w.clip, poster: w.cover, muted: true, loop: true, autoplay: true, playsInline: true }));
+    return tile;
+  };
+  $("go-community").addEventListener("click", () => {
+    communityStatus($("community-list").children.length ? "" : "Loading");
     attempt(async () => {
-      const listed = await lookup("browse");
-      marketStatus("");
-      rebuild($("market"), listed.map((w) => {
-        const b = el("button", { className: "item pictured" }, coverTile(w.cover), el("span", { className: "what", textContent: w.name }, el("small", { textContent: w.description })), el("span", { className: "value", textContent: "Play" }));
-        b.dataset.key = w.repo;
-        b.onclick = () => install(w.repo);
-        return b;
+      const listed = await lookup("community", {});
+      communityStatus(listed.length ? "" : "No worlds shared yet");
+      rebuild($("community-list"), listed.map((w) => {
+        const host = el("button", { textContent: "Host", onclick: () => getWorld(w, true) });
+        const remix = el("button", { textContent: "Remix", onclick: () => getWorld(w, false) });
+        host.dataset.key = `host-${w.id}`;
+        remix.dataset.key = `remix-${w.id}`;
+        return el("div", { className: "item pictured choice" }, clipTile(w), el("span", { className: "what", textContent: w.title }, el("small", { textContent: `by ${w.author}` })), host, remix);
       }));
-    }).finally(() => $("market-status").textContent === "Loading" && marketStatus(""));
+    }).finally(() => $("community-status").textContent === "Loading" && communityStatus(""));
   });
-  /** Worlds that aren't on the list in Browse run code from someone the host has to trust. */
-  const playLink = (link) =>
+  /** A pasted link opens its world's own screen, link-only worlds included. */
+  let opened = null;
+  const openLink = (link) =>
     attempt(async () => {
-      const { repo, owner, listed } = await lookup("check", { repo: link });
-      if (listed || (await ask(repo.split("/")[1], "Play", `This world runs code from ${owner}. Only play worlds from people you trust.`))) await install(repo);
+      opened = await lookup("community-world", { link });
+      $("community-title").textContent = opened.title;
+      $("community-by").textContent = [`by ${opened.author}`, opened.description].filter(Boolean).join(" · ");
+      show("community-world");
     });
-  async function install(repo) {
-    if (state.running && !(await ask(`Stop ${state.running.name}?`, "Stop and play"))) return;
-    marketStatus("Downloading");
-    await attempt(async () => play(await api("install", { repo, trust: true })));
-    marketStatus("");
+  $("community-host").onclick = () => getWorld(opened, true);
+  $("community-remix").onclick = () => getWorld(opened, false);
+  /** Host plays a world at once; Remix makes it a world of this computer's to change. Anyone else's world runs their code here, so it asks first. */
+  async function getWorld(w, hosting) {
+    if (!w.mine && !(await ask(w.title, hosting ? "Host" : "Remix", `This world runs code from ${w.author}. Only play worlds from people you trust.`))) return;
+    if (hosting && state.running && !(await ask(`Stop ${state.running.name}?`, "Stop and host"))) return;
+    communityStatus("Downloading");
+    await attempt(async () => {
+      const s = await api("community-get", { id: w.id, host: hosting, trust: true });
+      if (hosting) return play(s);
+      selected = s.world;
+      renderWorld();
+      show("world");
+    });
+    communityStatus("");
   }
   /** The timelapse plays from the world's own server, so a world that isn't running is hosted first. */
   $("world-timelapse").onclick = async () => {
@@ -380,6 +415,14 @@
     await attempt(async () => {
       const s = state.running?.id === selected ? state : await api("host", { id: selected });
       location.assign(`./#watch=${s.running.hostKey}`);
+    });
+  };
+  /** Sharing records a clip of the timelapse in the game, so the world is hosted first and opens on its Share page. */
+  $("world-share").onclick = async () => {
+    if (state.running && state.running.id !== selected && !(await ask(`Stop ${state.running.name}?`, "Stop and share"))) return;
+    await attempt(async () => {
+      const s = state.running?.id === selected ? state : await api("host", { id: selected });
+      location.assign(`./#invite=${s.running.hostKey}&share`);
     });
   };
   $("world-stop").onclick = async () => (await ask(`Stop ${state.running.name}?`, "Stop")) && attempt(() => api("stop", {}));

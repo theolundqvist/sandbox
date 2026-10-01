@@ -37,7 +37,8 @@ const $ = <T extends HTMLElement>(id: string) => (byId.get(id) ?? document.getEl
 const all = <T extends Element>(selector: string) => [...document.querySelectorAll<T>(selector), ...uiRoot.querySelectorAll<T>(selector)];
 /** The focused element, inside the menu too. */
 const focused = () => uiRoot.activeElement ?? document.activeElement;
-(await import(["/front.js"][0]!)).navigateIn(uiRoot);
+const front = await import(["/front.js"][0]!);
+front.navigateIn(uiRoot);
 const hashParams = new URLSearchParams(location.hash.slice(1));
 
 // Through the relay the world lives at /r/<room>/; its own requests reach the room by cookie, but links and Claude need the full address.
@@ -792,7 +793,7 @@ async function loadMod(name: string, url: string | null, rebuild = true) {
 }
 
 /** The slot for mods' blocks on the menu page with this title: mods share pages by title, join the engine's by using its title, and a page no mod fills any more goes away. Resume, Timelapse and Leave are the engine's. */
-const CORE_PAGES = ["claude", "invite", "builders", "mods", "settings", "world"];
+const CORE_PAGES = ["claude", "invite", "builders", "mods", "settings", "world", "share"];
 const PAGE_ALIASES: Record<string, string> = { help: "Settings", controls: "Settings", claude: "Agent" };
 const ENGINE_ENTRIES = ["resume", "timelapse", "leave"];
 let pageSeq = 0;
@@ -1124,24 +1125,38 @@ async function screenshot() {
   });
 }
 
-/** The host's own view of their world, without the HUD or name tags, is its picture in Worlds and Browse: sent every few minutes and as they leave. Name tags, the engine's and mods', are sprites drawn from a canvas. */
-const hostsThisWorld = hosting?.running?.id === info.id;
-function sendCover(keepalive: boolean) {
-  if (!hostsThisWorld || !me || replay || screen.scene === false) return;
+/** Pictures of the world that leave this computer go without name tags, the engine's and mods': sprites drawn from a canvas. */
+function untagged(render: () => void) {
   const tags: THREE.Object3D[] = [];
   scene.traverseVisible((o) => void ((o as THREE.Sprite).isSprite && ((o as THREE.Sprite).material.map as THREE.CanvasTexture | null)?.isCanvasTexture && tags.push(o)));
   for (const tag of tags) tag.visible = false;
-  draw(0);
+  render();
+  for (const tag of tags) tag.visible = true;
+}
+/** Draws the middle 16:9 of the game's view into a canvas of this size; call it right after the frame is drawn, while it is still in the drawing buffer. */
+function frameInto(out: HTMLCanvasElement) {
   const from = renderer.domElement;
   const h = Math.min(from.height, (from.width * 9) / 16);
   const w = (h * 16) / 9;
+  out.getContext("2d")!.drawImage(from, (from.width - w) / 2, (from.height - h) / 2, w, h, 0, 0, out.width, out.height);
+}
+/** The host's own view as a 960×540 JPEG in base64, without the HUD or name tags; small enough for a keepalive request (64 KB). Encoded synchronously, since the page may be going away. */
+function viewJpeg() {
   const out = Object.assign(document.createElement("canvas"), { width: 960, height: 540 });
-  out.getContext("2d")!.drawImage(from, (from.width - w) / 2, (from.height - h) / 2, w, h, 0, 0, 960, 540);
-  for (const tag of tags) tag.visible = true;
-  // Encoded synchronously, since the page may be going away, and small enough for a keepalive request (64 KB).
+  untagged(() => {
+    draw(0);
+    frameInto(out);
+  });
   let jpeg = "";
   for (const quality of [0.8, 0.6, 0.4]) if ((jpeg = out.toDataURL("image/jpeg", quality)).length < 80_000) break;
-  const body = Uint8Array.from(atob(jpeg.split(",")[1]!), (c) => c.charCodeAt(0));
+  return jpeg.split(",")[1]!;
+}
+
+/** The host's own view of their world is its picture in Worlds and Community: sent every few minutes and as they leave. */
+const hostsThisWorld = hosting?.running?.id === info.id;
+function sendCover(keepalive: boolean) {
+  if (!hostsThisWorld || !me || replay || screen.scene === false) return;
+  const body = Uint8Array.from(atob(viewJpeg()), (c) => c.charCodeAt(0));
   fetch(`/api/menu/cover?id=${info.id}`, { method: "POST", keepalive, headers: { authorization: `Bearer ${hostKey}` }, body }).catch(() => {});
 }
 setInterval(() => document.hidden || sendCover(false), 3 * 60_000);
@@ -1224,6 +1239,32 @@ $("timelapse").onclick = async () => {
   button.textContent = "Timelapse";
   if (played) showMenu(false);
 };
+
+/** While Share records its clip: each drawn frame, without name tags, copied into the small canvas being recorded. */
+let filming: HTMLCanvasElement | null = null;
+const CLIP_MS = 12_000;
+/** The whole timelapse squeezed into a 12 s, muted, 640×360 WebM for Community, recorded as it plays here; null when there is nothing to replay yet. */
+async function recordClip() {
+  const res = await fetch("/api/timelapse", { headers: { authorization: `Bearer ${key}` } });
+  const frames: Moment[] = res.ok ? await res.json() : [];
+  if (frames.length < 2) return null;
+  startReplay(frames);
+  replay!.speed = (frames.length * replay!.step) / CLIP_MS;
+  const out = Object.assign(document.createElement("canvas"), { width: 640, height: 360 });
+  const type = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find((t) => MediaRecorder.isTypeSupported(t))!;
+  const recorder = new MediaRecorder(out.captureStream(24), { mimeType: type, videoBitsPerSecond: 600_000 });
+  const chunks: Blob[] = [];
+  recorder.ondataavailable = (e) => chunks.push(e.data);
+  const stopped = new Promise((resolve) => (recorder.onstop = resolve));
+  filming = out;
+  recorder.start(1000);
+  await new Promise((resolve) => setTimeout(resolve, CLIP_MS));
+  recorder.stop();
+  await stopped;
+  filming = null;
+  leaveReplay();
+  return new Blob(chunks, { type: "video/webm" });
+}
 
 function startReplay(frames: Moment[]) {
   // About 70 s at normal speed, and shots of about 4 s.
@@ -2359,6 +2400,59 @@ $("world-export").onclick = async () => {
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
 };
+/** Share: the world to Community, as a link for friends or for everyone, with its picture and a clip of its timelapse. Sharing again updates it. */
+const blobBase64 = (blob: Blob) =>
+  new Promise<string>((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1]!);
+    reader.readAsDataURL(blob);
+  });
+let viewPicture = "";
+async function showPicture() {
+  const img = $<HTMLImageElement>("share-picture");
+  if ($("share-cover").dataset.value === "view") return void (img.src = `data:image/jpeg;base64,${(viewPicture = viewJpeg())}`);
+  const res = await hostMenu(`cover?id=${info.id}`);
+  img.src = res.ok ? URL.createObjectURL(await res.blob()) : "";
+  if (!res.ok) img.removeAttribute("src");
+}
+const visibility = front.pick($("share-visibility"));
+const coverPick = front.pick($("share-cover"), showPicture);
+async function openShare(status = "") {
+  const s = await (await hostMenu("state")).json();
+  const w = s.worlds.find((x: { id: string }) => x.id === info.id);
+  const shared = w?.shared;
+  const live = await (await fetch("/api/status", { headers: { authorization: `Bearer ${key}` } })).json();
+  const titles: string[] = live.mods.map((m: { about?: { title?: string } }) => m.about?.title).filter(Boolean);
+  $<HTMLInputElement>("share-title").value = shared?.title ?? info.name;
+  $<HTMLInputElement>("share-description").value = shared?.description ?? (titles.length > 3 ? `${titles.slice(0, 3).join(", ")} and ${titles.length - 3} more` : titles.join(", "));
+  visibility.set(shared?.visibility ?? "link");
+  coverPick.set(w?.cover ? "world" : "view");
+  $("share-shared").hidden = !shared?.link;
+  $("share-link").textContent = shared?.link ?? "";
+  $("share-stop").textContent = "Stop sharing";
+  $("share-go").textContent = shared?.link ? "Update" : "Share";
+  $("share-status").textContent = status;
+  openPage("share");
+  $("page-title").textContent = "Share";
+  void showPicture();
+}
+$("world-share").onclick = () => openShare();
+$("share-go").onclick = async () => {
+  const cover = $("share-cover").dataset.value === "view" ? viewPicture || viewJpeg() : undefined;
+  const form = { id: info.id, title: $<HTMLInputElement>("share-title").value, description: $<HTMLInputElement>("share-description").value, visibility: $("share-visibility").dataset.value, author: me, cover };
+  showMenu(false);
+  toast("Recording a clip of the timelapse…");
+  const clip = await recordClip().catch(() => null);
+  await openMenu();
+  await openShare("Uploading…");
+  const res = await hostMenu("share", { ...form, clip: clip && (await blobBase64(clip)) });
+  await openShare(res.ok ? "" : (await res.json()).error);
+};
+$("share-stop").onclick = async () => {
+  if ($("share-stop").textContent === "Stop sharing") return void ($("share-stop").textContent = "Remove from Community?");
+  const res = await hostMenu("unshare", { id: info.id });
+  await openShare(res.ok ? "" : (await res.json()).error);
+};
 $("world-stop").onclick = async () => {
   if ($("world-stop").textContent === "Stop hosting") return void ($("world-stop").textContent = "Stop for everyone?");
   leaving = true;
@@ -2593,7 +2687,8 @@ renderer.setAnimationLoop(() => {
   shakeCamera(dt);
   updateColliders(now);
   const drawStart = performance.now();
-  if (screen.scene !== false) draw(dt);
+  if (screen.scene !== false && filming) untagged(() => (draw(dt), frameInto(filming!)));
+  else if (screen.scene !== false) draw(dt);
   view.position.sub(shakeOffset);
   if (heldMaterials) for (const m of heldMaterials.splice(0)) disposeMaterial.call(m);
   heldMaterials = null;
@@ -2734,4 +2829,6 @@ if (watching) {
   toTop(howto);
   stopSpectating();
   connect();
+  // The main menu's Share opens the world straight on its Share page.
+  if (hashParams.has("share") && hostsThisWorld) void openMenu().then(() => openShare());
 }

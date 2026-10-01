@@ -257,7 +257,7 @@ function startServer() {
 /** Hosts a world of this computer's: opens its screen in the main menu here; the launcher shares whatever it hosts through the relay. */
 async function hostGame(target) {
   const { base, key } = await startServer();
-  const screen = { new: "screen=create", browse: "screen=browse" }[target] ?? `world=${target}`;
+  const screen = { new: "screen=create", community: "screen=community" }[target] ?? `world=${target}`;
   return play(`${base}/menu#key=${key}&${screen}`);
 }
 

@@ -111,7 +111,7 @@ A world can hold several games. Each runs in its own process with its own save, 
 ## Share a world
 
 - **Export** a world from its menu screen, even while it runs: one zip with every mod, its history and each mod's database. **Import world** under Worlds hosts it as a new world. Keys stay with the original host.
-- **Publish** by asking your agent to run `publish`. It packages mods, entities and mod databases for a GitHub repository, without keys, recordings, chat or player names. Others install it from **Browse** under Worlds with the repository link.
+- **Share** from the game's World tab: the world goes to Community with its picture and a 12-second clip of its timelapse, as a link for friends or listed for everyone. Anyone hosts or remixes it from **Community** under Worlds. [docs/community.md](docs/community.md) says what goes up.
 
 ## Trust
 

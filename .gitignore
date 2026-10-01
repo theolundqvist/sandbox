@@ -4,3 +4,4 @@ data
 .env
 .claude/
 .playwright-mcp/
+.wrangler
