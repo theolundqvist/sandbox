@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Hosts a throwaway world with the engine a build packaged, headless, and checks the world answers through its launcher.
+#   ./smoke dist/win-unpacked/resources/engine
+set -euo pipefail
+engine="$1"
+data="$(mktemp -d)"
+# Git Bash on Windows hands bun a path it can open.
+data="$(cd "$data" && (pwd -W 2>/dev/null || pwd))"
+port=$((20000 + RANDOM % 20000))
+base="http://127.0.0.1:$port"
+PORT=$port SANDBOX_DATA="$data" SANDBOX_NO_OPEN=1 SANDBOX_RELAY=http://127.0.0.1:9 "$engine/bun" "$engine/engine/launcher.ts" >"$data/launcher.log" 2>&1 &
+launcher=$!
+fail() {
+  echo "$1" >&2
+  echo "--- launcher.log"
+  cat "$data/launcher.log"
+  exit 1
+}
+
+key=
+for _ in $(seq 120); do
+  key=$(curl -fsS "$base/api/local-key" 2>/dev/null | sed -n 's/.*"key":"\([^"]*\)".*/\1/p') && [ -n "$key" ] && break
+  sleep 0.5
+done
+[ -n "$key" ] || fail "The launcher never answered."
+menu() { curl -sS --fail-with-body -X POST "$base/api/menu/$1" -H "authorization: Bearer $key" -H 'content-type: application/json' -d "${2:-"{}"}"; }
+
+out=$(menu create '{"name":"Smoke Test","rules":"open","start":"basics"}') || fail "Create failed: $out"
+invite=$(sed -n 's/.*"invite":"\([^"]*\)".*/\1/p' <<<"$out")
+player=$(curl -fsS -X POST "$base/api/join" -d "{\"invite\":\"$invite\",\"name\":\"smoke\"}" | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')
+status=$(curl -fsS "$base/api/status" -H "authorization: Bearer $player")
+echo "$status" | head -c 600
+echo
+grep -q '"Smoke Test"' <<<"$status" || fail "/api/status doesn't name the world."
+out=$(menu stop) || fail "Stop failed: $out"
+# Stopped, not killed: the world saved before it exited.
+grep -q "exited with code 0" "$data/launcher.log" || fail "The world didn't stop by itself."
+kill $launcher
+echo "Smoke passed on port $port."

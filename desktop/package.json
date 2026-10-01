@@ -48,6 +48,10 @@
       "target": "AppImage",
       "category": "Game"
     },
+    "win": {
+      "target": "zip",
+      "executableName": "Sandbox"
+    },
     "extraResources": [
       {
         "from": "server",

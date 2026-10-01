@@ -9,4 +9,5 @@ mkdir -p server/engine
 cp -R ../engine ../package.json server/engine/
 cp -R ../node_modules server/engine/node_modules
 rm -rf server/engine/node_modules/.bin server/engine/engine/launcher.test.ts
-cp -L "$(command -v bun)" server/engine/bun
+# bun on a Mac or Linux, bun.exe on Windows.
+cp "$(bun -e 'process.stdout.write(process.execPath)')" server/engine/

@@ -20,9 +20,12 @@ jobs:
             target: --mac zip --x64
           - os: ubuntu-latest
             target: --linux
+          - os: windows-latest
+            target: --win zip --x64
     runs-on: ${{ matrix.os }}
     defaults:
       run:
+        shell: bash
         working-directory: desktop
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +35,23 @@ jobs:
       - run: |
           [[ "$GITHUB_REF" == refs/tags/v* ]] && set -- "-c.extraMetadata.version=${GITHUB_REF_NAME#v}"
           bunx electron-builder ${{ matrix.target }} --publish never "$@"
+      - name: Host a world with the packaged engine
+        run: ./smoke "$(ls -d dist/*/resources/engine dist/*/Sandbox.app/Contents/Resources/engine 2>/dev/null | head -1)"
+      - name: Install, then update, with install.ps1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $server = Start-Process python -ArgumentList '-m', 'http.server', '8123', '--directory', 'dist' -PassThru -WindowStyle Hidden
+          Start-Sleep 3
+          $env:SANDBOX_RELEASE = 'http://127.0.0.1:8123'
+          Get-Content install.ps1 -Raw | Invoke-Expression
+          Get-Process Sandbox | Stop-Process
+          Get-Content install.ps1 -Raw | Invoke-Expression
+          foreach ($file in "$env:LOCALAPPDATA\Programs\Sandbox\Sandbox.exe", "$env:LOCALAPPDATA\Programs\Sandbox\resources\engine\bun.exe", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Sandbox.lnk") {
+            if (-not (Test-Path $file)) { throw "Missing $file" }
+          }
+          Get-Process Sandbox | Stop-Process
+          Stop-Process $server
       - uses: actions/upload-artifact@v4
         with:
           name: sandbox-${{ matrix.os }}
@@ -39,6 +59,17 @@ jobs:
           path: |
             desktop/dist/Sandbox-*.zip
             desktop/dist/Sandbox-*.AppImage
+
+  engine-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun test engine/world.test.ts engine/games.test.ts engine/launcher.test.ts
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -55,5 +86,5 @@ jobs:
         run: |
           cp desktop/build/icon.png dist/sandbox.png
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --title "Sandbox $GITHUB_REF_NAME" --notes "Install or update: curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash"
+            || gh release create "$GITHUB_REF_NAME" --title "Sandbox $GITHUB_REF_NAME" --notes "Install or update on a Mac or Linux: curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash. On Windows, in PowerShell: irm https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install.ps1 | iex"
           gh release upload "$GITHUB_REF_NAME" dist/* --clobber
