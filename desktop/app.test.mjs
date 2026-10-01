@@ -839,7 +839,10 @@ describe("in a browser", () => {
   test("/menu on the host's own computer needs no key, and offers the desktop app", async () => {
     await page.goto(`${other.base}/menu`);
     await page.click("#go-app");
-    assert.match(await page.textContent("#app-install"), /desktop\/install \| bash -s -- '.+#key=/);
+    assert.deepEqual(await page.locator("#app-rows > div").evaluateAll((rows) => rows.map((r) => r.dataset.os)), ["linux", "windows", "mac"]);
+    assert.match(await page.textContent("#app-linux"), /desktop\/install \| bash -s -- '.+#key=/);
+    assert.match(await page.textContent("#app-windows"), /desktop\/install\.ps1\)\)\) '.+#key=/);
+    assert.match(await page.textContent("#app-rows .note"), /^Press Ctrl\+Alt\+T\. Paste the line/);
   });
 
   test("an invite link joins through the relay with a name and Play, and nothing else", async () => {
