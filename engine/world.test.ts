@@ -23,10 +23,11 @@ beforeAll(async () => {
   await new Promise((resolve) => (player.onopen = resolve));
 }, 30_000);
 
-afterAll(() => {
+afterAll(async () => {
   player?.close();
   world?.kill();
-  rmSync(dir, { recursive: true, force: true });
+  await world?.exited;
+  rmSync(dir, { recursive: true, force: true, maxRetries: 20 });
 });
 
 async function tool(name: string, args: Record<string, unknown> = {}) {
@@ -200,7 +201,8 @@ test("a Claude can show colliders in its player's game", async () => {
   expect(received.some((m) => m.t === "colliders" && m.on === true)).toBe(true);
 });
 
-test("test runs of a mod don't keep copies of the world's databases alive", async () => {
+// It reads the world's memory from /proc.
+test.skipIf(process.platform !== "linux")("test runs of a mod don't keep copies of the world's databases alive", async () => {
   await write("mods/ledger/server.ts", serverMod(`{ load(world) { world.db.run("create table if not exists t (s text)"); world.db.transaction(() => { for (let i = 0; i < 2000; i++) world.db.run("insert into t values (?)", "x".repeat(4000)); }); } }`));
   expect((await tool("reload", { mod: "ledger" })).text).toStartWith("ledger v1 is live");
   await write("mods/broken/server.ts", serverMod(`{ tick() { throw new Error("broken"); } }`));

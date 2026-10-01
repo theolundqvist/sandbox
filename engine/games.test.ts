@@ -48,7 +48,7 @@ afterAll(async () => {
   for (const p of Object.values(players)) p.ws.close();
   world?.kill();
   await world?.exited;
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 20 });
 });
 
 async function until(ok: () => unknown, ms = 10_000) {

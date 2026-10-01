@@ -1,10 +1,10 @@
 // A throwaway launcher and relay over real HTTP: only someone at the launcher's own machine gets the host key.
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { unzipSync, zipSync } from "fflate";
 import { networkInterfaces, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Subprocess } from "bun";
 import { openStore, seedStore } from "./world";
 
@@ -34,9 +34,11 @@ beforeAll(async () => {
   await Promise.all([up(`http://127.0.0.1:${RELAY}/`), up(`http://127.0.0.1:${LAUNCHER}/menu`)]);
 });
 
-afterAll(() => {
+afterAll(async () => {
   for (const p of procs) p.kill();
-  rmSync(dir, { recursive: true, force: true });
+  await Promise.allSettled(procs.map((p) => p.exited));
+  // Windows keeps a file locked for a moment after the process holding it exits.
+  rmSync(dir, { recursive: true, force: true, maxRetries: 20 });
 });
 
 const localKey = (base: string, headers: Record<string, string> = {}) => fetch(`${base}/api/local-key`, { headers });
@@ -130,9 +132,11 @@ test("a computer without git hosts worlds, reloads mods, and says history needs 
   // Only bun on the PATH: any git call would fail to spawn and stop the world.
   const bin = join(dir, "nogit-bin");
   mkdirSync(bin);
-  symlinkSync(Bun.which("bun")!, join(bin, "bun"));
+  // Windows links a file only without admin rights as a hard link.
+  const bun = join(bin, basename(process.execPath));
+  (process.platform === "win32" ? linkSync : symlinkSync)(process.execPath, bun);
   const port = LAUNCHER + 500;
-  procs.push(Bun.spawn([join(bin, "bun"), join(import.meta.dir, "launcher.ts")], { env: { PATH: bin, HOME: dir, SANDBOX_RELAY: env.SANDBOX_RELAY, PORT: String(port), SANDBOX_DATA: join(dir, "nogit"), SANDBOX_NO_OPEN: "1" }, stdout: "ignore", stderr: "ignore" }));
+  procs.push(Bun.spawn([bun, join(import.meta.dir, "launcher.ts")], { env: { PATH: bin, HOME: dir, SANDBOX_RELAY: env.SANDBOX_RELAY, PORT: String(port), SANDBOX_DATA: join(dir, "nogit"), SANDBOX_NO_OPEN: "1" }, stdout: "ignore", stderr: "ignore" }));
   await up(`http://127.0.0.1:${port}/menu`);
   const { key } = await (await localKey(`http://127.0.0.1:${port}`)).json();
   const s = await (await fetch(`http://127.0.0.1:${port}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ name: "No Git", start: "basics" }) })).json();
@@ -244,7 +248,7 @@ test("the host pastes a speech key from any provider: recognised by its shape or
   expect(await (await menu("voice", { key: "AIzaNotIt" })).json()).toEqual({ error: "Gemini didn't accept that key. Copy it again from aistudio.google.com." });
   expect(await (await menu("voice", { key: "not-anyones-key" })).json()).toEqual({ error: "Groq, OpenAI, Gemini, ElevenLabs, or Deepgram didn't accept that key. Copy all of it again." });
 
-  expect(statSync(secrets).mode & 0o777).toBe(0o600);
+  if (process.platform !== "win32") expect(statSync(secrets).mode & 0o777).toBe(0o600);
   const files = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(d, e.name)) : [join(d, e.name)]));
   expect(files(join(data, "worlds")).filter((f) => Object.values(keys).some((k) => readFileSync(f).includes(k)))).toEqual([]);
 
@@ -262,7 +266,8 @@ test("the host pastes a speech key from any provider: recognised by its shape or
   for (const k of ["gsk_test_groq_key", "sk-proj-test_openai_key", "AIzaTest_gemini_key", "sk_test_elevenlabs_key", "plain-key-no-provider-shape"]) expect(printed).not.toContain(k);
 }, 60_000);
 
-test("a world that crashes is hosted again by itself, a Claude waiting on it is told to try again, its players' games reconnect and hear why, and the crash is in world.log", async () => {
+// It finds the world's process in /proc.
+test.skipIf(process.platform !== "linux")("a world that crashes is hosted again by itself, a Claude waiting on it is told to try again, its players' games reconnect and hear why, and the crash is in world.log", async () => {
   const port = LAUNCHER + 700;
   const data = join(dir, "crashy");
   const launcher = Bun.spawn(["bun", join(import.meta.dir, "launcher.ts")], { env: { ...env, PORT: String(port), SANDBOX_DATA: data, SANDBOX_NO_OPEN: "1" }, stdout: "ignore", stderr: "ignore" });

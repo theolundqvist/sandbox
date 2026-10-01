@@ -70,7 +70,7 @@ async function stop() {
   running = null;
   for (const ws of players) ws.close(4001, "The host switched worlds");
   stopping.add(current.proc);
-  current.proc.kill("SIGTERM");
+  current.proc.send({ t: "stop" });
   await current.recorded;
 }
 
@@ -594,4 +594,7 @@ if (state.hosting && existsSync(join(WORLDS, state.hosting))) await host(state.h
 const menuLink = `http://localhost:${PORT}/menu#key=${state.hostKey}`;
 // The link carries the host key, so it goes only to a terminal, never into a log file; on this computer the menu finds the key by itself.
 console.log(process.stdout.isTTY ? `\n  Main menu (keep private): ${menuLink}\n` : `Main menu: http://localhost:${PORT}/menu`);
-if (process.platform === "darwin" && !process.env.SANDBOX_NO_OPEN) Bun.spawn(["open", menuLink]);
+/** How a desktop opens a link in the browser; a Linux launcher is usually a server, so it only prints the link. */
+const BROWSER: Partial<Record<NodeJS.Platform, string[]>> = { darwin: ["open"], win32: ["rundll32", "url.dll,FileProtocolHandler"] };
+const opener = BROWSER[process.platform];
+if (opener && !process.env.SANDBOX_NO_OPEN) Bun.spawn([...opener, menuLink]);

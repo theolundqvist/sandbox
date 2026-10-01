@@ -8,11 +8,12 @@ const { delimiter, join, normalize } = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 const mac = process.platform === "darwin";
+const windows = process.platform === "win32";
 const BAR = 36;
 const RELAY = process.env.SANDBOX_RELAY ?? "https://sandbox-relay.lundqvistliss.com";
 const RELEASES = process.env.SANDBOX_UPDATES ?? "https://api.github.com/repos/theolundqvist/sandbox/releases/latest";
 /** The installer and the build from the release being installed, so a broken master never breaks an update. */
-const INSTALLER = (version) => process.env.SANDBOX_INSTALLER ?? `https://raw.githubusercontent.com/theolundqvist/sandbox/v${version}/desktop/install`;
+const INSTALLER = (version) => process.env.SANDBOX_INSTALLER ?? `https://raw.githubusercontent.com/theolundqvist/sandbox/v${version}/desktop/install${windows ? ".ps1" : ""}`;
 const DOWNLOADS = (version) => process.env.SANDBOX_RELEASE ?? `https://github.com/theolundqvist/sandbox/releases/download/v${version}`;
 const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"]);
 /** Pages a game may open in the browser: where the host gets a speech key, from each provider in engine/voice.ts, and where a player downloads an agent app from the Agent page. */
@@ -42,7 +43,7 @@ app.on("second-instance", (_event, argv) => {
 
 /** The engine this app hosts worlds with: its launcher, run by the bun shipped inside the app, with its worlds in the app's data folder. */
 const ENGINE = app.isPackaged ? join(process.resourcesPath, "engine") : join(__dirname, "..");
-const BUN = app.isPackaged ? join(ENGINE, "bun") : "bun";
+const BUN = app.isPackaged ? join(ENGINE, windows ? "bun.exe" : "bun") : "bun";
 /** The game's own front end (fonts, clips, menu styles), which the start screen uses too, so it works offline. */
 const FRONT = join(ENGINE, "engine/client");
 protocol.registerSchemesAsPrivileged([{ scheme: "sandbox", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
@@ -283,7 +284,8 @@ async function stopServer() {
   if (!current) return;
   server = null;
   const exited = new Promise((resolve) => current.proc.once("exit", resolve));
-  current.proc.kill("SIGTERM");
+  // The launcher stops its world and exits when its stdin closes, which works where SIGTERM doesn't reach a program: Windows.
+  current.proc.stdin.end();
   await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
   if (current.proc.exitCode === null && !current.proc.signalCode) current.proc.kill("SIGKILL");
 }
@@ -657,7 +659,8 @@ async function install() {
   const path = join(app.getPath("userData"), "update.log");
   const log = openSync(path, "a");
   const from = statSync(path).size;
-  const child = spawn("bash", ["-c", `curl -fsSL '${INSTALLER(update)}' | bash`], { detached: true, stdio: ["ignore", log, log], env: { ...process.env, SANDBOX_APP_PID: String(process.pid), SANDBOX_RELEASE: DOWNLOADS(update) } });
+  const [shell, args] = windows ? ["powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `irm '${INSTALLER(update)}' | iex`]] : ["bash", ["-c", `curl -fsSL '${INSTALLER(update)}' | bash`]];
+  const child = spawn(shell, args, { detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, SANDBOX_APP_PID: String(process.pid), SANDBOX_RELEASE: DOWNLOADS(update) } });
   child.unref();
   closeSync(log);
   const exited = new Promise((resolve) => child.once("exit", () => resolve(false)));

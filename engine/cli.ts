@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { hasGit, type Mods } from "./mods";
 import { brief, type Recorder } from "./record";
 import type { GameCard } from "./games";
@@ -298,11 +298,15 @@ Other Claudes edit at the same time: re-read a file right before changing it. Be
 
 class ToolError extends Error {}
 
+/** A path in the world tree as agents and the mod rules see it, with / on every platform. */
+const treePath = (root: string, abs: string) => relative(root, abs).split(sep).join("/");
+
 export function createCli(ctx: CliContext) {
   function resolvePath(path: string) {
     const abs = resolve(ctx.root, path);
-    const rel = relative(ctx.root, abs);
-    if (rel.startsWith("..") || rel.startsWith(".git")) throw new ToolError(`${path} is outside the world tree.`);
+    const rel = treePath(ctx.root, abs);
+    // On Windows a path on another drive stays absolute.
+    if (rel.startsWith("..") || rel.startsWith(".git") || isAbsolute(rel)) throw new ToolError(`${path} is outside the world tree.`);
     return { abs, rel };
   }
 
@@ -353,13 +357,13 @@ export function createCli(ctx: CliContext) {
   function list(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {
       const abs = join(dir, name);
-      if (!statSync(abs).isDirectory()) return [relative(ctx.root, abs)];
+      if (!statSync(abs).isDirectory()) return [treePath(ctx.root, abs)];
       return name.startsWith(".") || name === "node_modules" ? [] : list(abs);
     });
   }
 
   async function git(...args: string[]) {
-    if (!hasGit) throw new ToolError("Needs Git, which this computer doesn't have. On a Mac, xcode-select --install adds it; then restart the world.");
+    if (!hasGit) throw new ToolError("Needs Git, which this computer doesn't have. On a Mac, xcode-select --install adds it; on Windows, the installer at git-scm.com. Then restart the world.");
     const proc = Bun.spawn(["git", ...args], { cwd: ctx.root, stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
     if (code) throw new ToolError(err.trim());

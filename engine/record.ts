@@ -16,7 +16,7 @@ export function openRecord(path: string) {
   db.run("create table if not exists events (at integer not null, kind text not null, who text, data text not null)");
   db.run("create index if not exists events_kind on events (kind, at)");
   db.run("create index if not exists events_at on events (at)");
-  const insert = db.prepare("insert into events values (?, ?, ?, ?)");
+  const insert = db.query("insert into events values (?, ?, ?, ?)");
   let pending: [number, string, string | null, string][] = [];
   const flush = () => {
     if (!pending.length) return;

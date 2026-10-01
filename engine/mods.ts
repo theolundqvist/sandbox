@@ -1,6 +1,6 @@
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { declaredGame } from "./modgame";
 import type { RunningMod } from "./simhost";
 import type { Sims } from "./sims";
@@ -364,11 +364,16 @@ export class Mods {
   private async withoutChange(name: string) {
     const dir = mkdtempSync(join(tmpdir(), "sandbox-typecheck-"));
     for (const file of ["api.ts", "tsconfig.json", "package.json"]) if (existsSync(join(this.root, file))) cpSync(join(this.root, file), join(dir, file));
-    if (existsSync(join(this.root, "node_modules"))) symlinkSync(join(this.root, "node_modules"), join(dir, "node_modules"));
-    for (const file of new Bun.Glob("mods/**/*.ts").scanSync(this.root)) if (!file.startsWith(`mods/${name}/`)) cpSync(join(this.root, file), join(dir, file));
+    // A junction, since a Windows symlink to a folder needs admin rights.
+    if (existsSync(join(this.root, "node_modules"))) symlinkSync(join(this.root, "node_modules"), join(dir, "node_modules"), "junction");
+    for (const file of new Bun.Glob("mods/**/*.ts").scanSync(this.root)) if (!join(file).startsWith(join("mods", name, "/"))) cpSync(join(this.root, file), join(dir, file));
     if (hasGit) {
-      const archive = Bun.spawn(["git", "archive", "HEAD", "--", `mods/${name}`], { cwd: this.root, stdout: "pipe", stderr: "ignore" });
-      await Bun.spawn(["tar", "-x", "-C", dir, "--wildcards", "*.ts"], { stdin: archive.stdout, stderr: "ignore" }).exited;
+      const git = (...args: string[]) => new Response(Bun.spawn(["git", ...args], { cwd: this.root, stdout: "pipe", stderr: "ignore" }).stdout).text();
+      const files = (await git("ls-tree", "-r", "-z", "--name-only", "HEAD", "--", `mods/${name}`)).split("\0").filter((f) => f.endsWith(".ts"));
+      for (const file of files) {
+        mkdirSync(dirname(join(dir, file)), { recursive: true });
+        writeFileSync(join(dir, file), await git("show", `HEAD:${file}`));
+      }
     }
     return dir;
   }
@@ -394,7 +399,7 @@ export class Mods {
       });
       if (!built.success) return built.logs.map((l) => String(l)).join("\n");
       const file = built.outputs[0]!.path;
-      result[side] = side === "server" ? file : `/build/${relative(this.buildDir, file)}`;
+      result[side] = side === "server" ? file : `/build/${relative(this.buildDir, file).split(sep).join("/")}`;
     }
     if (!result.server && !result.client) return `mods/${name}/ needs a server.ts or a client.ts`;
     const named = this.gameNamedBy(name);

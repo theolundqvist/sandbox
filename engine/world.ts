@@ -144,8 +144,9 @@ export function openStore(path: string) {
     dirty = "all";
     return true;
   };
-  const upsert = db.prepare("insert or replace into entity values (?, ?)");
-  const remove = db.prepare("delete from entity where id = ?");
+  // query, not prepare: close() finalizes only the statements query cached, and one left open keeps the files open, so Windows can't delete a game.
+  const upsert = db.query("insert or replace into entity values (?, ?)");
+  const remove = db.query("delete from entity where id = ?");
   return {
     /** Replaces the world's entities with the save's, never merging into what is there, which could bring back something removed since. */
     load(world: Persisted) {

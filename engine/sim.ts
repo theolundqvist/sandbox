@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
+import { existsSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { Body, Entity, ModDb, Player, ServerHooks, ServerMod } from "./api";
 import { PhysicsIndex } from "./physics";
@@ -482,14 +482,25 @@ function tick(dt: number) {
   Atomics.add(beat, 0, 1);
 }
 
+/** A game's process shares its heartbeat with the world process through a file: memory-mapped, or on Windows, where Bun can't map one, copied in by a thread of its own and once more as the process exits. */
+function shareBeat(file: string) {
+  if (process.platform !== "win32") {
+    const mapped = Bun.mmap(file);
+    return new Int32Array(mapped.buffer, mapped.byteOffset, 2);
+  }
+  const shared = new Int32Array(new SharedArrayBuffer(8));
+  new Worker(new URL("./beat.ts", import.meta.url)).postMessage({ file, beat: shared.buffer });
+  const fd = openSync(file, "r+");
+  process.on("exit", () => writeSync(fd, new Uint8Array(shared.buffer), 0, 8, 0));
+  return shared;
+}
+
 let loop: ReturnType<typeof setInterval> | undefined;
 
 const receive = async (msg: any) => {
   switch (msg.t) {
     case "init": {
-      // A game's process shares its heartbeat with the world process through a memory-mapped file.
-      const mapped = msg.beatFile ? Bun.mmap(msg.beatFile) : null;
-      beat = mapped ? new Int32Array(mapped.buffer, mapped.byteOffset, 2) : new Int32Array(msg.beat ?? new SharedArrayBuffer(8));
+      beat = msg.beatFile ? shareBeat(msg.beatFile) : new Int32Array(msg.beat ?? new SharedArrayBuffer(8));
       game = msg.game ?? null;
       games = new Set(msg.games ?? []);
       world.nextId = msg.nextId;

@@ -1,4 +1,4 @@
-import { rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Entity, Player } from "./api";
@@ -17,6 +17,7 @@ const TRIAL_START_MS = 15_000;
 /** A game whose process keeps dying at start waits this long before the next try, so it can't spin. */
 const CRASH_BACKOFF_MS = 1000;
 const SIM = new URL("./sim.ts", import.meta.url);
+const SIM_FILE = join(import.meta.dir, "sim.ts");
 
 /** How a host reaches its simulation: a worker in this process for the hub, a child process for a game. */
 type Channel = { send(msg: object): void; retire(now?: boolean): Promise<void>; pid: number | null };
@@ -52,7 +53,7 @@ function workerChannel(receive: (msg: any) => void, log: (text: string) => void)
 /** A game's own process: a busy or crashing mod stops only that game, and its exit frees everything it loaded. */
 function processChannel(receive: (msg: any) => void, exited: (code: number | string) => void): Channel {
   let retiring = false;
-  const proc = Bun.spawn([process.execPath, SIM.pathname], {
+  const proc = Bun.spawn([process.execPath, SIM_FILE], {
     stdin: "ignore",
     stdout: "ignore",
     stderr: "inherit",
@@ -90,7 +91,8 @@ export class SimHost {
   creators = new Map<number, string>();
   corrections: Correction[] = [];
   private channel: Channel | null = null;
-  private beat: Int32Array;
+  /** The heartbeat a worker shares, or the file a game's process writes it to. */
+  private beat = new Int32Array(new SharedArrayBuffer(8));
   private beatFile: string | null = null;
   /** Until the simulation has loaded its mods, only a much longer silence counts as hanging. */
   private ready = false;
@@ -121,19 +123,16 @@ export class SimHost {
     readonly game: string | null = null,
     private games: () => string[] = () => [],
   ) {
-    if (game === null) this.beat = new Int32Array(new SharedArrayBuffer(8));
-    else {
-      // Processes share no memory, so the heartbeat goes through a file both map.
+    if (game !== null) {
+      // Processes share no memory, so the game's process writes its heartbeat to a file this one reads.
       const file = (this.beatFile = join(tmpdir(), `sandbox-beat-${process.pid}-${game}`));
       writeFileSync(file, new Uint8Array(8));
-      const mapped = Bun.mmap(file);
-      this.beat = new Int32Array(mapped.buffer, mapped.byteOffset, 2);
       process.on("exit", () => rmSync(file, { force: true }));
     }
     let lastBeat = -1;
     let lastChange = Date.now();
     setInterval(() => {
-      const b = Atomics.load(this.beat, 0);
+      const b = this.heartbeat()[0]!;
       if (b !== lastBeat || !this.channel) {
         lastBeat = b;
         lastChange = Date.now();
@@ -156,8 +155,16 @@ export class SimHost {
     return this.channel?.pid ?? null;
   }
 
+  /** Ticks so far, and the mod running right now. */
+  private heartbeat() {
+    if (!this.beatFile) return [Atomics.load(this.beat, 0), Atomics.load(this.beat, 1)];
+    const bytes = readFileSync(this.beatFile);
+    return [bytes.readInt32LE(0), bytes.readInt32LE(4)];
+  }
+
   private culprit() {
-    return this.mods().find((m) => m.id === Atomics.load(this.beat, 1));
+    const id = this.heartbeat()[1];
+    return this.mods().find((m) => m.id === id);
   }
 
   private retireChannel(now?: boolean) {
@@ -183,7 +190,8 @@ export class SimHost {
       this.waiting = wait;
       return;
     }
-    Atomics.store(this.beat, 1, 0);
+    if (this.beatFile) writeFileSync(this.beatFile, new Uint8Array(8));
+    else Atomics.store(this.beat, 1, 0);
     this.ready = false;
     this.startedAt = Date.now();
     const receive = (msg: any) => channel === this.channel && this.receive(msg);
@@ -338,7 +346,7 @@ export class SimHost {
         resolve(error);
       };
       // A child process rather than a worker: its exit frees everything the test run loaded, which a terminated worker never does.
-      const proc = Bun.spawn([process.execPath, SIM.pathname], {
+      const proc = Bun.spawn([process.execPath, SIM_FILE], {
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",

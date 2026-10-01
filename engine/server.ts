@@ -57,7 +57,7 @@ for (const file of new Bun.Glob("mods/**/*").scanSync(join(ENGINE, "seed"))) {
   const current = existsSync(target) ? sha(readFileSync(target, "utf8")) : null;
   if (current && current === seeded[file] && current !== sha(seed)) {
     writeFileSync(target, seed);
-    refreshed.add(file.split("/")[1]!);
+    refreshed.add(file.split(/[\\/]/)[1]!);
   }
   if (existsSync(target) && sha(readFileSync(target, "utf8")) === sha(seed)) seeded[file] = sha(seed);
 }
@@ -319,13 +319,16 @@ async function timelapseFor(who: string | null) {
   const seen = who ? await hub.visibleTo(who, await built.ticks) : await built.ticks;
   return (await inWorker<{ gz: Uint8Array<ArrayBuffer> }>({ t: "encode", ticks: seen })).gz;
 }
-for (const signal of ["SIGINT", "SIGTERM"] as const)
-  process.on(signal, () => {
-    record.close();
-    store.save(hub);
-    sims.saveAll();
-    process.exit(0);
-  });
+function shutdown() {
+  record.close();
+  store.save(hub);
+  sims.saveAll();
+  process.exit(0);
+}
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutdown);
+// Windows has no SIGTERM to send, so the launcher asks over IPC; a launcher that died without asking closes the channel.
+process.on("message", (msg: any) => msg?.t === "stop" && shutdown());
+process.on("disconnect", shutdown);
 
 const clientBuild = await Bun.build({ entrypoints: [join(ENGINE, "client/main.ts")], target: "browser", external: ["three", "three/*"] });
 if (!clientBuild.success) throw new AggregateError(clientBuild.logs, "client build failed");
