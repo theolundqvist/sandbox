@@ -5,12 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sandbox</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='6' y='6' width='20' height='20' fill='%23ffb547'/></svg>">
-<link rel="preload" as="image" href="/clips/poster.jpg">
+<link rel="preload" as="image" href="/stills/high-noon.webp">
 <link rel="stylesheet" href="/front.css">
 <style>
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  html, body { margin: 0; height: 100%; background: #101113; color: var(--text); font: 15px/1.45 system-ui, sans-serif; overflow: hidden; }
+  html, body { margin: 0; height: 100%; background: #1b1b1d; color: var(--text); font: 15px/1.45 system-ui, sans-serif; overflow: hidden; }
   #title .logo { margin-bottom: 64px; }
   /* Long lists scroll above the key hints, never under them. */
   .front { bottom: 96px; padding-bottom: 0; }
@@ -33,7 +33,7 @@
 <div id="backdrop" class="backdrop"></div>
 <main class="front">
   <button class="back" id="back" hidden>Back<kbd>Esc</kbd></button>
-  <section id="title" class="screen" data-nav hidden>
+  <section id="title" class="screen title" data-nav hidden>
     <svg class="logo" id="logo"></svg>
     <p id="waiting" class="status" hidden>Waiting for the host</p>
     <div class="items">

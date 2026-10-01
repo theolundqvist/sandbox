@@ -69,7 +69,7 @@ Run them with `bun test engine/launcher.test.ts`, `cd desktop && npm test`, and 
 | /r/ link without scheme | Join world | becomes https | app: invite link |
 | Not a link | Join world | "Paste the invite link your host sent." | app: anything but a link |
 | Clipboard prefill | Join world | prefills invite links only | app: clipboard, true and false positives |
-| Other games' clips | join screen | only this world's | app: no /clips/ requests |
+| The menu's game stills | join screen | only this world's | app: no /stills/ requests |
 
 ## Invites
 

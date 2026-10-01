@@ -44,7 +44,7 @@ app.on("second-instance", (_event, argv) => {
 /** The engine this app hosts worlds with: its launcher, run by the bun shipped inside the app, with its worlds in the app's data folder. */
 const ENGINE = app.isPackaged ? join(process.resourcesPath, "engine") : join(__dirname, "..");
 const BUN = app.isPackaged ? join(ENGINE, windows ? "bun.exe" : "bun") : "bun";
-/** The game's own front end (fonts, clips, menu styles), which the start screen uses too, so it works offline. */
+/** The game's own front end (fonts, stills, menu styles), which the start screen uses too, so it works offline. */
 const FRONT = join(ENGINE, "engine/client");
 protocol.registerSchemesAsPrivileged([{ scheme: "sandbox", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 
@@ -582,7 +582,6 @@ app.whenReady().then(() => {
     const xterm = { "/xterm/xterm.js": "@xterm/xterm/lib/xterm.js", "/xterm/xterm.css": "@xterm/xterm/css/xterm.css", "/xterm/addon-fit.js": "@xterm/addon-fit/lib/addon-fit.js" }[path];
     if (xterm) return net.fetch(pathToFileURL(require.resolve(xterm)).href);
     if (/^\/cover\/[a-z0-9-]+$/.test(path)) return net.fetch(pathToFileURL(join(DATA, "worlds", path.slice(7), "cover.jpg")).href);
-    if (path === "/clips/") return Response.json(readdirSync(join(FRONT, "clips")).filter((f) => f.endsWith(".mp4")));
     const file = normalize(join(FRONT, path));
     return file.startsWith(FRONT) ? net.fetch(pathToFileURL(file).href) : new Response("not found", { status: 404 });
   });

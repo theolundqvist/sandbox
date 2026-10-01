@@ -1,5 +1,5 @@
 // The public face of Sandbox: join a friend's world, browse Community worlds, get the app. Every screen has its own address; a world's is /w/<id>.
-import { joinLink, logo } from "/front.js";
+import { COMPUTERS, backdrop, computerPick, joinLink, logo } from "/front.js";
 
 const API = "https://sandbox.api.lundqvistliss.com";
 const $ = (id) => document.getElementById(id);
@@ -10,28 +10,15 @@ const el = (tag, props, ...children) => {
 };
 logo($("logo"));
 
-/** Stills of games built in Sandbox behind the home screen, crossfading in a random order after the first; one still when motion is reduced. */
-const STILLS = ["high-noon", "retro-cabinet", "genesis-creator", "world"];
-const backdrop = $("backdrop");
-const still = (name) => el("img", { src: `/stills/${name}.webp`, alt: "" });
-let shown = still(STILLS[0]);
-shown.onload = () => shown.classList.add("on");
-backdrop.append(shown);
-if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
-  const rest = STILLS.slice(1).sort(() => Math.random() - 0.5);
-  let n = 0;
-  setInterval(() => {
-    if (document.body.dataset.screen !== "home") return;
-    const next = still([...rest, STILLS[0]][n++ % STILLS.length]);
-    next.onload = () => {
-      backdrop.append(next);
-      requestAnimationFrame(() => next.classList.add("on"));
-      const old = shown;
-      setTimeout(() => old.remove(), 1200);
-      shown = next;
-    };
-  }, 7000);
-}
+backdrop($("backdrop"));
+
+/** Host: the install line for the picked computer, the visitor's own first. */
+const INSTALLER = "https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install";
+computerPick($("host-os"), (os) => {
+  $("host-open").textContent = COMPUTERS[os].open;
+  $("install").textContent = os === "windows" ? `irm ${INSTALLER}.ps1 | iex` : `curl -fsSL ${INSTALLER} | bash`;
+  $("mac-blocked").hidden = $("mac-steps").hidden = os !== "mac";
+});
 
 const media = (w) => (w.clip ? el("video", { src: w.clip, poster: w.cover, muted: true, loop: true, autoplay: true, playsInline: true }) : el("img", { src: w.cover, alt: "" }));
 const api = async (path, init) => {
@@ -90,7 +77,6 @@ async function route() {
   const id = path.match(/^\/w\/([a-z0-9]{12})$/)?.[1];
   const screen = id ? "world" : (SCREENS[path] ?? "home");
   for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== screen;
-  document.body.dataset.screen = screen;
   $("back").hidden = screen === "home";
   $("back").href = id ? "/worlds" : "/";
   $("error").textContent = "";

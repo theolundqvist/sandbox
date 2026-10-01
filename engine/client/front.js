@@ -23,46 +23,27 @@ export function logo(svg) {
   svg.innerHTML = cells.join("");
 }
 
-/** Clips of games built in Sandbox, crossfading behind the menu: every .mp4 in engine/client/clips, in a shuffled order. The poster paints first; videos load after the page has. */
+/** Stills of games built in Sandbox behind the title screen, crossfading every 7 s in a shuffled order after the first; one still when motion is reduced. */
+const STILLS = ["high-noon", "retro-cabinet", "genesis-creator", "world"];
 export function backdrop(el) {
-  el.style.backgroundImage = "url(/clips/poster.jpg)";
+  const still = (name) => Object.assign(document.createElement("img"), { src: `/stills/${name}.webp`, alt: "" });
+  let shown = still(STILLS[0]);
+  shown.onload = () => shown.classList.add("on");
+  el.append(shown);
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  const start = async () => {
-    const clips = await (await fetch("/clips/")).json().catch(() => []);
-    if (!clips.length) return;
-    for (let i = clips.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [clips[i], clips[j]] = [clips[j], clips[i]];
-    }
-    const videos = [0, 1].map(() => Object.assign(document.createElement("video"), { muted: true, playsInline: true, preload: "auto" }));
-    el.append(...videos);
-    let n = 0;
-    const next = () => {
-      const video = videos[n % 2];
-      const other = videos[(n + 1) % 2];
-      video.src = `/clips/${clips[n % clips.length]}`;
-      n++;
-      video.onplaying = () => {
-        video.classList.add("on");
-        other.classList.remove("on");
-      };
-      // The next clip starts while this one still shows, so the fade never passes through black.
-      video.ontimeupdate = () => {
-        if (video.duration && video.duration - video.currentTime < 1.2 && !video.dataset.handed) {
-          video.dataset.handed = "1";
-          next();
-        }
-      };
-      delete video.dataset.handed;
-      video.play().catch(() => {});
+  const order = [...STILLS.slice(1).sort(() => Math.random() - 0.5), STILLS[0]];
+  let n = 0;
+  setInterval(() => {
+    if (document.hidden || !el.getClientRects().length) return;
+    const next = still(order[n++ % order.length]);
+    next.onload = () => {
+      el.append(next);
+      requestAnimationFrame(() => next.classList.add("on"));
+      const old = shown;
+      shown = next;
+      setTimeout(() => old.remove(), 1200);
     };
-    next();
-    document.addEventListener("visibilitychange", () => {
-      for (const v of videos) if (v.classList.contains("on")) document.hidden ? v.pause() : v.play().catch(() => {});
-    });
-  };
-  if (document.readyState === "complete") setTimeout(start, 100);
-  else addEventListener("load", () => setTimeout(start, 100), { once: true });
+  }, 7000);
 }
 
 /** A value picked with the arrows: <div class="pick" data-options="open:Open,additive:Additive">. Its value is in dataset.value. */

@@ -14,18 +14,7 @@
   html, body { margin: 0; min-height: 100%; background: #1b1b1d; color: var(--text); font: 16px/1.5 system-ui, sans-serif; }
   a { color: inherit; }
   .front { position: relative; inset: auto; min-height: 100vh; overflow: visible; }
-  .backdrop { position: fixed; background: #1b1b1d; }
-  .backdrop img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 1.2s ease; }
-  .backdrop img.on { opacity: 1; }
-  body:not([data-screen=home]) .backdrop { display: none; }
-  /* Home is one group in the middle of the screen: logo, tagline, menu. */
-  body[data-screen=home] .front { justify-content: center; align-items: center; padding-top: 72px; }
-  #home { align-items: center; text-align: center; }
-  #home .logo { align-self: center; }
-  #home .items { align-items: center; }
-  #home .item { width: auto; padding-right: 32px; color: rgba(243,241,236,.78); }
-  #home :is(.item, .lead) { text-shadow: 0 1px 3px rgba(0,0,0,.8); }
-  #home .item:focus { color: var(--text); }
+  .backdrop { position: fixed; }
   #home .logo { margin-bottom: 20px; }
   #home .lead { margin: 0 0 56px; font-size: 20px; color: var(--text); }
   a:is(.item, .back) { text-decoration: none; }
@@ -59,7 +48,7 @@
 
   @media (max-width: 760px) {
     #home .lead { font-size: 17px; margin-bottom: 40px; }
-    #home .item { white-space: nowrap; font-size: 22px; padding: 6px 24px; }
+    #home .item { white-space: nowrap; }
     .world { flex-wrap: wrap; gap: 10px 16px; padding: 16px 0; }
     .world .cover { width: 100%; }
     .world b { font-size: 22px; }
@@ -75,7 +64,7 @@
 <main class="front">
   <a class="back" id="back" href="/" hidden>Back</a>
 
-  <section id="home" class="screen" data-nav hidden>
+  <section id="home" class="screen title" data-nav hidden>
     <svg class="logo" id="logo"></svg>
     <p class="lead">Friends dream up their most epic game together, live.</p>
     <div class="items">
@@ -111,11 +100,12 @@
   <section id="host" class="screen" data-nav hidden>
     <h1>Host world</h1>
     <p class="lead">Download the desktop app.</p>
-    <div class="copy-row"><span>Mac and Linux</span><code id="install">curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash</code><button data-copy="install">Copy</button></div>
-    <div class="copy-row"><span>Windows</span><code>Not available yet</code></div>
-    <p class="note">Paste the line into Terminal. It installs Sandbox and opens it; run it again to update.</p>
-    <h2>If your Mac won't open it</h2>
-    <ol class="steps">
+    <div class="field"><span>Computer</span><div class="pick" id="host-os"></div></div>
+    <p class="note" id="host-open"></p>
+    <div class="copy-row"><span>Install</span><code id="install"></code><button data-copy="install">Copy</button></div>
+    <p class="note">Paste the line and press Enter.</p>
+    <h2 id="mac-blocked">If your Mac won't open it</h2>
+    <ol class="steps" id="mac-steps">
       <li>Open System Settings, then Privacy &amp; Security.</li>
       <li>Scroll down to “Sandbox” was blocked, and click Open Anyway.</li>
       <li>Click Open. Your Mac remembers it from then on.</li>

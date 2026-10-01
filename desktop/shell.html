@@ -8,7 +8,7 @@
 <style>
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  html, body { margin: 0; height: 100%; background: #101113; color: var(--text); font: 15px/1.45 system-ui, sans-serif; overflow: hidden; user-select: none; }
+  html, body { margin: 0; height: 100%; background: #1b1b1d; color: var(--text); font: 15px/1.45 system-ui, sans-serif; overflow: hidden; user-select: none; }
   #title .logo { margin-bottom: 64px; }
   .front { top: 36px; bottom: 96px; padding-top: 60px; padding-bottom: 0; }
   .status { margin: 0; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .16em; text-transform: uppercase; }
@@ -50,7 +50,7 @@
 
 <main class="front">
   <button class="back" id="back" hidden>Back<kbd>Esc</kbd></button>
-  <section id="title" class="screen" data-nav hidden>
+  <section id="title" class="screen title" data-nav hidden>
     <svg class="logo" id="logo"></svg>
     <div class="items">
       <button class="item" id="go-last" hidden>Continue<span class="value" id="last-name"></span></button>

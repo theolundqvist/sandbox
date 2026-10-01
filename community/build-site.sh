@@ -5,4 +5,4 @@ cd "$(dirname "$0")"
 rm -rf dist && mkdir -p dist
 cp -r site/* dist/
 cp ../engine/client/front.css ../engine/client/front.js dist/
-cp -r ../engine/client/fonts dist/
+cp -r ../engine/client/fonts ../engine/client/stills dist/

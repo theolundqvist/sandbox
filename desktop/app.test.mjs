@@ -392,8 +392,8 @@ describe("hosting and joining", () => {
     await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
     const game = await gamePage(app);
-    const clips = [];
-    game.on("request", (r) => r.url().includes("/clips/") && clips.push(r.url()));
+    const stills = [];
+    game.on("request", (r) => r.url().includes("/stills/") && stills.push(r.url()));
     await playing(game);
     assert.equal(game.url(), `${other.url}/`);
     assert.equal(await game.textContent("#mic"), "Voice off: ask the host to turn it on");
@@ -401,7 +401,7 @@ describe("hosting and joining", () => {
     await game.locator("#join").waitFor({ state: "hidden" });
     assert.equal(await game.locator("#join").isHidden(), true);
     assert.match(game.url(), new RegExp(`^${other.url}/`));
-    assert.deepEqual(clips, []);
+    assert.deepEqual(stills, []);
     await until("the saved world", async () => state().recents.find((r) => r.url === other.url && r.name === "Snow Race"));
     await shell.click("#leave");
   });
