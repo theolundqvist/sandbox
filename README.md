@@ -28,7 +28,15 @@ bun install
 bun start
 ```
 
-Open the menu link the terminal prints (on a Mac it opens automatically), choose **Host world**, name it, pick house rules and a starting scene, and press **Create**. The world runs on your machine while `bun start` is running.
+On Windows, install [Git](https://git-scm.com/download/win), run `irm bun.sh/install.ps1 | iex` in PowerShell, then in a new PowerShell window:
+
+```powershell
+git clone https://github.com/theolundqvist/sandbox; cd sandbox
+bun install
+bun start
+```
+
+Open the menu link the terminal prints (on a Mac or Windows it opens automatically), choose **Host world**, name it, pick house rules and a starting scene, and press **Create**. The world runs on your machine while `bun start` is running.
 
 ![The Host world screen: name, house rules, starting scene and a Create button](docs/readme/menu-new.jpg)
 

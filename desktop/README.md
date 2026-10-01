@@ -4,13 +4,21 @@ Play any Sandbox world in its own window instead of a browser tab: right-click r
 
 ## Get it
 
-On a Mac or Linux (and Windows through WSL), one command downloads the app and opens it. Add your invite link at the end to go straight into that world:
+One command in a terminal downloads the app and opens it. Add your invite link at the end to go straight into that world. On a Mac, press Cmd+Space, type Terminal and press Enter; on Linux, press Ctrl+Alt+T:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install | bash -s -- '<invite link>'
 ```
 
-On a Mac it lands in Applications, so the Dock, Spotlight and Launchpad find it. On Linux it goes in `~/.local/share/sandbox`, with an entry in your app menu. Either way, `sandbox` opens it from a terminal, with or without a link, and running the command again updates it. If `sandbox` isn't found, add `~/.local/bin` to your PATH.
+On Windows 10 or 11, press the Windows key, type PowerShell and press Enter, then:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install.ps1))) '<invite link>'
+```
+
+or without a link, `irm https://raw.githubusercontent.com/theolundqvist/sandbox/master/desktop/install.ps1 | iex`. It needs no admin rights. If Windows says it protected your PC, click **More info**, then **Run anyway**.
+
+On a Mac it lands in Applications, so the Dock, Spotlight and Launchpad find it. On Linux it goes in `~/.local/share/sandbox`, with an entry in your app menu. On Windows it goes in `%LOCALAPPDATA%\Programs\Sandbox`, with a Start menu and desktop shortcut. Everywhere, `sandbox` opens it from a terminal, with or without a link, and running the command again updates it. If `sandbox` isn't found on a Mac or Linux, add `~/.local/bin` to your PATH; on Windows, open a new PowerShell window.
 
 The game shows this command, with your link filled in, under **Settings** and on the join screen; the host's main menu has it under **Desktop app**. From a clone, `bun desktop '<link>'` runs the app without installing it.
 
@@ -27,4 +35,4 @@ The start screen starts on **Continue**, which takes you back into the world you
 
 ## Release
 
-Pushing a `v*` tag builds the Mac (Apple silicon and Intel) and Linux apps in GitHub Actions and publishes them as a GitHub release; the installer always takes the latest one, and the tag sets the version. The Mac app is unsigned, which the installer handles; a zip downloaded in a browser would need signing to open with a double-click.
+Pushing a `v*` tag builds the Mac (Apple silicon and Intel), Linux and Windows apps in GitHub Actions and publishes them as a GitHub release; the installer always takes the latest one, and the tag sets the version. The Mac app is unsigned, which the installer handles; a zip downloaded in a browser would need signing to open with a double-click.
