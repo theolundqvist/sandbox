@@ -432,7 +432,12 @@ describe("hosting and joining", () => {
     await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.base}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
-    await playing(await gamePage(app));
+    const g = await gamePage(app);
+    await playing(g).catch(async (e) => {
+      console.log("DEBUG", g.url(), JSON.stringify(await g.evaluate(() => { const r = document.querySelector("#ui")?.shadowRoot ?? document; const t = (id) => (r.getElementById?.(id) ?? document.getElementById(id))?.textContent; return { err: t("join-error"), status: t("status"), joinHidden: (r.getElementById?.("join") ?? document.getElementById("join"))?.hidden, ls: { ...localStorage } }; })));
+      await capture(g, "debug-invite");
+      throw e;
+    });
     await shell.click("#leave");
     const bare = await shell.evaluate(async () => (await import("/front.js")).joinLink("sandbox-relay.example.com/r/ab12cd/"));
     assert.equal(bare, "https://sandbox-relay.example.com/r/ab12cd/");

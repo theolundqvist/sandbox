@@ -591,7 +591,8 @@ app.whenReady().then(() => {
     });
   }
   if (UPDATES && reopen) void checkUpdate().then(pollUpdates);
-  else if (UPDATES) ready = updateFirst().then(pollUpdates);
+  // The start screen says what it waits for only once it listens.
+  else if (UPDATES) ready = new Promise((r) => shell.webContents.once("did-finish-load", r)).then(updateFirst).then(pollUpdates);
 });
 
 const UPDATES = app.isPackaged || !!process.env.SANDBOX_UPDATES;
