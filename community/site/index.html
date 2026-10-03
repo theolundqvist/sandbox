@@ -45,6 +45,7 @@
   #world-tip { color: var(--text); }
   .actions { display: flex; gap: 8px 24px; flex-wrap: wrap; align-items: center; margin-top: 20px; }
   #report:disabled { opacity: .5; cursor: default; }
+  #my-worlds { margin-bottom: 32px; }
   #me { position: fixed; top: 24px; right: 32px; z-index: 1; text-decoration: none; }
   form.entries { display: flex; flex-direction: column; }
 
@@ -89,6 +90,7 @@
     <h1>Community</h1>
     <div class="worlds" id="world-list"></div>
     <p id="empty" class="status" hidden></p>
+    <div class="items"><button class="item" id="more" hidden>More</button></div>
   </section>
 
   <section id="world" class="screen" data-nav hidden>
@@ -96,9 +98,9 @@
     <h1 id="world-title"></h1>
     <p id="world-by"></p>
     <p id="world-about"></p>
-    <div class="items"><button class="item" id="world-get">Host or remix it in the app</button></div>
+    <div class="items"><button class="item" id="world-get">Play or fork it in the app</button><button class="item" id="vote">Upvote<span class="value" id="votes"></span></button></div>
     <p class="note" id="world-tip" hidden>Link copied. In Sandbox, open <b>Worlds</b>, then <b>Community</b>, and paste it.</p>
-    <div class="actions"><a class="quiet" href="/host">Get the app</a><button class="quiet" id="report">Report</button></div>
+    <div class="actions"><a class="quiet" href="/host">Get the app</a><button class="quiet" id="report">Report</button><button class="quiet danger" id="take-down" hidden>Take down</button></div>
   </section>
 
   <section id="host" class="screen" data-nav hidden>
@@ -138,6 +140,8 @@
 
   <section id="account" class="screen" data-nav hidden>
     <h1 id="account-name"></h1>
+    <div class="worlds" id="my-worlds"></div>
+    <p class="note" id="my-none" hidden>Worlds you publish from the app show up here.</p>
     <div class="items"><button class="item" id="sign-out">Sign out</button><a class="item" href="/account/delete">Delete account</a></div>
   </section>
 

@@ -49,32 +49,39 @@ const api = async (path, init = {}) => {
   if (!res.ok) throw new Error(data.error ?? "Community can't be reached right now.");
   return data;
 };
-/** Hosting or remixing happens in the app: the world's link goes on the clipboard to paste there. */
+/** Playing or forking happens in the app: the world's link goes on the clipboard to paste there. */
 async function copyFor(w, tip) {
   await navigator.clipboard?.writeText(w.link).catch(() => {});
   tip.hidden = false;
 }
 
-async function showWorlds() {
-  $("empty").hidden = false;
-  $("empty").textContent = "Loading";
-  const list = await api("/worlds");
-  $("empty").textContent = "No worlds shared yet";
-  $("empty").hidden = !!list.length;
-  $("world-list").replaceChildren(
-    ...list.map((w) => {
-      const get = el("button", { className: "quiet", textContent: "Host or remix it in the app" });
-      get.dataset.event = "world-get";
-      const row = el("a", { className: "world", href: `/w/${w.id}` }, el("span", { className: "cover" }, media(w)), el("span", { className: "what" }, el("b", { textContent: w.title }), el("small", { textContent: `by ${w.author}` }), get));
-      get.onclick = (e) => {
-        e.preventDefault();
-        copyFor(w, $("world-tip"));
-        get.textContent = "Link copied: paste it in Worlds, Community";
-      };
-      return row;
-    }),
-  );
+/** A world as a row: its clip, its name, who made it, and the link to play or fork it in the app. */
+function worldRow(w) {
+  const get = el("button", { className: "quiet", textContent: "Play or fork it in the app" });
+  get.dataset.event = "world-get";
+  const about = w.visibility === "link" ? "link only" : w.votes === 1 ? "1 vote" : `${w.votes} votes`;
+  const row = el("a", { className: "world", href: `/w/${w.id}` }, el("span", { className: "cover" }, media(w)), el("span", { className: "what" }, el("b", { textContent: w.title }), el("small", { textContent: `by ${w.author} · ${about}` }), get));
+  get.onclick = (e) => {
+    e.preventDefault();
+    copyFor(w, $("world-tip"));
+    get.textContent = "Link copied: paste it in Worlds, Community";
+  };
+  return row;
 }
+
+let listed = [];
+async function showWorlds(more = false) {
+  if (!more) listed = [];
+  $("empty").hidden = !!listed.length;
+  $("empty").textContent = "Loading";
+  const page = await api(`/worlds${more && listed.length ? `?after=${listed.at(-1).id}` : ""}`);
+  listed.push(...page);
+  $("empty").textContent = "No worlds shared yet";
+  $("empty").hidden = !!listed.length;
+  $("more").hidden = page.length < 50;
+  $("world-list").replaceChildren(...listed.map(worldRow));
+}
+$("more").onclick = () => showWorlds(true).catch((e) => ($("error").textContent = e.message));
 
 async function showWorld(id) {
   const w = await api(`/worlds/${id}`);
@@ -85,12 +92,39 @@ async function showWorld(id) {
   $("world-about").textContent = w.description;
   $("world-tip").hidden = true;
   $("world-get").onclick = () => copyFor(w, $("world-tip"));
+  const showVote = () => {
+    $("vote").firstChild.textContent = w.voted ? "Upvoted" : "Upvote";
+    $("votes").textContent = String(w.votes);
+  };
+  showVote();
+  // Voting needs an account: signing in comes back here.
+  $("vote").onclick = async () => {
+    if (!(await whoAmI())) return go(`/signin?then=/w/${id}`);
+    try {
+      Object.assign(w, await api(`/worlds/${id}/vote`, { method: "PUT", body: JSON.stringify({ up: !w.voted }) }));
+      showVote();
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+  };
+  $("report").hidden = w.mine;
   $("report").disabled = false;
   $("report").textContent = "Report";
   $("report").onclick = async () => {
     $("report").disabled = true;
     await api(`/worlds/${id}/report`, { method: "POST" }).catch(() => {});
     $("report").textContent = "Reported. Thanks";
+  };
+  $("take-down").hidden = !w.mine;
+  $("take-down").textContent = "Take down";
+  $("take-down").onclick = async () => {
+    if ($("take-down").textContent === "Take down") return void ($("take-down").textContent = "Take down for everyone?");
+    try {
+      await api(`/worlds/${id}`, { method: "DELETE" });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    go("/account");
   };
 }
 
@@ -146,6 +180,9 @@ $("delete-form").onsubmit = async (e) => {
 async function showAccount() {
   if (!(await whoAmI())) return go("/signin");
   $("account-name").textContent = account.username;
+  const mine = await api("/account/worlds");
+  $("my-worlds").replaceChildren(...mine.map(worldRow));
+  $("my-none").hidden = !!mine.length;
 }
 
 const SCREENS = { "/": "home", "/join": "join", "/worlds": "worlds", "/host": "host", "/signin": "signin", "/signup": "signup", "/account": "account", "/account/delete": "delete" };

@@ -92,3 +92,7 @@ do $$ begin
   alter table events add constraint events_account foreign key (account) references accounts (id) on delete set null;
 exception when duplicate_object then null;
 end $$;
+
+-- Upvotes: one per account and world.
+create table if not exists votes (world text not null references worlds (id) on delete cascade, account uuid not null references accounts (id) on delete cascade, at timestamptz not null default now(), primary key (world, account));
+create index if not exists votes_account on votes (account);

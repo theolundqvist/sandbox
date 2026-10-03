@@ -1,6 +1,6 @@
 # Community worlds
 
-A host shares a world from the game: Tab, World, Share. The desktop app asks in its own dialog, then publishes it as the Community account signed in under Settings, Account. Anyone hosts or forks it from Worlds, Community in the app, and the site lists the public ones and gives each world its own page.
+A host shares a world from the game (Tab, World, Share; the desktop app asks in its own dialog) or from Worlds, Community, Publish a world in the app, as the Community account signed in under Settings, Account. Community in the app lists public worlds and the account's own, and each world's screen plays, forks, upvotes, reports or, for its owner, takes it down. The site lists the public ones, gives each world its own page with an upvote, and hands Play and Fork to the app by copying the world's link.
 
 ## What goes up
 
@@ -32,13 +32,15 @@ Deleting an account needs its password. Its sessions end at once and its worlds 
 | `POST /accounts` | `{ username, email, password }`; signs in. |
 | `POST /sessions`, `DELETE /sessions` | Sign in with `{ email, password }`, sign out. The app gets `{ account, token }`, the site a cookie. 5 tries a minute and 20 an hour per IP, and 5 a minute per email unless the IP signed into that account before. |
 | `GET /account`, `PATCH /account`, `DELETE /account` | Who is signed in, a new `username`, deletion with `{ password }`. |
+| `GET /account/worlds` | The account's live worlds, link-only included. |
 | `POST /worlds` | Signed in. JSON details and `files: { zip, cover, clip? }` sizes (zip 200 MB, JPEG cover 2 MB, WebM clip 6 MB). Answers `{ id, link, uploads }`, an upload URL per file. 10 per IP an hour. |
 | `PUT /worlds/:id` | Same, by the account that owns it; a cover or clip not sent keeps the old one. 30 per IP an hour. |
 | `POST /worlds/:id/done` | Its account only, after the uploads. Checks each file landed at its size and is the kind it claims, then the world goes live; an update replaces the old files only now. |
 | `POST /worlds/:id/claim` | Signed in, `{ ownerToken }`: moves a world shared before accounts to this account. |
 | `DELETE /worlds/:id` | Its account, or the owner token of an unclaimed world. Leaves a tombstone (`410 Gone`) and deletes its files. |
-| `GET /worlds` | Public live worlds, newest first. |
+| `GET /worlds` | Public live worlds, newest first, 50 at a time; `?after=<id>` goes on from that world, ties broken by id. Worlds of banned accounts are left out. |
 | `GET /worlds/:id` | One world, link-only included, `410` once removed, with `zip`, `cover` and `clip` URLs that last the hour. |
+| `PUT /worlds/:id/vote` | Signed in, `{ up: true }` or `{ up: false }`: the vote the account wants, so sending it twice changes nothing. Answers `{ votes, voted }`. 60 a minute. |
 | `POST /worlds/:id/report` | Counts a report. 10 per IP an hour. |
 
 The app authenticates with `Authorization: Bearer <session>`. Rate limits are counter rows, each bumped in one statement, so requests at the same moment can't slip past them. Shares never finished are swept after a day. The site's origin is the only one browsers may read the API from.

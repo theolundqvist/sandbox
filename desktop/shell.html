@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' https:; media-src 'self' https:">
 <title>Sandbox</title>
 <link rel="stylesheet" href="/front.css">
 <style>
@@ -15,6 +15,15 @@
   #down .lead, #waiting .status { margin: -16px 0 32px; }
   #settings .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
   .hints span { white-space: nowrap; }
+  /* A community world's own screen: its clip over its picture, who made it, and what to do with it. */
+  #cworld:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 420px); column-gap: 48px; align-content: start; width: min(1080px, 100%); }
+  #cworld > * { grid-column: 1; }
+  #cworld .stage { grid-column: 2; grid-row: 1 / span 4; align-self: start; width: 100%; aspect-ratio: 16 / 9; background: #1b1c1f; }
+  #cworld .stage > span { display: block; width: 100%; height: 100%; }
+  #cworld .stage :is(img, video) { display: block; width: 100%; height: 100%; object-fit: cover; }
+  #cworld-by { margin: -16px 0 8px; }
+  #cworld-about { margin: 0 0 24px; color: var(--dim); max-width: 640px; }
+  .cover video { display: block; width: 100%; height: 100%; object-fit: cover; }
   @media (max-width: 1000px), (max-height: 640px) {
     .front { bottom: 64px; padding: 28px 48px 0; }
     .screen > h1 { font-size: 40px; margin-bottom: 20px; }
@@ -22,6 +31,7 @@
     .item { font-size: 26px; }
     .hints { left: 48px; bottom: 22px; }
     #fullscreen-hint, #reload-hint { display: none; }
+    #cworld:not([hidden]) { grid-template-columns: minmax(0, 1fr) minmax(0, 280px); column-gap: 24px; }
   }
 
   /* The title bar: drags the window, and while in a game names it and offers the way out. */
@@ -71,6 +81,55 @@
     <div class="items"><button class="item" id="go-community">Community</button></div>
     <div class="items" id="games"></div>
     <p id="no-games" class="status" hidden>Worlds you host or join show up here</p>
+  </section>
+
+  <section id="community" class="screen" data-nav hidden>
+    <h1>Community</h1>
+    <div class="field"><span>Show</span><div class="pick" id="community-tab" data-options="new:Newest,mine:My worlds"></div></div>
+    <div class="items"><button class="item" id="go-publish">Publish a world</button></div>
+    <div class="items" id="community-list"></div>
+    <p id="community-status" class="status" hidden></p>
+    <div class="items"><button class="item" id="community-more" hidden>More</button></div>
+  </section>
+
+  <section id="cworld" class="screen" data-nav hidden>
+    <div class="stage" id="cworld-stage"></div>
+    <h1 id="cworld-title"></h1>
+    <p class="status" id="cworld-by"></p>
+    <p id="cworld-about"></p>
+    <div class="items">
+      <button class="item" id="cworld-play">Play</button>
+      <button class="item" id="cworld-fork">Fork<span class="value">Copy to Worlds</span></button>
+      <button class="item" id="cworld-vote">Upvote<span class="value" id="cworld-votes"></span></button>
+      <button class="item danger" id="cworld-down" hidden>Take down</button>
+      <button class="item" id="cworld-report" hidden>Report</button>
+    </div>
+  </section>
+
+  <section id="trust" class="screen" data-nav hidden>
+    <h1 id="trust-title"></h1>
+    <p class="lead" id="trust-text"></p>
+    <div class="items"><button class="item" id="trust-yes"></button><button class="item" id="trust-no">Cancel</button></div>
+  </section>
+
+  <section id="take-down" class="screen" data-nav hidden>
+    <h1 id="take-down-title"></h1>
+    <p class="lead">Its link stops working for everyone.</p>
+    <div class="items"><button class="item danger" id="take-down-yes">Take down</button><button class="item" id="take-down-no">Cancel</button></div>
+  </section>
+
+  <section id="publish-pick" class="screen" data-nav hidden>
+    <h1>Publish</h1>
+    <div class="items" id="publish-list"></div>
+    <p id="publish-none" class="status" hidden>Worlds you host show up here</p>
+  </section>
+
+  <section id="publish" class="screen" data-nav hidden>
+    <h1 id="publish-name"></h1>
+    <label class="field"><span>Title</span><input type="text" id="publish-title" maxlength="60" autocomplete="off" spellcheck="false"></label>
+    <label class="field"><span>Description</span><input type="text" id="publish-description" maxlength="200" autocomplete="off"></label>
+    <div class="field"><span>Who can play</span><div class="pick" id="publish-visibility" data-options="public:Everyone,link:Anyone with the link"></div></div>
+    <div class="items"><button class="item" id="publish-go">Publish</button></div>
   </section>
 
   <section id="forget" class="screen" data-nav hidden>
@@ -200,7 +259,7 @@
       e.preventDefault();
       if (current()?.id === "join") join();
       else if (current()?.id === "name") $("name-go").click();
-      else if (["signin", "signup", "delete-account"].includes(current()?.id)) $({ signin: "signin-go", signup: "signup-go", "delete-account": "delete-yes" }[current().id]).click();
+      else if (["signin", "signup", "delete-account", "publish"].includes(current()?.id)) $({ signin: "signin-go", signup: "signup-go", "delete-account": "delete-yes", publish: "publish-go" }[current().id]).click();
       else document.activeElement.blur();
     }
   });
@@ -227,7 +286,7 @@
   }
   const open = (url) => busy(url.startsWith("local:") ? "Starting your server…" : "", () => shell.open(url));
   $("go-new").onclick = () => open("local:new");
-  $("go-community").onclick = () => open("local:community");
+  $("go-community").onclick = () => show("community");
 
   // ---------- saved worlds: the ones this computer hosts and the ones joined, most recent first; each opens its game ----------
   let games = [];
@@ -378,6 +437,168 @@
     enter();
   };
   document.querySelector("[data-to=settings]").addEventListener("click", refreshAccount);
+
+  // ---------- Community: the list, a world's screen, and publishing one of this computer's worlds ----------
+  async function communityCall(action, body) {
+    const r = await shell.community(action, body);
+    if (r.error) throw Object.assign(new Error(r.error), { status: r.status });
+    return r.result;
+  }
+  const communityStatus = (text) => {
+    $("community-status").textContent = text;
+    $("community-status").hidden = !text;
+  };
+  /** A world's clip looping over its picture, or the picture alone. */
+  const clipOf = (w, cls) => {
+    const tile = el("span", { className: cls });
+    tile.append(w.clip ? el("video", { src: w.clip, poster: w.cover, muted: true, loop: true, autoplay: true, playsInline: true }) : el("img", { src: w.cover, alt: "", onerror: (e) => e.target.remove() }));
+    return tile;
+  };
+  let listed = [];
+  async function loadCommunity(more = false) {
+    const mine = $("community-tab").dataset.value === "mine";
+    if (mine && !account) return needAccount(() => loadCommunity());
+    if (!more) listed = [];
+    communityStatus(listed.length ? "" : "Loading");
+    try {
+      const page = await communityCall("list", { mine, after: more ? listed.at(-1)?.id : undefined });
+      listed.push(...page);
+      $("community-more").hidden = mine || page.length < 50;
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+    communityStatus(listed.length ? "" : mine ? "Worlds you publish show up here" : "No worlds shared yet");
+    $("community-list").replaceChildren(
+      ...listed.map((w) => {
+        const b = el("button", { className: "item pictured", onclick: () => openWorld(w) }, clipOf(w, "cover"), el("span", { className: "what", textContent: w.title }, el("small", { textContent: `by ${w.author}` })), el("span", { className: "value", textContent: w.visibility === "link" ? "Link only" : w.votes === 1 ? "1 vote" : `${w.votes} votes` }));
+        b.dataset.key = w.id;
+        return b;
+      }),
+    );
+  }
+  pick($("community-tab"), () => loadCommunity());
+  $("go-community").addEventListener("click", () => loadCommunity());
+  $("community-more").onclick = () => loadCommunity(true);
+
+  let opened = null;
+  function renderWorld() {
+    const w = opened;
+    $("cworld-stage").replaceChildren(clipOf(w, "stage-art"));
+    $("cworld-title").textContent = w.title;
+    $("cworld-by").textContent = `by ${w.author}`;
+    $("cworld-about").textContent = w.description;
+    $("cworld-votes").textContent = String(w.votes);
+    $("cworld-vote").firstChild.textContent = w.voted ? "Upvoted" : "Upvote";
+    $("cworld-down").hidden = !w.mine;
+    $("cworld-report").hidden = w.mine;
+    $("cworld-report").disabled = false;
+    $("cworld-report").firstChild.textContent = "Report";
+    $("cworld-fork").firstChild.textContent = "Fork";
+  }
+  async function openWorld(w) {
+    opened = w;
+    renderWorld();
+    show("cworld");
+  }
+  /** Play hosts it, Fork copies it into Worlds. Anyone else's world runs their code here, so it asks first. */
+  function getWorld(host) {
+    const go = async () => {
+      while (current().id === "trust") stack.pop();
+      enter();
+      await busy(host ? "Downloading…" : "Copying…", async () => {
+        try {
+          await communityCall("get", { id: opened.id, host });
+        } catch (e) {
+          return e.message;
+        }
+        if (host) return;
+        $("cworld-fork").firstChild.textContent = "Forked";
+        refresh();
+      });
+    };
+    if (opened.mine) return go();
+    $("trust-title").textContent = `${host ? "Play" : "Fork"} ${opened.title}?`;
+    $("trust-text").textContent = `This world runs code from ${opened.author}. Only play worlds from people you trust.`;
+    $("trust-yes").textContent = host ? "Play" : "Fork";
+    $("trust-yes").onclick = go;
+    show("trust");
+  }
+  $("cworld-play").onclick = () => getWorld(true);
+  $("cworld-fork").onclick = () => getWorld(false);
+  $("trust-no").onclick = back;
+  $("cworld-vote").onclick = () =>
+    needAccount(async () => {
+      try {
+        Object.assign(opened, await communityCall("vote", { id: opened.id, up: !opened.voted }));
+        renderWorld();
+      } catch (e) {
+        $("error").textContent = e.message;
+      }
+    });
+  $("cworld-report").onclick = async () => {
+    try {
+      await communityCall("report", { id: opened.id });
+      $("cworld-report").firstChild.textContent = "Reported";
+      $("cworld-report").disabled = true;
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+  };
+  $("cworld-down").onclick = () => {
+    $("take-down-title").textContent = `Take down ${opened.title}?`;
+    show("take-down");
+  };
+  $("take-down-no").onclick = back;
+  $("take-down-yes").onclick = async () => {
+    try {
+      await communityCall("take-down", { id: opened.id });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    while (current().id !== "community") stack.pop();
+    enter();
+    loadCommunity();
+  };
+
+  /** Publishing starts from one of this computer's worlds; the form signs in first if it has to, then carries on. */
+  let publishing = null;
+  $("go-publish").onclick = async () => {
+    show("publish-pick");
+    const covers = Object.fromEntries(games.filter((g) => g.kind === "Hosted").map((g) => [g.url, g.cover]));
+    const local = await communityCall("local").catch((e) => (($("error").textContent = e.message), []));
+    $("publish-none").hidden = !!local.length;
+    $("publish-list").replaceChildren(
+      ...local.map((w) => {
+        const cover = el("span", { className: "cover" });
+        if (covers[`local:${w.id}`]) cover.append(el("img", { src: covers[`local:${w.id}`], alt: "", onerror: (e) => e.target.remove() }));
+        return el("button", { className: "item pictured", onclick: () => publishForm(w) }, cover, el("span", { className: "what", textContent: w.name }), el("span", { className: "value", textContent: w.shared ? "Published" : "" }));
+      }),
+    );
+    enter();
+  };
+  function publishForm(w) {
+    publishing = w;
+    $("publish-name").textContent = w.name;
+    $("publish-title").value = w.shared?.title ?? w.name;
+    $("publish-description").value = w.shared?.description ?? "";
+    $("publish-visibility").set(w.shared?.visibility ?? "public");
+    $("publish-go").firstChild.textContent = w.shared ? "Update" : "Publish";
+    show("publish");
+  }
+  pick($("publish-visibility"));
+  $("publish-go").onclick = () =>
+    needAccount(() =>
+      busy("Uploading…", async () => {
+        let world;
+        try {
+          world = await communityCall("publish", { id: publishing.id, title: $("publish-title").value, description: $("publish-description").value, visibility: $("publish-visibility").dataset.value });
+        } catch (e) {
+          return e.message;
+        }
+        while (current().id !== "community") stack.pop();
+        openWorld(world);
+      }),
+    );
 
   $("quit").onclick = () => shell.quit();
   $("go-update").onclick = () => busy("Downloading…", shell.update);

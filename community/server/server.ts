@@ -24,6 +24,7 @@ const RATE = {
   auth: [5, "1 minute"],
   "auth-hour": [20, "1 hour"],
   "auth-email": [5, "1 minute"],
+  vote: [60, "1 minute"],
 } as const;
 const ID = /^[a-z0-9]{12}$/;
 
@@ -126,6 +127,7 @@ async function signedIn(req: Request) {
 }
 function allowed(account: Account) {
   if (account.banned_at) throw new Refusal("This account can't do that any more.", 403);
+  return account;
 }
 
 const me = (a: Account) => ({ id: a.id, email: a.email, username: a.username, createdAt: new Date(a.created_at).getTime(), usernameChangedAt: a.username_changed_at ? new Date(a.username_changed_at).getTime() : null });
@@ -377,6 +379,8 @@ async function shown(row: any, account?: Account | null) {
     zip: presign(worlds, row.zip_key),
     cover: presign(worlds, row.cover_key),
     clip: row.clip_key ? presign(worlds, row.clip_key) : null,
+    votes: row.votes ?? 0,
+    voted: !!row.voted,
     mine: !!account && row.account === account.id,
   };
 }
@@ -516,7 +520,24 @@ async function events(req: Request) {
   return new Response(null, { status: 204, headers: cors });
 }
 
-const WORLD_ROWS = sql`select w.*, a.username from worlds w left join accounts a on a.id = w.account`;
+/** Worlds with their owner's username, their votes, and whether the asker voted. */
+const worldRows = (account: Account | null) =>
+  sql`select w.*, a.username, (select count(*)::int from votes v where v.world = w.id) as votes, exists(select 1 from votes v where v.world = w.id and v.account = ${account?.id ?? null}::uuid) as voted
+    from worlds w left join accounts a on a.id = w.account`;
+const PAGE = 50;
+
+/** A vote is the state the asker wants, so sending it twice changes nothing. */
+async function vote(req: Request, id: string) {
+  const account = allowed(await signedIn(req));
+  await limit(account.id, "vote", "That's a lot of votes. Wait a minute.");
+  const up = (await req.json()).up === true;
+  const [row] = await sql`select id from worlds where id = ${id} and zip_key is not null and removed_at is null`;
+  if (!row) throw new Refusal("There is no such world.", 404);
+  if (up) await sql`insert into votes (world, account) values (${id}, ${account.id}) on conflict do nothing`;
+  else await sql`delete from votes where world = ${id} and account = ${account.id}`;
+  const [{ votes }] = await sql`select count(*)::int as votes from votes where world = ${id}`;
+  return json({ votes, voted: up });
+}
 
 async function route(req: Request, ip: string) {
   const url = new URL(req.url);
@@ -532,23 +553,33 @@ async function route(req: Request, ip: string) {
   if (at === "GET /account") return json({ account: me(await signedIn(req)) });
   if (at === "PATCH /account") return rename(req);
   if (at === "DELETE /account") return deleteAccount(req);
+  if (at === "GET /account/worlds") {
+    const account = await signedIn(req);
+    const rows = await sql`${worldRows(account)} where w.account = ${account.id} and w.zip_key is not null and w.removed_at is null order by w.created_at desc, w.id desc`;
+    return json(await Promise.all(rows.map((row: any) => shown(row, account))));
+  }
   const [top, id, sub, ...rest] = url.pathname.split("/").filter(Boolean);
   if (top !== "worlds" || rest.length) throw new Refusal("Not found.", 404);
   if (id && !ID.test(id)) throw new Refusal("There is no such world.", 404);
   const verb = `${req.method} ${id ? ":id" : ""}${sub ? `/${sub}` : ""}`;
   switch (verb) {
     case "GET ": {
+      // A page goes on from the last world of the one before, by that world's place in the order, ties broken by id.
       const account = await sessionOf(req);
-      const rows = await sql`${WORLD_ROWS} where w.visibility = 'public' and w.zip_key is not null and a.banned_at is null order by w.created_at desc limit 200`;
+      const after = url.searchParams.get("after") ?? "";
+      // Compared in Postgres: its timestamps are finer than a JavaScript Date.
+      const rows = await sql`${worldRows(account)} where w.visibility = 'public' and w.zip_key is not null and w.removed_at is null and a.banned_at is null
+        ${ID.test(after) ? sql`and (w.created_at, w.id) < (select created_at, id from worlds where id = ${after})` : sql``} order by w.created_at desc, w.id desc limit ${PAGE}`;
       return json(await Promise.all(rows.map((row: any) => shown(row, account))));
     }
     case "POST ":
       return publish(req, ip);
     case "GET :id": {
-      const [row] = await sql`${WORLD_ROWS} where w.id = ${id} and (w.zip_key is not null or w.removed_at is not null)`;
+      const account = await sessionOf(req);
+      const [row] = await sql`${worldRows(account)} where w.id = ${id} and (w.zip_key is not null or w.removed_at is not null)`;
       if (!row) throw new Refusal("There is no such world.", 404);
       if (row.removed_at) throw new Refusal("This world was taken down.", 410);
-      return json(await shown(row, await sessionOf(req)));
+      return json(await shown(row, account));
     }
     case "PUT :id":
       return update(req, ip, id!);
@@ -558,6 +589,8 @@ async function route(req: Request, ip: string) {
       return claim(req, id!);
     case "DELETE :id":
       return remove(req, id!);
+    case "PUT :id/vote":
+      return vote(req, id!);
     case "POST :id/report": {
       await limit(client(req, ip), "report", "Thanks, we have your reports.");
       const [row] = await sql`update worlds set reports = reports + 1 where id = ${id} and zip_key is not null returning id`;

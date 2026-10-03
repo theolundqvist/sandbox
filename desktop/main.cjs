@@ -367,21 +367,26 @@ async function signedInAs({ token, account }) {
   return account;
 }
 
-/** Publishes a world this app staged, as the signed-in account, once the player confirms in a dialog no world can draw. Null once it's done or the player said no, or why it couldn't. */
+/** Publishes a world the launcher staged, as the signed-in account: a new community world, or the same one again. */
+async function publishStaged(id, { details, sizes, community: before }) {
+  const body = { ...details, files: sizes };
+  const updated = before && (await community(`/worlds/${before}`, { method: "PUT", body }).catch((e) => ([404, 410].includes(e.status) ? null : Promise.reject(e))));
+  const { id: world, uploads } = updated || (await community("/worlds", { method: "POST", body }));
+  await menu("publish-upload", { id, uploads });
+  const published = await community(`/worlds/${world}/done`, { method: "POST" });
+  await menu("published", { id, world: published });
+  return published;
+}
+/** The game's Share: the world staged itself, and the player confirms in a dialog no world can draw. Null once it's done or the player said no, or why it couldn't. */
 async function publishWorld(id) {
   const stage = await menu("staged", { id });
   if (!stage) return "Share it again.";
   const account = await ACCOUNT_ACTIONS.account();
   if (!account) return "Sign in to Community in Settings, then share again.";
-  const { details, sizes } = stage;
-  const where = details.visibility === "public" ? "Anyone can find it in Community." : "Anyone with the link can play it.";
-  const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Publish", "Cancel"], defaultId: 0, cancelId: 1, message: `Publish ${details.title} as ${account.username}?`, detail: where });
+  const where = stage.details.visibility === "public" ? "Anyone can find it in Community." : "Anyone with the link can play it.";
+  const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Publish", "Cancel"], defaultId: 0, cancelId: 1, message: `Publish ${stage.details.title} as ${account.username}?`, detail: where });
   if (response !== 0) return null;
-  const body = { ...details, files: sizes };
-  const created = stage.community && (await community(`/worlds/${stage.community}`, { method: "PUT", body }).catch((e) => ([404, 410].includes(e.status) ? null : Promise.reject(e))));
-  const { id: world, uploads } = created || (await community("/worlds", { method: "POST", body }));
-  await menu("publish-upload", { id, uploads });
-  await menu("published", { id, world: await community(`/worlds/${world}/done`, { method: "POST" }) });
+  await publishStaged(id, stage);
   return null;
 }
 /** Takes a world this app published out of Community, once the player confirms. */
@@ -400,6 +405,40 @@ const hostState = () => server && ask(`${server.base}/api/menu/state`, server.ke
 async function hostingHere(event, id) {
   return event.sender === game?.view.webContents && (await hostState())?.running?.id === id;
 }
+
+/** Community from the launch screen, as the signed-in account. Ids are checked here, since they go into the API's paths. */
+const worldId = (id) => {
+  if (!/^[a-z0-9]{12}$/.test(String(id))) throw new Error("That world isn't in Community.");
+  return String(id);
+};
+/** The local world a community world was published from, if it was from here. */
+const publishedFrom = async (id) => (await startServer(), await hostState())?.worlds.find((w) => w.shared?.id === id)?.id;
+const COMMUNITY_ACTIONS = {
+  list: ({ after, mine }) => (mine ? community("/account/worlds") : community(`/worlds${after ? `?after=${worldId(after)}` : ""}`)),
+  world: ({ id }) => community(`/worlds/${worldId(id)}`),
+  vote: ({ id, up }) => community(`/worlds/${worldId(id)}/vote`, { method: "PUT", body: { up: up === true } }),
+  report: ({ id }) => community(`/worlds/${worldId(id)}/report`, { method: "POST" }),
+  "take-down": async ({ id }) => {
+    const local = await publishedFrom(worldId(id));
+    await community(`/worlds/${id}`, { method: "DELETE" });
+    if (local) await menu("published", { id: local });
+    return {};
+  },
+  /** Play hosts the world, reusing the copy it made before; Fork makes a new copy in Worlds. The launch screen has asked about trust already. */
+  get: async ({ id, host }) => {
+    await startServer();
+    const { world } = await menu("community-get", { id: worldId(id), trust: true, host: host === true });
+    if (host === true) await hostGame(world);
+    return { world };
+  },
+  /** This computer's worlds, to pick one to publish. */
+  local: async () => (await startServer(), await hostState())?.worlds.map((w) => ({ id: w.id, name: w.name, shared: w.shared })) ?? [],
+  publish: async ({ id, title, description, visibility }) => {
+    await startServer();
+    const stage = await menu("publish-stage", { id: String(id), title, description, visibility });
+    return publishStaged(String(id), stage);
+  },
+};
 
 /** Players in the world this app hosts, besides the host playing it here. */
 async function guests() {
@@ -657,6 +696,10 @@ app.whenReady().then(() => {
     return null;
   });
   ipcMain.handle("name", (event) => (fromShell(event) ? { name: state.name ?? null, suggested: suggestedName() } : null));
+  ipcMain.handle("community", async (event, action, body) => {
+    if (!fromShell(event) || !Object.hasOwn(COMMUNITY_ACTIONS, action)) return { error: "Unknown action" };
+    return COMMUNITY_ACTIONS[action](body ?? {}).then((result) => ({ result }), (e) => ({ error: e.message, status: e.status }));
+  });
   ipcMain.handle("account", async (event, action, body) => {
     if (!fromShell(event) || !Object.hasOwn(ACCOUNT_ACTIONS, action)) return { error: "Unknown action" };
     return ACCOUNT_ACTIONS[action](body ?? {}).then((account) => ({ account }), (e) => ({ error: e.message }));

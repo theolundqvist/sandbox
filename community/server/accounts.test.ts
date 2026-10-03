@@ -1,53 +1,13 @@
 // Accounts against real Postgres: sign-up, sign-in and out, the site's cookie, claiming worlds shared before accounts, deletion, bans and the limits on guessing.
-import { afterAll, beforeAll, expect, test } from "bun:test";
-import { SQL } from "bun";
-import { createHash } from "node:crypto";
-import { startStack } from "./stack";
+import { expect, test } from "bun:test";
+import { useStack, SITE, call, freshIp, jpeg, kit, publish, sha256, share, signUp, zip } from "./testkit";
 
-const SITE = "https://sandbox.example";
-let stack: Awaited<ReturnType<typeof startStack>>;
-let db: SQL;
-beforeAll(async () => {
-  stack = await startStack(SITE);
-  db = new SQL(stack.env.DATABASE_URL);
-}, 120_000);
-afterAll(async () => {
-  await db?.close();
-  await stack?.stop();
-}, 30_000);
+useStack();
 
-let ips = 0;
-/** Each test signs up from its own IP unless it says otherwise, so the per-IP limits stay out of the way. */
-const freshIp = () => `10.1.${Math.floor(++ips / 250)}.${ips % 250}`;
-type Init = { method?: string; body?: unknown; token?: string; ip?: string; headers?: Record<string, string> };
-const call = (path: string, init: Init = {}) =>
-  fetch(`${stack.api}${path}`, {
-    method: init.method ?? (init.body ? "POST" : "GET"),
-    body: init.body ? JSON.stringify(init.body) : undefined,
-    headers: { "content-type": "application/json", "x-real-ip": init.ip ?? freshIp(), ...(init.token ? { authorization: `Bearer ${init.token}` } : {}), ...init.headers },
-  });
-const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
-async function signUp(username: string, password = "correct horse battery", ip?: string) {
-  const res = await call("/accounts", { body: { email: ` ${username.toUpperCase()}@Example.com `, password, username }, ip });
-  expect(res.status).toBe(201);
-  return (await res.json()) as { token: string; account: { id: string; username: string; email: string } };
-}
-
-const zip = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3]);
-const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
-const share = (token: string, extra: object = {}) => call("/worlds", { token, body: { title: "Keep", visibility: "public", engineVersion: "x", mods: 0, files: { zip: zip.length, cover: jpeg.length }, ...extra } });
-async function publish(token: string, extra: object = {}) {
-  const res = await share(token, extra);
-  expect(res.status).toBe(201);
-  const world = await res.json();
-  for (const [kind, body] of [["zip", zip], ["cover", jpeg]] as const) await fetch(world.uploads[kind], { method: "PUT", body, headers: { "content-type": kind === "zip" ? "application/zip" : "image/jpeg" } });
-  expect((await call(`/worlds/${world.id}/done`, { method: "POST", token })).status).toBe(200);
-  return world as { id: string };
-}
 /** A world as one shared before accounts: an owner token, no account. */
 async function legacyWorld(token: string) {
   const id = Math.random().toString(36).slice(2, 14).padEnd(12, "a");
-  await db`insert into worlds (id, title, description, author, visibility, owner_token_hash, engine_version, mods, zip_key, cover_key)
+  await kit.db`insert into worlds (id, title, description, author, visibility, owner_token_hash, engine_version, mods, zip_key, cover_key)
     values (${id}, 'Old Keep', '', 'old', 'public', ${sha256(token)}, 'x', 0, ${`worlds/${id}/z/world.zip`}, ${`worlds/${id}/z/cover.jpg`})`;
   return id;
 }
@@ -55,9 +15,9 @@ async function legacyWorld(token: string) {
 test("an account keeps only a hash of its password and of each session, and signs in and out", async () => {
   const { token, account } = await signUp("ana_b");
   expect(account).toMatchObject({ username: "ana_b", email: "ana_b@example.com" });
-  const [row] = await db`select password_hash from accounts where id = ${account.id}`;
+  const [row] = await kit.db`select password_hash from accounts where id = ${account.id}`;
   expect(row.password_hash).toStartWith("$argon2id$");
-  expect(JSON.stringify(await db`select * from sessions`)).not.toContain(token);
+  expect(JSON.stringify(await kit.db`select * from sessions`)).not.toContain(token);
   expect(await (await call("/account", { token })).json()).toMatchObject({ account: { username: "ana_b" } });
 
   const wrong = await call("/sessions", { body: { email: "ana_b@example.com", password: "not it at all" } });
@@ -74,7 +34,7 @@ test("an account keeps only a hash of its password and of each session, and sign
 
 test("sessions idle for 90 days stop working", async () => {
   const { token } = await signUp("idle");
-  await db`update sessions set last_seen = now() - interval '91 days' where token_hash = ${sha256(token)}`;
+  await kit.db`update sessions set last_seen = now() - interval '91 days' where token_hash = ${sha256(token)}`;
   expect((await call("/account", { token })).status).toBe(401);
 });
 
@@ -143,7 +103,7 @@ test("the site's session is a cookie it can't read, and it changes nothing witho
   expect((await rename({ origin: "https://evil.example", "x-sandbox": "1" })).status).toBe(401);
   expect((await rename({ origin: SITE })).status).toBe(401);
   expect((await rename({ origin: SITE, "x-sandbox": "1" })).status).toBe(200);
-  const preflight = await fetch(`${stack.api}/account`, { method: "OPTIONS" });
+  const preflight = await fetch(`${kit.stack.api}/account`, { method: "OPTIONS" });
   expect(preflight.headers.get("access-control-allow-headers")).toContain("x-sandbox");
   expect(preflight.headers.get("access-control-allow-methods")).toContain("DELETE");
 });
@@ -156,14 +116,14 @@ test("deleting an account asks for its password, ends its sessions and takes its
   expect((await call("/account", { method: "DELETE", token: hal.token, body: { password: "wrong password" } })).status).toBe(403);
   expect((await call("/account", { method: "DELETE", token: hal.token, body: { password: "correct horse battery" } })).status).toBe(204);
   expect((await call("/account", { token: hal.token })).status).toBe(401);
-  expect(await db`select 1 from accounts where id = ${hal.account.id}`).toHaveLength(0);
-  expect(await db`select 1 from sessions where account = ${hal.account.id}`).toHaveLength(0);
+  expect(await kit.db`select 1 from accounts where id = ${hal.account.id}`).toHaveLength(0);
+  expect(await kit.db`select 1 from sessions where account = ${hal.account.id}`).toHaveLength(0);
   expect((await call(`/worlds/${world.id}`)).status).toBe(410);
-  const [tomb] = await db`select title, account, zip_key, removed_by from worlds where id = ${world.id}`;
+  const [tomb] = await kit.db`select title, account, zip_key, removed_by from worlds where id = ${world.id}`;
   expect(tomb).toEqual({ title: "", account: null, zip_key: null, removed_by: "account" });
   expect((await call(`/worlds/${others.id}`)).status).toBe(200);
   // Logged, so a restored backup can have it done again.
-  const r2 = new Bun.S3Client({ endpoint: stack.env.R2_ENDPOINT, bucket: stack.env.R2_BUCKET, region: stack.env.R2_REGION, accessKeyId: stack.env.R2_ACCESS_KEY_ID, secretAccessKey: stack.env.R2_SECRET_ACCESS_KEY });
+  const r2 = new Bun.S3Client({ endpoint: kit.stack.env.R2_ENDPOINT, bucket: kit.stack.env.R2_BUCKET, region: kit.stack.env.R2_REGION, accessKeyId: kit.stack.env.R2_ACCESS_KEY_ID, secretAccessKey: kit.stack.env.R2_SECRET_ACCESS_KEY });
   const log = ((await r2.list({ prefix: "deletions/" })).contents ?? []).map((o) => o.key).join("\n");
   expect(log).toContain(`-account-${hal.account.id}`);
   // Its username is free again.
@@ -174,13 +134,13 @@ test("a banned account can't publish and its worlds leave the list; a world a mo
   const jo = await signUp("jojo");
   const world = await publish(jo.token, { origin: "local-world-1" });
   expect((await (await call("/worlds")).json()).map((w: any) => w.id)).toContain(world.id);
-  await db`update accounts set banned_at = now() where id = ${jo.account.id}`;
+  await kit.db`update accounts set banned_at = now() where id = ${jo.account.id}`;
   expect((await (await call("/worlds")).json()).map((w: any) => w.id)).not.toContain(world.id);
   expect((await share(jo.token)).status).toBe(403);
 
   const kim = await signUp("kim");
   const removed = await publish(kim.token, { origin: "local-world-2" });
-  await db`update worlds set removed_at = now(), removed_by = 'moderator' where id = ${removed.id}`;
+  await kit.db`update worlds set removed_at = now(), removed_by = 'moderator' where id = ${removed.id}`;
   expect((await share(kim.token, { origin: "local-world-2" })).status).toBe(403);
   expect((await call(`/worlds/${removed.id}`, { method: "PUT", token: kim.token, body: { title: "x", visibility: "public", files: { zip: 9 } } })).status).toBe(410);
 });

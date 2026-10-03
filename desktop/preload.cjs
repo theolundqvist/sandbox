@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("shell", {
   name: () => ipcRenderer.invoke("name"),
   setName: (name) => ipcRenderer.invoke("set-name", name),
   account: (action, body) => ipcRenderer.invoke("account", action, body),
+  community: (action, body) => ipcRenderer.invoke("community", action, body),
   leave: () => ipcRenderer.send("leave"),
   quit: () => ipcRenderer.send("quit"),
   update: () => ipcRenderer.invoke("update"),
