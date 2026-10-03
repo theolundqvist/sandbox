@@ -885,7 +885,10 @@ describe("in a browser", () => {
     const opacity = () => line.evaluate((el) => Number(getComputedStyle(el).opacity));
     await line.waitFor();
     assert.equal(await opacity(), 1);
-    await until("the line to fade", async () => (await opacity()) === 0);
+    await until("the line to fade", async () => (await opacity()) === 0).catch(async (e) => {
+      console.log("DEBUG-FADE", JSON.stringify(await page.evaluate(() => { const r = document.querySelector("#ui")?.shadowRoot ?? document; const f = r.getElementById?.("feed") ?? document.getElementById("feed"); const c = r.getElementById?.("chat") ?? document.getElementById("chat"); return { now: performance.now(), chatHidden: c?.hidden, body: document.body.className, lines: [...(f?.children ?? [])].map((l) => [l.className, l.textContent, getComputedStyle(l).opacity]) }; })));
+      throw e;
+    });
     await page.keyboard.press("Enter");
     assert.equal(await opacity(), 1);
     await page.keyboard.press("Escape");

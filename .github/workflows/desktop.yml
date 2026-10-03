@@ -11,6 +11,10 @@ permissions:
 
 jobs:
   e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        rep: [1, 2, 3]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -32,7 +36,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: desktop-captures
+          name: desktop-captures-${{ matrix.rep }}
           path: ${{ runner.temp }}/captures
 
   build:
