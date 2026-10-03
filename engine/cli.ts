@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { download, EgressError } from "./egress";
 import { hasGit, type Mods } from "./mods";
 import { brief, type Recorder } from "./record";
 import type { GameCard } from "./games";
@@ -465,11 +466,9 @@ export function createCli(ctx: CliContext) {
         const { abs, rel } = writable(`mods/${args.mod}/assets/${args.name}`, who);
         let bytes: Uint8Array;
         if (args.url) {
-          const res = await fetch(args.url).catch((e) => {
-            throw new ToolError(`Download failed: ${e.message}`);
+          bytes = await download(args.url, 20 << 20).catch((e) => {
+            throw e instanceof EgressError ? new ToolError(e.message) : e;
           });
-          if (!res.ok) throw new ToolError(`Download failed: HTTP ${res.status}`);
-          bytes = new Uint8Array(await res.arrayBuffer());
         } else if (args.base64) bytes = Buffer.from(args.base64, "base64");
         else throw new ToolError("Pass url or base64.");
         if (bytes.length > 20 << 20) throw new ToolError(`${bytes.length} bytes is over the 20 MB limit.`);
