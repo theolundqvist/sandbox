@@ -1,7 +1,7 @@
-import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { box } from "./box";
 import { install } from "./box/packages";
 import { download, EgressError } from "./egress";
 import { GIT, GIT_ENV, hasGit, type Mods } from "./mods";
@@ -597,15 +597,16 @@ export function createCli(ctx: CliContext) {
         if (!/^[a-z][a-z0-9-]{0,31}$/.test(args.mod)) throw new ToolError("Unknown mod.");
         const path = join(ctx.dbDir, `${args.mod}.sqlite`);
         if (!existsSync(path)) throw new ToolError(`${args.mod} has no database yet; it gets one the first time it uses world.db.`);
-        const db = new Database(path, { readonly: true });
-        db.run("pragma busy_timeout = 2000");
+        const sql = String(args.sql ?? "select sql from sqlite_master where sql is not null");
+        const runner = join(import.meta.dir, "box", "query.ts");
+        const proc = box({ cmd: [process.execPath, runner, path, sql], read: [runner, ctx.dbDir] });
+        const timer = setTimeout(() => proc.kill("SIGKILL"), 5000);
         try {
-          const rows = db.query(args.sql ?? "select sql from sqlite_master where sql is not null").all();
-          return JSON.stringify(rows.slice(0, 100), null, 1) + (rows.length > 100 ? `\n(${rows.length} rows, first 100 shown)` : "");
-        } catch (e: any) {
-          throw new ToolError(e.message);
+          const [out, err, code] = await Promise.all([new Response(proc.stdout as ReadableStream<Uint8Array>).text(), new Response(proc.stderr as ReadableStream<Uint8Array>).text(), proc.exited]);
+          if (code) throw new ToolError(err.trim() || "The database query did not finish.");
+          return out;
         } finally {
-          db.close();
+          clearTimeout(timer);
         }
       }
       case "history":
