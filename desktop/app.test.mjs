@@ -22,14 +22,8 @@ const children = [];
 /** Where the run saves screenshots for review, when it is given a folder. */
 const CAPTURES = process.env.SANDBOX_CAPTURES;
 const capture = (page, name) => CAPTURES && page.screenshot({ path: join(CAPTURES, `${name}.png`) });
-/** What each install's app printed, by install: its own log lines and Chromium's, which Electron prints when ELECTRON_ENABLE_LOGGING is set. */
-const printed = new Map();
-/**
- * Keeps an install's launcher log, its worlds' logs, what its app printed and any `notes` (as `<name>-<note>.log`) where CI uploads captures, so a failed run
- * says what they saw. Every value that opens something there is blanked first: the menu and relay keys, each world's invite, host key and password, its
- * players' keys, and the stand-in services' keys.
- */
-function keepLogs(name, notes = {}) {
+/** Redact synthetic credentials before preserving launcher and world logs. */
+function keepLogs(name) {
   if (!CAPTURES) return;
   const home = join(dir, name, "Sandbox");
   const worlds = join(home, "data", "worlds");
@@ -51,8 +45,6 @@ function keepLogs(name, notes = {}) {
   mkdirSync(CAPTURES, { recursive: true });
   keep(join(home, "server.log"), `${name}-server.log`);
   for (const id of ids) keep(join(worlds, id, "world.log"), `${name}-${id}-world.log`);
-  if (printed.has(name)) writeFileSync(join(CAPTURES, `${name}-electron.log`), clean(Buffer.concat(printed.get(name)).toString()));
-  for (const [note, text] of Object.entries(notes)) writeFileSync(join(CAPTURES, `${name}-${note}.log`), clean(text));
 }
 
 async function until(what, check, ms = 20000) {
@@ -233,11 +225,8 @@ async function launch(name, env = {}, player = "host") {
   const app = await _electron.launch({
     executablePath: ELECTRON,
     args: [DESKTOP, "--no-sandbox", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
-    env: { ...ownEnv, ELECTRON_ENABLE_LOGGING: "1", SANDBOX_STT: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_RELEASE: `http://127.0.0.1:${RELEASES}/release`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_COMMUNITY: `http://127.0.0.1:${RELEASES}`, ...env },
+    env: { ...ownEnv, SANDBOX_STT: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_RELEASE: `http://127.0.0.1:${RELEASES}/release`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_COMMUNITY: `http://127.0.0.1:${RELEASES}`, ...env },
   });
-  const said = printed.get(name) ?? [];
-  printed.set(name, said);
-  for (const out of [app.process().stdout, app.process().stderr]) out?.on("data", (chunk) => said.push(chunk));
   await app.context().addInitScript(OPEN_UI);
   const shell = await until("the start screen", async () => app.windows().find((w) => w.url().startsWith("sandbox://app/shell.html")));
   await shell.locator(player ? "#title" : "#name").waitFor();
@@ -254,47 +243,12 @@ const gamePage = (app) => until("the game view", async () => app.windows().find(
 /** For a failure's message, a page or the app that may not answer: what it said, or that it didn't within 2 s, which is itself the finding. */
 const within = (promise) => Promise.race([promise.catch((e) => `failed: ${e.message.split("\n")[0]}`), sleep(2000).then(() => "no answer in 2 s")]);
 /**
- * The app's processes as the kernel sees them, for a failure's message: each one's name, state and what it waits in, with the CPU ticks it used over a
- * second. One that doesn't answer shows here whether it is busy (R, ticks rising) or waiting, and on what. Linux only, where CI runs.
- */
-async function processes(root) {
-  const read = (path) => {
-    try {
-      return readFileSync(path, "utf8");
-    } catch {
-      return "";
-    }
-  };
-  const sample = () =>
-    new Map(
-      readdirSync("/proc")
-        .filter((pid) => /^\d+$/.test(pid))
-        .flatMap((pid) => {
-          const stat = read(`/proc/${pid}/stat`);
-          if (!stat) return [];
-          // After the name: state, parent, then from the process group on; user and system ticks are the 10th and 11th of those.
-          const [state, ppid, ...rest] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-          return [[Number(pid), { name: stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")")), state, ppid: Number(ppid), ticks: Number(rest[9]) + Number(rest[10]) }]];
-        }),
-    );
-  const before = sample();
-  await sleep(1000);
-  const now = sample();
-  const tree = [root];
-  for (let i = 0; i < tree.length; i++) for (const [pid, p] of now) if (p.ppid === tree[i]) tree.push(pid);
-  return tree.map((pid) => {
-    const p = now.get(pid);
-    return p ? `${p.name} ${p.state} ${read(`/proc/${pid}/wchan`) || "-"} +${p.ticks - (before.get(pid)?.ticks ?? p.ticks)}` : `${pid} gone`;
-  });
-}
-/**
  * Where the game view and the app's other pages are, for a failure's message: each address up to its path, since a query or a #fragment may carry a key.
- * With the app's processes, how far the game's page loaded, the frames it holds, every web page as the app itself sees it, and the world the launcher at `menuAt` hosts, by name only.
+ * With how far the game's page loaded, the frames it holds, every web page as the app itself sees it, and the world the launcher at `menuAt` hosts, by name only.
  */
 async function whereAll(app, game, menuAt, key) {
   const at = (u) => u.split(/[?#]/)[0];
   return JSON.stringify({
-    processes: await processes(app.process().pid),
     game: at(game.url()),
     ready: game.isClosed() ? "closed" : await within(game.evaluate(() => document.readyState)),
     frames: game.isClosed() ? [] : game.frames().map((f) => at(f.url())),
@@ -302,54 +256,6 @@ async function whereAll(app, game, menuAt, key) {
     views: await within(app.evaluate(({ webContents }) => webContents.getAllWebContents().map((wc) => ({ url: wc.getURL().split(/[?#]/)[0], loading: wc.isLoading(), waiting: wc.isWaitingForResponse(), crashed: wc.isCrashed() })))),
     hosting: await within(menu(menuAt, key, "state").then((s) => (s.running ? { id: s.running.id, name: s.running.name } : (s.error ?? null)))),
   });
-}
-/**
- * Has the app print, with the time, each page's navigations and loads, its renderers' and child processes' ends and hangs, and each message a page sends it
- * by channel, as it arrives and as its handlers return: where a stall begins shows in what it printed. Addresses up to their path and channel names only, never what was sent.
- */
-const traceApp = (app) =>
-  app.evaluate(({ app: electron, ipcMain, webContents }) => {
-    const say = (...what) => console.log(`[trace ${new Date().toISOString()}]`, ...what);
-    const at = (u) => String(u).split(/[?#]/)[0];
-    const watch = (wc) => {
-      const id = `wc${wc.id}`;
-      wc.on("did-start-navigation", (d) => say(id, "start", at(d.url), d.isMainFrame ? "main" : "frame", d.isSameDocument ? "same-document" : "new-document"));
-      wc.on("will-navigate", (d) => say(id, "will-navigate", at(d.url)));
-      wc.on("did-redirect-navigation", (d) => say(id, "redirect", at(d.url)));
-      wc.on("did-frame-navigate", (_e, url, code, _text, main) => say(id, "navigated", at(url), code, main ? "main" : "frame"));
-      wc.on("did-fail-load", (_e, code, why, url, main) => say(id, "failed", code, why, at(url), main ? "main" : "frame"));
-      wc.on("did-finish-load", () => say(id, "loaded"));
-      wc.on("dom-ready", () => say(id, "dom-ready"));
-      wc.on("preload-error", (_e, _path, error) => say(id, "preload-error", error.message));
-      wc.on("render-process-gone", (_e, d) => say(id, "renderer gone", d.reason, d.exitCode));
-      wc.on("unresponsive", () => say(id, "unresponsive"));
-      wc.on("responsive", () => say(id, "responsive"));
-      wc.on("destroyed", () => say(id, "destroyed"));
-    };
-    for (const wc of webContents.getAllWebContents()) watch(wc);
-    electron.on("web-contents-created", (_e, wc) => {
-      say(`wc${wc.id}`, "created");
-      watch(wc);
-    });
-    electron.on("child-process-gone", (_e, d) => say("child gone", d.type, d.reason, d.exitCode));
-    const emit = ipcMain.emit;
-    ipcMain.emit = function (channel, ...rest) {
-      if (channel === "newListener" || channel === "removeListener") return emit.call(this, channel, ...rest);
-      say("ipc in", channel);
-      try {
-        return emit.call(this, channel, ...rest);
-      } finally {
-        say("ipc out", channel);
-      }
-    };
-    say("tracing", webContents.getAllWebContents().map((wc) => `wc${wc.id} ${at(wc.getURL())}`).join(", "));
-  });
-/** Every thread's native stack in a process, through gdb as root, which CI allows without a password, in at most 30 s; or plainly why there are none. */
-function stacks(pid) {
-  const { promise, resolve } = Promise.withResolvers();
-  const gdb = ["-n", "timeout", "-s", "KILL", "30", "gdb", "-p", String(pid), "-batch", "-nx", "-ex", "set pagination off", "-ex", "thread apply all bt 40"];
-  execFile("sudo", gdb, { timeout: 40000, maxBuffer: 16 << 20 }, (error, stdout, stderr) => resolve(`${error ? `gdb failed: ${error.message.split("\n")[0]}\n` : ""}${stdout}${stderr}`));
-  return promise;
 }
 const menuShown = (shell) => shell.locator("#title .items").isVisible();
 const shown = (page, sel) => page.locator(sel).isVisible();
@@ -522,18 +428,14 @@ describe("hosting and joining", () => {
     assert.equal(await game.textContent("#enter-hint"), "EnterHost");
     unhosted = "Host untouched didn't get into its new world";
     await game.evaluate(() => (document.getElementById("error").textContent = ""));
-    await traceApp(app);
     await game.keyboard.press("Enter");
     // The menu goes to the world, or says why it couldn't.
     const outcome = await until("the hosted world or the menu's error", async () => (/:\d+\/(#.*)?$/.test(game.url()) ? "hosted" : (await game.evaluate(() => document.getElementById("error")?.textContent).catch(() => null)) || false), 30000).catch(() => null);
     if (outcome !== "hosted") {
-      // Kept at each step: closing the app has hung after this before, and the run's deadline then ends it before the group's after.
+      // Preserve logs before teardown, which may also stall after a navigation failure.
       keepLogs("host");
       const where = await whereAll(app, game, `http://127.0.0.1:${state().port}`, JSON.parse(readFileSync(join(dir, "host", "Sandbox", "data", "launcher.json"), "utf8")).hostKey);
-      const native = await stacks(app.process().pid);
-      keepLogs("host", { stacks: native });
-      const threads = native.match(/^Thread \d+/gm)?.length ?? 0;
-      assert.fail((unhosted = `${outcome ? `the menu said: ${outcome}` : "neither the world nor an error in 30 s"}; ${where}; ${threads ? `${threads} threads' stacks in host-stacks.log` : `no stacks: ${native.split("\n").slice(0, 2).join(" ")}`}`));
+      assert.fail((unhosted = `${outcome ? `the menu said: ${outcome}` : "neither the world nor an error in 30 s"}; ${where}`));
     }
     await playing(game);
     unhosted = null;
@@ -1802,7 +1704,7 @@ describe("playtest", () => {
     await game.keyboard.press("Enter");
     await game.waitForURL(/:\d+\/(#.*)?$/);
     await playing(game);
-    base = `http://127.0.0.1:${state().port}`;
+    base = `http://localhost:${state().port}`;
     key = await game.evaluate(() => Object.entries(localStorage).find(([k]) => k.startsWith("sandbox-key:"))[1]);
   });
   after(async () => {
@@ -2002,7 +1904,7 @@ describe("world list", () => {
     const after = await hostState();
     assert.deepEqual([after.running.id, after.running.invite, after.running.link], [hosted.id, hosted.invite, hosted.link]);
     assert.equal(JSON.parse(readFileSync(join(worldsDir(), hosted.id, "config.json"), "utf8")).name, "Lava Keep");
-    const friend = await guest(`http://127.0.0.1:${own}`, hosted.invite, "friend");
+    const friend = await guest(`http://localhost:${own}`, hosted.invite, "friend");
     friend.close();
 
     await shell.focus(joinedRow);
@@ -2035,7 +1937,7 @@ describe("a slow mod", () => {
     await game.keyboard.press("Enter");
     await game.waitForURL(/:\d+\/(#.*)?$/);
     await playing(game);
-    base = `http://127.0.0.1:${state().port}`;
+    base = `http://localhost:${state().port}`;
     key = await game.evaluate(() => Object.entries(localStorage).find(([k]) => k.startsWith("sandbox-key:"))[1]);
   });
   after(async () => {
