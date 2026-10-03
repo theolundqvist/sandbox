@@ -45,6 +45,16 @@
   #world-tip { color: var(--text); }
   .actions { display: flex; gap: 8px 24px; flex-wrap: wrap; align-items: center; margin-top: 20px; }
   #report:disabled { opacity: .5; cursor: default; }
+  #my-worlds { margin-bottom: 32px; }
+  #worlds .field { width: min(960px, 100%); }
+  #comment-list { width: min(720px, 100%); }
+  .comment { padding: 14px 0; border-bottom: 1px solid var(--line); }
+  .comment p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .comment.removed p { color: var(--dim); }
+  .comment small { color: var(--dim); font-size: 13px; }
+  .comment .quiet { margin-left: 20px; padding: 0 4px; }
+  #me { position: fixed; top: 24px; right: 32px; z-index: 1; text-decoration: none; }
+  form.entries { display: flex; flex-direction: column; }
 
   @media (max-width: 760px) {
     #home .lead { font-size: 17px; margin-bottom: 40px; }
@@ -63,6 +73,7 @@
 <div id="backdrop" class="backdrop"></div>
 <main class="front">
   <a class="back" id="back" href="/" hidden>Back</a>
+  <a class="quiet" id="me" href="/account" hidden></a>
 
   <section id="home" class="screen title" data-nav hidden>
     <svg class="logo" id="logo"></svg>
@@ -84,8 +95,10 @@
 
   <section id="worlds" class="screen" data-nav hidden>
     <h1>Community</h1>
+    <div class="field"><span>Show</span><div class="pick" id="world-sort" data-options="top:Most played,new:Newest"></div></div>
     <div class="worlds" id="world-list"></div>
     <p id="empty" class="status" hidden></p>
+    <div class="items"><button class="item" id="more" hidden>More</button></div>
   </section>
 
   <section id="world" class="screen" data-nav hidden>
@@ -93,9 +106,15 @@
     <h1 id="world-title"></h1>
     <p id="world-by"></p>
     <p id="world-about"></p>
-    <div class="items"><button class="item" id="world-get">Host or remix it in the app</button></div>
+    <div class="items"><button class="item" id="world-get">Play or fork it in the app</button><button class="item" id="vote">Upvote<span class="value" id="votes"></span></button></div>
     <p class="note" id="world-tip" hidden>Link copied. In Sandbox, open <b>Worlds</b>, then <b>Community</b>, and paste it.</p>
-    <div class="actions"><a class="quiet" href="/host">Get the app</a><button class="quiet" id="report">Report</button></div>
+    <div class="actions"><a class="quiet" href="/host">Get the app</a><button class="quiet" id="report">Report</button><button class="quiet danger" id="take-down" hidden>Take down</button></div>
+    <h2>Comments</h2>
+    <form id="comment-form"><label class="item entry"><input type="text" id="comment-text" maxlength="1000" placeholder="Write a comment" autocomplete="off"></label></form>
+    <a class="quiet" id="comment-signin" hidden>Sign in to comment</a>
+    <div id="comment-list"></div>
+    <p class="note" id="comments-none" hidden>No comments yet</p>
+    <button class="quiet" id="comments-more" hidden>More</button>
   </section>
 
   <section id="host" class="screen" data-nav hidden>
@@ -111,6 +130,42 @@
       <li>Scroll down to “Sandbox” was blocked, and click Open Anyway.</li>
       <li>Click Open. Your Mac remembers it from then on.</li>
     </ol>
+  </section>
+
+  <section id="signin" class="screen" data-nav hidden>
+    <h1>Sign in</h1>
+    <form class="entries" id="signin-form">
+      <label class="item entry"><input type="email" id="signin-email" placeholder="Email" autocomplete="email" spellcheck="false" required></label>
+      <label class="item entry"><input type="password" id="signin-password" placeholder="Password" autocomplete="current-password" required></label>
+      <button class="item">Sign in</button>
+    </form>
+    <div class="items"><a class="item" id="go-signup" href="/signup">Create account</a></div>
+  </section>
+
+  <section id="signup" class="screen" data-nav hidden>
+    <h1>Create account</h1>
+    <form class="entries" id="signup-form">
+      <label class="item entry"><input type="text" id="signup-username" placeholder="Username" maxlength="20" autocomplete="username" spellcheck="false" required></label>
+      <label class="item entry"><input type="email" id="signup-email" placeholder="Email" autocomplete="email" spellcheck="false" required></label>
+      <label class="item entry"><input type="password" id="signup-password" placeholder="Password" autocomplete="new-password" required></label>
+      <button class="item">Create account</button>
+    </form>
+  </section>
+
+  <section id="account" class="screen" data-nav hidden>
+    <h1 id="account-name"></h1>
+    <div class="worlds" id="my-worlds"></div>
+    <p class="note" id="my-none" hidden>Worlds you publish from the app show up here.</p>
+    <div class="items"><button class="item" id="sign-out">Sign out</button><a class="item" href="/account/delete">Delete account</a></div>
+  </section>
+
+  <section id="delete" class="screen" data-nav hidden>
+    <h1>Delete account?</h1>
+    <p class="lead">Your published worlds, votes and comments go with it.</p>
+    <form class="entries" id="delete-form">
+      <label class="item entry"><input type="password" id="delete-password" placeholder="Password" autocomplete="current-password" required></label>
+      <button class="item danger">Delete account</button>
+    </form>
   </section>
 
   <div id="error" class="error"></div>

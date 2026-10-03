@@ -1,5 +1,5 @@
 // A thin shell around the web client: one window, a trusted launch screen and title bar, and the game in a view with no extra powers.
-const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, session, shell: desktop } = require("electron");
+const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, safeStorage, session, shell: desktop } = require("electron");
 const { execFile, spawn } = require("node:child_process");
 const { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } = require("node:fs");
 const { finished } = require("node:stream/promises");
@@ -12,6 +12,7 @@ const mac = process.platform === "darwin";
 const windows = process.platform === "win32";
 const BAR = 36;
 const RELAY = process.env.SANDBOX_RELAY ?? "https://sandbox-relay.lundqvistliss.com";
+const COMMUNITY = process.env.SANDBOX_COMMUNITY ?? "https://sandbox.api.lundqvistliss.com";
 const RELEASES = process.env.SANDBOX_UPDATES ?? "https://api.github.com/repos/theolundqvist/sandbox/releases/latest";
 /** The installer and the build from the release being installed, so a broken master never breaks an update. */
 const INSTALLER = (version) => process.env.SANDBOX_INSTALLER ?? `https://raw.githubusercontent.com/theolundqvist/sandbox/v${version}/desktop/install${windows ? ".ps1" : ""}`;
@@ -265,7 +266,9 @@ function startServer() {
 async function hostGame(target) {
   const { base, key } = await startServer();
   const screen = { new: "screen=create", community: "screen=community" }[target] ?? `world=${target}`;
-  return play(`${base}/menu#key=${key}&${screen}`);
+  const opened = play(`${base}/menu#key=${key}&${screen}`);
+  setTimeout(beatNow, 5000);
+  return opened;
 }
 
 /** Starts this app's server again after a restart: the launcher brings back the world it hosted, under the same link. */
@@ -288,10 +291,198 @@ async function stopServer() {
   if (current.proc.exitCode === null && !current.proc.signalCode) current.proc.kill("SIGKILL");
 }
 
+/** The Community account's session lives only here, encrypted at rest: never in the engine's data folder, a world's environment or any page. Where the system can't encrypt it, it lasts until the app quits. */
+const ACCOUNT = join(app.getPath("userData"), "account.bin");
+/** @type {string | null | undefined} */ let accountToken;
+function sessionToken() {
+  if (accountToken === undefined) {
+    try {
+      accountToken = safeStorage.decryptString(readFileSync(ACCOUNT));
+    } catch {
+      accountToken = null;
+    }
+  }
+  return accountToken;
+}
+function keepSession(token) {
+  accountToken = token;
+  rmSync(ACCOUNT, { force: true });
+  const plain = process.platform === "linux" && safeStorage.getSelectedStorageBackend?.() === "basic_text";
+  if (token && safeStorage.isEncryptionAvailable() && !plain) writeFileSync(ACCOUNT, safeStorage.encryptString(token), { mode: 0o600 });
+}
+/** Community's API as the signed-in account; a session it no longer knows signs this app out. */
+async function community(path, { method = "GET", body } = {}) {
+  const token = sessionToken();
+  const res = await fetch(`${COMMUNITY}${path}`, {
+    method,
+    headers: { ...(body && { "content-type": "application/json" }), ...(token && { authorization: `Bearer ${token}` }) },
+    body: body && JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  }).catch(() => null);
+  if (!res) throw new Error("Can't reach Community. Check your connection.");
+  const data = res.status === 204 ? {} : await res.json().catch(() => ({}));
+  if (res.status === 401 && token && path !== "/sessions") keepSession(null);
+  if (!res.ok) throw Object.assign(new Error(data.error ?? `Community answered ${res.status}. Try again.`), { status: res.status });
+  return data;
+}
+/** A menu action on this app's own launcher. */
+async function menu(action, body) {
+  const { base, key } = await startServer();
+  const res = await fetch(`${base}/api/menu/${action}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error);
+  return data;
+}
+/** Worlds this computer shared before accounts move to the account signed in here; the launcher then forgets their owner tokens, which no longer do anything. */
+async function claimWorlds() {
+  let shared = {};
+  try {
+    shared = JSON.parse(readFileSync(join(DATA, "community.json"), "utf8"));
+  } catch {}
+  const settled = [];
+  for (const [local, s] of Object.entries(shared))
+    if (s.id && s.ownerToken) await community(`/worlds/${s.id}/claim`, { method: "POST", body: { ownerToken: s.ownerToken } }).then(() => settled.push(local), (e) => [403, 409].includes(e.status) && settled.push(local));
+  if (settled.length) await menu("community-claimed", { ids: settled });
+}
+const ACCOUNT_ACTIONS = {
+  account: async () => (sessionToken() ? (await community("/account").catch((e) => (e.status === 401 ? {} : Promise.reject(e)))).account ?? null : null),
+  "sign-up": async ({ email, password, username }) => signedInAs(await community("/accounts", { method: "POST", body: { email, password, username } })),
+  "sign-in": async ({ email, password }) => signedInAs(await community("/sessions", { method: "POST", body: { email, password } })),
+  "sign-out": async () => {
+    await community("/sessions", { method: "DELETE" }).catch(() => {});
+    keepSession(null);
+    return null;
+  },
+  rename: async ({ username }) => (await community("/account", { method: "PATCH", body: { username } })).account,
+  "delete-account": async ({ password }) => {
+    await community("/account", { method: "DELETE", body: { password } });
+    keepSession(null);
+    return null;
+  },
+};
+async function signedInAs({ token, account }) {
+  keepSession(token);
+  await claimWorlds().catch((e) => console.log(`Couldn't claim shared worlds: ${e.message}`));
+  return account;
+}
+
+/** Publishes a world the launcher staged, as the signed-in account: a new community world, or the same one again. */
+async function publishStaged(id, { details, sizes, community: before }) {
+  const body = { ...details, files: sizes };
+  const updated = before && (await community(`/worlds/${before}`, { method: "PUT", body }).catch((e) => ([404, 410].includes(e.status) ? null : Promise.reject(e))));
+  const { id: world, uploads } = updated || (await community("/worlds", { method: "POST", body }));
+  await menu("publish-upload", { id, uploads });
+  const published = await community(`/worlds/${world}/done`, { method: "POST" });
+  await menu("published", { id, world: published });
+  return published;
+}
+/** The game's Share: the world staged itself, and the player confirms in a dialog no world can draw. Null once it's done or the player said no, or why it couldn't. */
+async function publishWorld(id) {
+  const stage = await menu("staged", { id });
+  if (!stage) return "Share it again.";
+  const account = await ACCOUNT_ACTIONS.account();
+  if (!account) return "Sign in to Community in Settings, then share again.";
+  const where = stage.details.visibility === "public" ? "Anyone can find it in Community." : "Anyone with the link can play it.";
+  const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Publish", "Cancel"], defaultId: 0, cancelId: 1, message: `Publish ${stage.details.title} as ${account.username}?`, detail: where });
+  if (response !== 0) return null;
+  await publishStaged(id, stage);
+  return null;
+}
+/** Takes a world this app published out of Community, once the player confirms. */
+async function unpublishWorld(id) {
+  const shared = (await hostState())?.worlds.find((w) => w.id === id)?.shared?.id;
+  if (!shared) return "That world isn't shared.";
+  const { response } = await dialog.showMessageBox(win, { type: "warning", buttons: ["Remove", "Cancel"], defaultId: 1, cancelId: 1, message: "Remove this world from Community?", detail: "Its link stops working for everyone." });
+  if (response !== 0) return null;
+  // A world shared before accounts and not yet claimed is still taken down by the owner token the launcher keeps.
+  const legacy = await community(`/worlds/${shared}`, { method: "DELETE" }).then(() => false, (e) => ([401, 403].includes(e.status) ? true : e.status === 410 ? false : Promise.reject(e)));
+  await (legacy ? menu("unshare", { id }) : menu("published", { id }));
+  return null;
+}
+/** Only the world this app is hosting and playing may ask to publish itself. */
+const hostState = () => server && ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null);
+async function hostingHere(event, id) {
+  return event.sender === game?.view.webContents && (await hostState())?.running?.id === id;
+}
+
+/** Plays of Community worlds hosted here: focused time as a running total each minute, rechecking the hosted world since the in-game menu can switch it. */
+let focusedMs = 0;
+let focusedSince = null;
+const focusedNow = () => focusedMs + (focusedSince === null ? 0 : Date.now() - focusedSince);
+/** @type {{ local: string, id: string, to: { token: string, host: string }, from: number } | null} */ let playing = null;
+async function beat() {
+  const s = game && usage.sharing() ? await hostState() : null;
+  const local = s?.running?.id ?? null;
+  if (playing && playing.local !== local) await sendBeat(playing).then(() => (playing = null));
+  if (playing) return sendBeat(playing);
+  const world = local && s.worlds.find((w) => w.id === local);
+  const id = world?.shared?.id ?? world?.from;
+  const to = id && (await usage.install());
+  if (!to) return;
+  const token = to.host === COMMUNITY && sessionToken();
+  const res = await fetch(`${to.host}/plays`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${to.token}`, "content-type": "application/json", ...(token && { "x-session": token }) },
+    body: JSON.stringify({ world: id }),
+    signal: AbortSignal.timeout(10000),
+  }).catch(() => null);
+  if (res?.ok) playing = { local, id: (await res.json()).play, to, from: focusedNow() };
+}
+const sendBeat = (p) =>
+  fetch(`${p.to.host}/plays/${p.id}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${p.to.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ seconds: Math.round((focusedNow() - p.from) / 1000) }),
+    signal: AbortSignal.timeout(10000),
+  }).catch(() => null);
+let beating = Promise.resolve();
+const beatNow = () => (beating = beating.then(beat, beat));
+
+/** Community from the launch screen, as the signed-in account. Ids are checked here, since they go into the API's paths. */
+const worldId = (id) => {
+  if (!/^[a-z0-9]{12}$/.test(String(id))) throw new Error("That world isn't in Community.");
+  return String(id);
+};
+const commentId = (id) => {
+  if (!/^[0-9]{1,18}$/.test(String(id))) throw new Error("That comment isn't there any more.");
+  return String(id);
+};
+/** The local world a community world was published from, if it was from here. */
+const publishedFrom = async (id) => (await startServer(), await hostState())?.worlds.find((w) => w.shared?.id === id)?.id;
+const COMMUNITY_ACTIONS = {
+  list: ({ after, mine, sort }) => (mine ? community("/account/worlds") : community(`/worlds?sort=${sort === "new" ? "new" : "top"}${after ? `&after=${worldId(after)}` : ""}`)),
+  world: ({ id }) => community(`/worlds/${worldId(id)}`),
+  vote: ({ id, up }) => community(`/worlds/${worldId(id)}/vote`, { method: "PUT", body: { up: up === true } }),
+  report: ({ id }) => community(`/worlds/${worldId(id)}/report`, { method: "POST" }),
+  comments: ({ id, after }) => community(`/worlds/${worldId(id)}/comments${after ? `?after=${commentId(after)}` : ""}`),
+  comment: ({ id, body }) => community(`/worlds/${worldId(id)}/comments`, { method: "POST", body: { body: String(body ?? "") } }),
+  "remove-comment": ({ id }) => community(`/comments/${commentId(id)}`, { method: "DELETE" }),
+  "report-comment": ({ id }) => community(`/comments/${commentId(id)}/report`, { method: "POST" }),
+  "take-down": async ({ id }) => {
+    const local = await publishedFrom(worldId(id));
+    await community(`/worlds/${id}`, { method: "DELETE" });
+    if (local) await menu("published", { id: local });
+    return {};
+  },
+  /** Play hosts the world, reusing the copy it made before; Fork makes a new copy in Worlds. The launch screen has asked about trust already. */
+  get: async ({ id, host }) => {
+    await startServer();
+    const { world } = await menu("community-get", { id: worldId(id), trust: true, host: host === true });
+    if (host === true) await hostGame(world);
+    return { world };
+  },
+  /** This computer's worlds, to pick one to publish. */
+  local: async () => (await startServer(), await hostState())?.worlds.map((w) => ({ id: w.id, name: w.name, shared: w.shared })) ?? [],
+  publish: async ({ id, title, description, visibility }) => {
+    await startServer();
+    const stage = await menu("publish-stage", { id: String(id), title, description, visibility });
+    return publishStaged(String(id), stage);
+  },
+};
+
 /** Players in the world this app hosts, besides the host playing it here. */
 async function guests() {
-  if (!server) return null;
-  const s = await ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null);
+  const s = await hostState();
   if (!s?.running) return null;
   return { name: s.running.name, count: s.running.players.filter((p) => p.online && p.name !== state.name).length };
 }
@@ -367,6 +558,7 @@ function leave() {
   waiting = null;
   stopAgent();
   if (!game) return;
+  void beatNow();
   win.contentView.removeChildView(game.view);
   // Closing as a browser tab would lets the page finish: the host's game sends its world's picture as it goes.
   game.view.webContents.close({ waitForBeforeUnload: true });
@@ -497,7 +689,16 @@ function createWindow() {
       save();
       layout();
     });
-  win.on("focus", () => (game ? game.view : shell).webContents.focus());
+  win.on("focus", () => {
+    focusedSince ??= Date.now();
+    (game ? game.view : shell).webContents.focus();
+  });
+  win.on("blur", () => {
+    focusedMs = focusedNow();
+    focusedSince = null;
+  });
+  if (win.isFocused()) focusedSince = Date.now();
+  setInterval(beatNow, 60000);
   win.on("close", (event) => {
     if (quitting) return;
     event.preventDefault();
@@ -546,6 +747,14 @@ app.whenReady().then(() => {
     return null;
   });
   ipcMain.handle("name", (event) => (fromShell(event) ? { name: state.name ?? null, suggested: suggestedName() } : null));
+  ipcMain.handle("community", async (event, action, body) => {
+    if (!fromShell(event) || !Object.hasOwn(COMMUNITY_ACTIONS, action)) return { error: "Unknown action" };
+    return COMMUNITY_ACTIONS[action](body ?? {}).then((result) => ({ result }), (e) => ({ error: e.message, status: e.status }));
+  });
+  ipcMain.handle("account", async (event, action, body) => {
+    if (!fromShell(event) || !Object.hasOwn(ACCOUNT_ACTIONS, action)) return { error: "Unknown action" };
+    return ACCOUNT_ACTIONS[action](body ?? {}).then((account) => ({ account }), (e) => ({ error: e.message }));
+  });
   ipcMain.handle("set-name", (event, raw) => {
     if (!fromShell(event)) return null;
     const name = String(raw).trim().toLowerCase();
@@ -576,6 +785,8 @@ app.whenReady().then(() => {
     usage.step("agent", "build-with", { agent: Object.hasOwn(AGENTS, id) ? id : null, outcome: started === true ? "started" : started === false ? "declined" : "failed" });
     return started;
   });
+  for (const [channel, fn] of [["publish", publishWorld], ["unpublish", unpublishWorld]])
+    ipcMain.handle(channel, async (event, id) => ((await hostingHere(event, String(id))) ? fn(String(id)).catch((e) => e.message) : "Publish from the Sandbox app."));
   ipcMain.on("agent-name", (event) => (event.returnValue = fromAgent(event) ? agent.name : ""));
   ipcMain.on("agent-input", (event, data) => fromAgent(event) && agent.pty?.write(String(data)));
   ipcMain.on("agent-resize", (event, cols, rows) => {
@@ -734,7 +945,8 @@ async function install() {
   state.updatedTo = update;
   quitting = true;
   stopAgent();
-  await Promise.all([stopServer(), usage.drain()]);
+  await Promise.all([beatNow(), usage.drain()]);
+  await stopServer();
   save();
   app.quit();
   return null;
@@ -752,7 +964,8 @@ function quit() {
     }
     quitting = true;
     stopAgent();
-    await Promise.all([stopServer(), usage.drain()]);
+    await Promise.all([beatNow(), usage.drain()]);
+    await stopServer();
     app.quit();
   })().finally(() => (confirming = null));
   return confirming;

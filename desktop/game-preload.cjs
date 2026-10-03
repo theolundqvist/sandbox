@@ -1,4 +1,4 @@
-// Loaded into the game: the player's name, whether an update is out, a way to ask the app to install it, the agents it can start beside the game, and the way back to its title screen.
+// Loaded into the game: the player's name, whether an update is out, a way to ask the app to install it, the agents it can start beside the game, publishing the hosted world through the app's account, and the way back to its title screen.
 const { contextBridge, ipcRenderer } = require("electron");
 
 // The app says so as the page loads, before the game has set up its menu, so the last word is kept for it.
@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld("sandboxDesktop", {
   build: (id, key) => ipcRenderer.invoke("build", id, key),
   leave: () => ipcRenderer.send("leave"),
   onUpdating: (fn) => progress.push(fn),
+  publish: (id) => ipcRenderer.invoke("publish", id),
+  unpublish: (id) => ipcRenderer.invoke("unpublish", id),
   onUpdate: (fn) => {
     listeners.push(fn);
     fn(version);

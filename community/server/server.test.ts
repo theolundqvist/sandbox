@@ -3,8 +3,10 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { startStack } from "./stack";
 
 let stack: Awaited<ReturnType<typeof startStack>>;
+let ana: string;
 beforeAll(async () => {
   stack = await startStack();
+  ana = (await (await call("/accounts", { body: { email: "ana@example.com", password: "lava lava lava", username: "ana" }, ip: "10.9.0.1" })).json()).token;
 }, 120_000);
 afterAll(() => stack?.stop(), 30_000);
 
@@ -12,7 +14,7 @@ const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
 const webm = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 9, 9]);
 const zip = new Uint8Array([0x50, 0x4b, 0x03, 0x04, ...new Array(1000).fill(7)]);
 const TYPES = { zip: "application/zip", cover: "image/jpeg", clip: "video/webm" } as const;
-const meta = { title: "Lava Run", description: "Jump the lava.", author: "ana", visibility: "public", engineVersion: "abc123", mods: 3 };
+const meta = { title: "Lava Run", description: "Jump the lava.", visibility: "public", engineVersion: "abc123", mods: 3 };
 
 const call = (path: string, init: { method?: string; body?: unknown; token?: string; ip?: string } = {}) =>
   fetch(`${stack.api}${path}`, {
@@ -29,18 +31,19 @@ async function upload(uploads: Record<string, string>, files: Partial<Record<key
 }
 /** Shares a world the way the launcher does: details first, files straight to storage, then done. */
 async function share(details: object, files: Partial<Record<keyof typeof TYPES, Uint8Array<ArrayBuffer>>> = { zip, cover: jpeg, clip: webm }, ip?: string) {
-  const res = await call("/worlds", { body: { ...details, files: sizes(files) }, ip });
+  const res = await call("/worlds", { body: { ...details, files: sizes(files) }, ip, token: ana });
   expect(res.status).toBe(201);
   const world = await res.json();
   await upload(world.uploads, files);
-  expect((await call(`/worlds/${world.id}/done`, { method: "POST", token: world.ownerToken })).status).toBe(200);
+  expect((await call(`/worlds/${world.id}/done`, { method: "POST", token: ana })).status).toBe(200);
   return world;
 }
 
 test("a shared world is listed and served only once its files are in, and only its owner changes it", async () => {
-  const res = await call("/worlds", { body: { ...meta, files: sizes({ zip, cover: jpeg, clip: webm }) } });
+  const ownerToken = ana;
+  const res = await call("/worlds", { body: { ...meta, files: sizes({ zip, cover: jpeg, clip: webm }) }, token: ana });
   expect(res.status).toBe(201);
-  const { id, link, ownerToken, uploads } = await res.json();
+  const { id, link, uploads } = await res.json();
   expect(id).toMatch(/^[a-z0-9]{12}$/);
   expect(link).toBe(`https://sandbox.example/w/${id}`);
   expect(Object.keys(uploads).sort()).toEqual(["clip", "cover", "zip"]);
@@ -57,7 +60,7 @@ test("a shared world is listed and served only once its files are in, and only i
   expect((await call(`/worlds/${id}/done`, { method: "POST", token: ownerToken })).status).toBe(200);
 
   const world = await (await call(`/worlds/${id}`)).json();
-  expect(world).toMatchObject({ id, title: "Lava Run", author: "ana", visibility: "public", mods: 3, size: zip.length, remixOf: null });
+  expect(world).toMatchObject({ id, title: "Lava Run", author: "ana", visibility: "public", mods: 3, size: zip.length, forkOf: null });
   expect(JSON.stringify(world)).not.toContain(ownerToken);
   expect(new Uint8Array(await (await fetch(world.zip)).arrayBuffer())).toEqual(zip);
   expect(new Uint8Array(await (await fetch(world.cover)).arrayBuffer())).toEqual(jpeg);
@@ -85,28 +88,28 @@ test("a shared world is listed and served only once its files are in, and only i
 
   expect((await call(`/worlds/${id}`, { method: "DELETE", token: "wrong" })).status).toBe(403);
   expect((await call(`/worlds/${id}`, { method: "DELETE", token: ownerToken })).status).toBe(204);
-  expect((await call(`/worlds/${id}`)).status).toBe(404);
+  expect((await call(`/worlds/${id}`)).status).toBe(410);
   for (const url of [updated.zip, updated.cover, updated.clip]) expect((await fetch(url)).status).toBe(404);
 });
 
-test("a remix names the world it came from, and the newest public world lists first", async () => {
+test("a fork names the world it came from, and the newest public world lists first", async () => {
   const first = await share(meta);
-  const remix = await share({ ...meta, title: "Lava Run remix", author: "ben", remixOf: first.id }, { zip, cover: jpeg });
+  const fork = await share({ ...meta, title: "Lava Run fork", forkOf: first.id }, { zip, cover: jpeg });
   const list = await (await call("/worlds")).json();
-  expect(list.map((w: any) => w.id)).toEqual([remix.id, first.id]);
-  expect(list[0]).toMatchObject({ remixOf: first.id, clip: null });
+  expect(list.slice(0, 2).map((w: any) => w.id)).toEqual([fork.id, first.id]);
+  expect(list[0]).toMatchObject({ forkOf: first.id, clip: null });
 });
 
 test("a file that isn't what it claims keeps the world from going live", async () => {
-  const res = await call("/worlds", { body: { ...meta, files: sizes({ zip, cover: jpeg }) }, ip: "10.0.0.2" });
-  const { id, ownerToken, uploads } = await res.json();
+  const res = await call("/worlds", { body: { ...meta, files: sizes({ zip, cover: jpeg }) }, ip: "10.0.0.2", token: ana });
+  const { id, uploads } = await res.json();
   await upload(uploads, { zip, cover: new Uint8Array([1, 2, 3, 4, 5, 6, 7]) });
-  expect(await (await call(`/worlds/${id}/done`, { method: "POST", token: ownerToken })).json()).toEqual({ error: "The world's files didn't all arrive. Share it again." });
+  expect(await (await call(`/worlds/${id}/done`, { method: "POST", token: ana })).json()).toEqual({ error: "The world's files didn't all arrive. Share it again." });
   expect((await call(`/worlds/${id}`)).status).toBe(404);
 });
 
 test("sharing checks what it is sent", async () => {
-  const refusal = async (body: object) => (await call("/worlds", { body, ip: "10.0.0.3" })).json();
+  const refusal = async (body: object) => (await call("/worlds", { body, ip: "10.0.0.3", token: ana })).json();
   const files = sizes({ zip, cover: jpeg });
   expect(await refusal({ ...meta, visibility: "everyone", files })).toEqual({ error: "Visibility is link or public." });
   expect(await refusal({ ...meta, title: " ", files })).toEqual({ error: "A world needs a title." });
@@ -118,9 +121,9 @@ test("sharing checks what it is sent", async () => {
 
 test("one IP shares at most ten worlds an hour", async () => {
   const statuses = [];
-  for (let i = 0; i < 11; i++) statuses.push((await call("/worlds", { body: { ...meta, files: sizes({ zip, cover: jpeg }) }, ip: "10.0.0.4" })).status);
+  for (let i = 0; i < 11; i++) statuses.push((await call("/worlds", { body: { ...meta, files: sizes({ zip, cover: jpeg }) }, ip: "10.0.0.4", token: ana })).status);
   expect(statuses).toEqual([...new Array(10).fill(201), 429]);
-  expect((await call("/worlds", { body: { ...meta, files: sizes({ zip, cover: jpeg }) }, ip: "10.0.0.5" })).status).toBe(201);
+  expect((await call("/worlds", { body: { ...meta, files: sizes({ zip, cover: jpeg }) }, ip: "10.0.0.5", token: ana })).status).toBe(201);
 });
 
 test("only the site's origin may read the API from a browser", async () => {

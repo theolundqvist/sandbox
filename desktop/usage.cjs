@@ -65,6 +65,8 @@ module.exports = function usage(data, version) {
 
   return {
     sharing,
+    /** This computer's install on Community, signing up on first use; null offline. */
+    install,
     share(on) {
       mkdirSync(data, { recursive: true });
       writeFileSync(SHARE, JSON.stringify({ share: on }));

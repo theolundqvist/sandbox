@@ -1,5 +1,5 @@
 // The public face of Sandbox: join a friend's world, browse Community worlds, get the app. Every screen has its own address; a world's is /w/<id>.
-import { COMPUTERS, backdrop, computer, computerPick, joinLink, logo, usage } from "/front.js";
+import { COMPUTERS, backdrop, computer, computerPick, joinLink, logo, pick, usage } from "/front.js";
 
 const API = "https://sandbox.api.lundqvistliss.com";
 
@@ -42,48 +42,79 @@ computerPick($("host-os"), (os) => {
 });
 
 const media = (w) => (w.clip ? el("video", { src: w.clip, poster: w.cover, muted: true, loop: true, autoplay: true, playsInline: true }) : el("img", { src: w.cover, alt: "" }));
-const api = async (path, init) => {
-  const res = await fetch(`${API}${path}`, init);
+/** The API with the visitor's session cookie, which only the API can read; its header tells the API the request comes from this site. */
+const api = async (path, init = {}) => {
+  const res = await fetch(`${API}${path}`, { ...init, credentials: "include", headers: { "x-sandbox": "1", ...(init.body && { "content-type": "application/json" }) } });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? "Community can't be reached right now.");
   return data;
 };
-/** Hosting or remixing happens in the app: the world's link goes on the clipboard to paste there. */
+/** Playing or forking happens in the app: the world's link goes on the clipboard to paste there. */
 async function copyFor(w, tip) {
   await navigator.clipboard?.writeText(w.link).catch(() => {});
   tip.hidden = false;
 }
 
-async function showWorlds() {
-  $("empty").hidden = false;
-  $("empty").textContent = "Loading";
-  const list = await api("/worlds");
-  $("empty").textContent = "No worlds shared yet";
-  $("empty").hidden = !!list.length;
-  $("world-list").replaceChildren(
-    ...list.map((w) => {
-      const get = el("button", { className: "quiet", textContent: "Host or remix it in the app" });
-      get.dataset.event = "world-get";
-      const row = el("a", { className: "world", href: `/w/${w.id}` }, el("span", { className: "cover" }, media(w)), el("span", { className: "what" }, el("b", { textContent: w.title }), el("small", { textContent: `by ${w.author}` }), get));
-      get.onclick = (e) => {
-        e.preventDefault();
-        copyFor(w, $("world-tip"));
-        get.textContent = "Link copied: paste it in Worlds, Community";
-      };
-      return row;
-    }),
-  );
+const counted = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
+const ago = (ms) => {
+  const m = Math.round((Date.now() - ms) / 60000);
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+};
+
+/** A world as a row: its clip, its name, who made it, and the link to play or fork it in the app. */
+function worldRow(w) {
+  const get = el("button", { className: "quiet", textContent: "Play or fork it in the app" });
+  get.dataset.event = "world-get";
+  const about = w.visibility === "link" ? "link only" : `${counted(w.players, "player")} · ${counted(w.plays, "play")} · ${counted(w.votes, "vote")}`;
+  const row = el("a", { className: "world", href: `/w/${w.id}` }, el("span", { className: "cover" }, media(w)), el("span", { className: "what" }, el("b", { textContent: w.title }), el("small", { textContent: `by ${w.author} · ${about}` }), get));
+  get.onclick = (e) => {
+    e.preventDefault();
+    copyFor(w, $("world-tip"));
+    get.textContent = "Link copied: paste it in Worlds, Community";
+  };
+  return row;
 }
+
+let listed = [];
+async function showWorlds(more = false) {
+  if (!more) listed = [];
+  $("empty").hidden = !!listed.length;
+  $("empty").textContent = "Loading";
+  const page = await api(`/worlds?sort=${$("world-sort").dataset.value}${more && listed.length ? `&after=${listed.at(-1).id}` : ""}`);
+  listed.push(...page);
+  $("empty").textContent = "No worlds shared yet";
+  $("empty").hidden = !!listed.length;
+  $("more").hidden = page.length < 50;
+  $("world-list").replaceChildren(...listed.map(worldRow));
+}
+pick($("world-sort"), () => showWorlds().catch((e) => ($("error").textContent = e.message)));
+$("more").onclick = () => showWorlds(true).catch((e) => ($("error").textContent = e.message));
 
 async function showWorld(id) {
   const w = await api(`/worlds/${id}`);
   document.title = `${w.title} · Sandbox`;
   $("world-stage").replaceChildren(media(w));
   $("world-title").textContent = w.title;
-  $("world-by").textContent = [`by ${w.author}`, w.mods ? `${w.mods} mods` : ""].filter(Boolean).join(" · ");
+  $("world-by").textContent = [`by ${w.author}`, counted(w.players, "player"), counted(w.plays, "play"), w.mods ? `${w.mods} mods` : ""].filter(Boolean).join(" · ");
   $("world-about").textContent = w.description;
   $("world-tip").hidden = true;
   $("world-get").onclick = () => copyFor(w, $("world-tip"));
+  const showVote = () => {
+    $("vote").firstChild.textContent = w.voted ? "Upvoted" : "Upvote";
+    $("votes").textContent = String(w.votes);
+  };
+  showVote();
+  // Voting needs an account: signing in comes back here.
+  $("vote").onclick = async () => {
+    if (!(await whoAmI())) return go(`/signin?then=/w/${id}`);
+    try {
+      Object.assign(w, await api(`/worlds/${id}/vote`, { method: "PUT", body: JSON.stringify({ up: !w.voted }) }));
+      showVote();
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+  };
+  $("report").hidden = w.mine;
   $("report").disabled = false;
   $("report").textContent = "Report";
   $("report").onclick = async () => {
@@ -91,9 +122,132 @@ async function showWorld(id) {
     await api(`/worlds/${id}/report`, { method: "POST" }).catch(() => {});
     $("report").textContent = "Reported. Thanks";
   };
+  $("take-down").hidden = !w.mine;
+  $("take-down").textContent = "Take down";
+  $("take-down").onclick = async () => {
+    if ($("take-down").textContent === "Take down") return void ($("take-down").textContent = "Take down for everyone?");
+    try {
+      await api(`/worlds/${id}`, { method: "DELETE" });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    go("/account");
+  };
+  await showComments(id);
 }
 
-const SCREENS = { "/": "home", "/join": "join", "/worlds": "worlds", "/host": "host" };
+/** A world's comments, oldest first, 100 at a time. Their author and the world's owner remove them; anyone reports them. */
+let thread = [];
+async function showComments(id, more = false) {
+  if (!more) thread = [];
+  const signedIn = !!(await whoAmI());
+  $("comment-form").hidden = !signedIn;
+  $("comment-signin").hidden = signedIn;
+  $("comment-signin").href = `/signin?then=/w/${id}`;
+  const page = await api(`/worlds/${id}/comments${more && thread.length ? `?after=${thread.at(-1).id}` : ""}`);
+  thread.push(...page);
+  $("comments-more").hidden = page.length < 100;
+  $("comments-more").onclick = () => showComments(id, true).catch((e) => ($("error").textContent = e.message));
+  $("comment-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const body = $("comment-text").value.trim();
+    if (!body) return;
+    try {
+      thread.push(await api(`/worlds/${id}/comments`, { method: "POST", body: JSON.stringify({ body }) }));
+    } catch (err) {
+      return void ($("error").textContent = err.message);
+    }
+    $("comment-text").value = "";
+    renderComments();
+  };
+  renderComments();
+}
+function renderComments() {
+  $("comments-none").hidden = thread.length > 0;
+  $("comment-list").replaceChildren(
+    ...thread.map((c) => {
+      const head = el("small", { textContent: `${c.author} · ${ago(c.at)}` });
+      const act = (text, run) => head.appendChild(el("button", { className: "quiet", textContent: text, onclick: run }));
+      if (c.canRemove)
+        act("Remove", async () => {
+          try {
+            await api(`/comments/${c.id}`, { method: "DELETE" });
+          } catch (e) {
+            return void ($("error").textContent = e.message);
+          }
+          Object.assign(c, { removed: true, body: "", canRemove: false });
+          renderComments();
+        });
+      if (!c.mine && !c.removed)
+        act("Report", async (e) => {
+          e.target.disabled = true;
+          await api(`/comments/${c.id}/report`, { method: "POST" }).catch(() => {});
+          e.target.textContent = "Reported";
+        });
+      return el("div", { className: c.removed ? "comment removed" : "comment" }, head, el("p", { textContent: c.removed ? "Removed" : c.body }));
+    }),
+  );
+}
+
+/** Who is signed in, asked once per page load and after signing in or out. */
+let account;
+async function whoAmI(fresh = false) {
+  if (fresh || account === undefined) account = (await api("/account").catch(() => ({}))).account ?? null;
+  $("me").hidden = false;
+  $("me").textContent = account ? account.username : "Sign in";
+  return account;
+}
+const go = (path) => {
+  history.pushState(null, "", path);
+  route();
+};
+/** Where to carry on after signing in: the page that asked for it. */
+const then = () => new URLSearchParams(location.search).get("then")?.match(/^\/[a-z0-9/]*$/)?.[0] ?? "/account";
+async function enterAccount(path, body) {
+  $("error").textContent = "";
+  try {
+    await api(path, { method: "POST", body: JSON.stringify(body) });
+  } catch (e) {
+    return void ($("error").textContent = e.message);
+  }
+  for (const input of document.querySelectorAll("input[type=password]")) input.value = "";
+  await whoAmI(true);
+  go(then());
+}
+$("signin-form").onsubmit = (e) => {
+  e.preventDefault();
+  enterAccount("/sessions", { email: $("signin-email").value, password: $("signin-password").value });
+};
+$("signup-form").onsubmit = (e) => {
+  e.preventDefault();
+  enterAccount("/accounts", { username: $("signup-username").value, email: $("signup-email").value, password: $("signup-password").value });
+};
+$("sign-out").onclick = async () => {
+  await api("/sessions", { method: "DELETE" }).catch(() => {});
+  await whoAmI(true);
+  go("/");
+};
+$("delete-form").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api("/account", { method: "DELETE", body: JSON.stringify({ password: $("delete-password").value }) });
+  } catch (err) {
+    return void ($("error").textContent = err.message);
+  }
+  $("delete-password").value = "";
+  await whoAmI(true);
+  go("/");
+};
+async function showAccount() {
+  if (!(await whoAmI())) return go("/signin");
+  $("account-name").textContent = account.username;
+  const mine = await api("/account/worlds");
+  $("my-worlds").replaceChildren(...mine.map(worldRow));
+  $("my-none").hidden = !!mine.length;
+}
+
+const SCREENS = { "/": "home", "/join": "join", "/worlds": "worlds", "/host": "host", "/signin": "signin", "/signup": "signup", "/account": "account", "/account/delete": "delete" };
+const BACK = { world: "/worlds", signup: "/signin", delete: "/account" };
 async function route() {
   const path = location.pathname.replace(/\/+$/, "") || "/";
   const id = path.match(/^\/w\/([a-z0-9]{12})$/)?.[1];
@@ -101,24 +255,29 @@ async function route() {
   for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== screen;
   stats.screen(screen);
   $("back").hidden = screen === "home";
-  $("back").href = id ? "/worlds" : "/";
+  $("back").href = BACK[screen] ?? "/";
+  $("go-signup").search = location.search;
   $("error").textContent = "";
   document.title = "Sandbox";
   try {
     if (screen === "worlds") await showWorlds();
     if (screen === "world") await showWorld(id);
+    if (screen === "account") await showAccount();
+    if (screen === "delete" && !(await whoAmI())) return go("/signin");
   } catch (e) {
     $("error").textContent = e.message;
   }
   if (screen === "join") $("join-link").focus();
+  $("me").hidden = screen === "home" || screen === "signin" || screen === "signup";
+  if (!$("me").hidden) whoAmI();
 }
 
 // Links between screens change the address without reloading the page.
 addEventListener("click", (e) => {
-  const a = e.target.closest?.("a[href^='/']");
+  const a = e.target.closest?.("a[href^='/'], a#go-signup");
   if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.defaultPrevented) return;
   e.preventDefault();
-  history.pushState(null, "", a.getAttribute("href"));
+  history.pushState(null, "", a.pathname + a.search);
   scrollTo(0, 0);
   route();
 });

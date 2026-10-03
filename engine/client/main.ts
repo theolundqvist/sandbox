@@ -2362,7 +2362,7 @@ for (const keysList of $("howto").querySelectorAll(".keys")) $("help-keys").appe
 let leaving = false;
 /** The desktop app says when a newer release is out, and installs it when asked. */
 type Updating = { downloaded?: number; installing?: boolean } | null;
-const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void; onUpdating?(fn: (progress: Updating) => void): void; leave(): void; agents: { id: string; name: string }[]; build(id: string, key: string | null): Promise<boolean | string> } }).sandboxDesktop;
+const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void; onUpdating?(fn: (progress: Updating) => void): void; leave(): void; agents: { id: string; name: string }[]; build(id: string, key: string | null): Promise<boolean | string>; publish?(id: string): Promise<string | null>; unpublish?(id: string): Promise<string | null> } }).sandboxDesktop;
 desktop?.onUpdate((version) => ($("menu-update").hidden = !version));
 // Apps before 0.2.9 don't tell how the update goes.
 desktop?.onUpdating?.((progress) => {
@@ -2462,17 +2462,19 @@ async function openShare(status = "") {
 $("world-share").onclick = () => openShare();
 $("share-go").onclick = async () => {
   const cover = $("share-cover").dataset.value === "view" ? viewPicture || viewJpeg() : undefined;
-  const form = { id: info.id, title: $<HTMLInputElement>("share-title").value, description: $<HTMLInputElement>("share-description").value, visibility: $("share-visibility").dataset.value, author: me, cover };
+  const form = { id: info.id, title: $<HTMLInputElement>("share-title").value, description: $<HTMLInputElement>("share-description").value, visibility: $("share-visibility").dataset.value, cover };
   showMenu(false);
   toast("Recording a clip of the timelapse…");
   const clip = await recordClip().catch(() => null);
   await openMenu();
+  if (!desktop?.publish) return void (await openShare("Publish from the Sandbox app."));
   await openShare("Uploading…");
-  const res = await hostMenu("share", { ...form, clip: clip && (await blobBase64(clip)) });
-  await openShare(res.ok ? "" : (await res.json()).error);
+  const res = await hostMenu("publish-stage", { ...form, clip: clip && (await blobBase64(clip)) });
+  await openShare(res.ok ? ((await desktop.publish(info.id)) ?? "") : (await res.json()).error);
 };
 $("share-stop").onclick = async () => {
   if ($("share-stop").textContent === "Stop sharing") return void ($("share-stop").textContent = "Remove from Community?");
+  if (desktop?.unpublish) return void (await openShare((await desktop.unpublish(info.id)) ?? ""));
   const res = await hostMenu("unshare", { id: info.id });
   await openShare(res.ok ? "" : (await res.json()).error);
 };

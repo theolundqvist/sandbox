@@ -18,7 +18,7 @@ const SPEECH = join(DATA, "speech");
 const DB = join(DATA, "db");
 const PORT = Number(process.env.PORT ?? 7777);
 
-export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "hills" | "blank"; invite: string; hostKey: string; host?: string; password?: string; agents?: false };
+export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "hills" | "blank"; invite: string; hostKey: string; host?: string; password?: string; agents?: false; forkOf?: string; telemetry?: string };
 type Conn = { name: string; ua: string; at: number; spectator?: true };
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
