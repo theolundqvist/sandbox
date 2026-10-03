@@ -49,7 +49,7 @@ export const sql = process.env.DATABASE_URL
 await sql.unsafe(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
 
 /** A request this server turns down, with words for whoever sent it. */
-class Refusal extends Error {
+export class Refusal extends Error {
   constructor(message: string, readonly status = 400) {
     super(message);
   }
@@ -62,9 +62,9 @@ const randomId = (length: number) => [...randomBytes(length)].map((b) => "abcdef
 const bearer = (req: Request) => req.headers.get("authorization")?.match(/^Bearer (\S+)$/)?.[1] ?? "";
 
 /** The client's IP, hashed; NPM, in front, names it in X-Real-IP. */
-const client = (req: Request, ip: string) => sha256(`sandbox-community:${req.headers.get("x-real-ip") ?? ip}`);
+export const client = (req: Request, ip: string) => sha256(`sandbox-community:${req.headers.get("x-real-ip") ?? ip}`);
 /** Counts this action for whoever it is and refuses it over the limit. */
-async function limit(who: string, action: keyof typeof RATE, refusal: string) {
+export async function limit(who: string, action: keyof typeof RATE, refusal: string) {
   const [max, window] = RATE[action];
   const [{ n }] = await sql`insert into limits (who, action) values (${who}, ${action})
     on conflict (who, action) do update set
@@ -113,9 +113,9 @@ async function argon<T>(work: () => Promise<T>) {
   }
 }
 const hashPassword = (password: string) => argon(() => Bun.password.hash(password, { algorithm: "argon2id" }));
-const verifyPassword = (password: string, hash: string) => argon(() => Bun.password.verify(password, hash));
+export const verifyPassword = (password: string, hash: string) => argon(() => Bun.password.verify(password, hash));
 /** Checked against when there is no such account, so a wrong email takes as long as a wrong password. */
-const NOBODY = await Bun.password.hash(randomBytes(16).toString("hex"), { algorithm: "argon2id" });
+export const NOBODY = await Bun.password.hash(randomBytes(16).toString("hex"), { algorithm: "argon2id" });
 
 const cookie = (req: Request) => req.headers.get("cookie")?.match(/(?:^|;\s*)session=([^;]+)/)?.[1] ?? "";
 /** The signed-in account: a bearer session from the desktop app, or the site's cookie. A cookie changes nothing unless the request comes from the site itself with its header, so no other page can act as the visitor. */
@@ -215,7 +215,8 @@ async function deleteAccount(req: Request) {
   return new Response(null, { status: 204, headers: { ...cors, "set-cookie": `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0` } });
 }
 export async function removeAccount(id: string) {
-  for (const world of await sql`select * from worlds where account = ${id} and removed_at is null`) await takeDown(world, "account", false);
+  // A world a moderator took down still has its files until it is restored or deleted, so it goes too.
+  for (const world of await sql`select * from worlds where account = ${id} and (removed_at is null or zip_key is not null)`) await takeDown(world, "account", false);
   await sql`delete from reports where reporter = ${id}`;
   await sql`delete from accounts where id = ${id}`;
 }
@@ -962,6 +963,7 @@ async function report(req: Request, ip: string, kind: "comment", target: string)
 async function route(req: Request, ip: string) {
   const url = new URL(req.url);
   const at = `${req.method} ${url.pathname}`;
+  if (/^\/admin(\/|$)/.test(url.pathname)) return (await import("./admin")).admin(req, ip);
   if (at === "POST /installs") return register(req, ip);
   if (at === "POST /events") return events(req);
   if (at === "POST /ai/tts") return speak(req);

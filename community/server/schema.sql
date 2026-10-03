@@ -223,3 +223,7 @@ create table if not exists live (
   seen_at timestamptz not null default now()
 );
 create index if not exists live_seen on live (seen_at);
+
+-- The admin panel: who may use it (set by hand in psql, never through the API), and its own sessions, apart from the site's and the app's.
+alter table accounts add column if not exists admin boolean not null default false;
+create table if not exists admin_sessions (token_hash text primary key, account uuid not null references accounts (id) on delete cascade, created_at timestamptz not null default now(), last_seen timestamptz not null default now());
