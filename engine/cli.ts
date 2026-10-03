@@ -7,6 +7,7 @@ import { hasGit, type Mods } from "./mods";
 import { brief, type Recorder } from "./record";
 import type { GameCard } from "./games";
 import type { Sims } from "./sims";
+import { PlaytestError, type playtests } from "./playtest";
 
 export type Task = { title: string; status: string; percent?: number; state: "working" | "done" | "blocked"; at: number };
 const speaker = (who: string) => `${who}'s agent`;
@@ -32,6 +33,7 @@ export type CliContext = {
   status(): object;
   perf(): object;
   screenshot(who: string): Promise<string>;
+  playtest: ReturnType<typeof playtests>;
   /** Sends a message to the player's open game; false if they don't have it open. */
   sendToGame(who: string, msg: object): boolean;
   record: Recorder;
@@ -243,8 +245,34 @@ const tools = [
   },
   {
     name: "screenshot",
-    description: "See exactly what your player sees right now, at most 1280 px wide: the scene, mod layers and HTML overlays (they must have the game open; a background tab shows only the scene). Look before you mark it done.",
+    description:
+      "See exactly what your player sees right now, at most 1280 px wide: the scene, mod layers and HTML overlays (they must have the game open; a background tab shows only the scene). While a playtest runs, it shows your view in the playtest instead. Look before you mark it done.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "playtest",
+    description:
+      "Try a change yourself without touching anyone's game: starts a hidden copy of the world as it is now (code, entities and databases) on the host's computer, with you in it as your player, and keeps it running for play and screenshot. mod reloads that mod in the copy from its current files, reloaded live or not, so you can see a change work before or after it goes live. Nothing done in the copy reaches the live world. Needs the host's Sandbox desktop app.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["start", "stop"], description: "start (default) starts one or reuses the one running; stop ends it and deletes the copy." },
+        mod: { type: "string", description: "A mod to reload in the copy from its current files." },
+      },
+    },
+  },
+  {
+    name: "play",
+    description: "Play in the running playtest as your player: hold keys for ms milliseconds, move the mouse to look around, click. Says where you moved; then screenshot shows it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        keys: { type: "string", description: "Comma list of keys held together: w, a, s, d, space, shift, up, KeyE, Digit1." },
+        ms: { type: "number", description: "How long to hold them, default 500, at most 10000." },
+        look: { type: "string", description: "Mouse movement dx,dy in pixels, like 300,0 to turn right." },
+        click: { type: "string", enum: ["left", "right"] },
+      },
+    },
   },
   {
     name: "add_package",
@@ -381,7 +409,7 @@ export function createCli(ctx: CliContext) {
       return (result = await run(name, args, who));
     } catch (e: any) {
       error = String(e.message).slice(0, 300);
-      throw e;
+      throw e instanceof PlaytestError ? new ToolError(e.message) : e;
     } finally {
       ctx.record.add("tool", who, { tool: name, args: brief(args), ms: Math.round(performance.now() - started), bytes: typeof result === "string" ? result.length : result?.image.length, error });
     }
@@ -567,6 +595,11 @@ export function createCli(ctx: CliContext) {
         await git("reset", "-q");
         return `Restored mods/${args.mod} to ${args.commit}. Call reload to put it live.`;
       }
+      case "playtest":
+        if (args.action !== undefined && args.action !== "start" && args.action !== "stop") throw new ToolError("action is start or stop.");
+        return args.action === "stop" ? ctx.playtest.stop() : await ctx.playtest.start(who, args.mod);
+      case "play":
+        return await ctx.playtest.play(args);
       case "screenshot":
         return {
           image: await ctx.screenshot(who).catch((e) => {

@@ -1,5 +1,5 @@
 // The real Electron app on a throwaway relay and launcher and a stand-in GitHub; run with `xvfb-run -a node --test desktop/app.test.mjs`.
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -1451,5 +1451,147 @@ describe("usage stats", () => {
     const after = batches.slice(before).flatMap((b) => JSON.parse(b.raw).events);
     assert.deepEqual(after.filter((e) => ["saved", "join"].includes(e.screen) || e.action === "share-usage"), []);
     assert.deepEqual(JSON.parse(readFileSync(join(dir, "newcomer", "Sandbox", "data", "usage.json"), "utf8")), { share: false });
+  });
+});
+
+describe("playtest", () => {
+  /** Screenshots and frame times go where CI uploads them from. */
+  const out = process.env.SANDBOX_CAPTURES ?? join(dir, "captures");
+  let app, shell, state, base, key;
+  before(async () => {
+    mkdirSync(out, { recursive: true });
+    ({ app, shell, state } = await launch("playtest"));
+    await shell.click("text=Host world");
+    const game = await gamePage(app);
+    await game.locator("#create-go").waitFor();
+    await game.keyboard.press("Enter");
+    await game.waitForURL(/:\d+\/(#.*)?$/);
+    await playing(game);
+    base = `http://127.0.0.1:${state().port}`;
+    key = await game.evaluate(() => Object.entries(localStorage).find(([k]) => k.startsWith("sandbox-key:"))[1]);
+  });
+  after(async () => {
+    await close(app);
+    const worlds = join(dir, "playtest", "Sandbox", "data", "worlds");
+    for (const world of existsSync(worlds) ? readdirSync(worlds) : []) if (existsSync(join(worlds, world, "playtest.log"))) cpSync(join(worlds, world, "playtest.log"), join(out, "playtest.log"));
+    cpSync(join(dir, "playtest", "Sandbox", "server.log"), join(out, "server.log"));
+  });
+
+  const call = async (name, args = {}) => {
+    const form = new FormData();
+    for (const [k, v] of Object.entries(args)) form.append(k, typeof v === "string" ? v : JSON.stringify(v));
+    const res = await fetch(`${base}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form });
+    return res.headers.get("content-type") === "image/jpeg" ? { status: res.status, image: Buffer.from(await res.arrayBuffer()) } : { status: res.status, text: (await res.text()).split("\n\nWhen you are done")[0] };
+  };
+  /** The playtest pauses itself whenever the host's own game slows down, which a busy CI machine does; the agent then simply tries again. */
+  const pauses = [];
+  const retried = async (name, args) => {
+    for (const end = Date.now() + 120000; ; await sleep(1000)) {
+      const res = await call(name, args);
+      if (!(res.status === 422 && res.text.startsWith("paused:")) || Date.now() > end) return res;
+      pauses.push({ name, at: Date.now() });
+    }
+  };
+  /** The host's own game, as its perf reports every 2 s say. */
+  const frames = async (seconds) => {
+    const seen = [];
+    for (const end = Date.now() + seconds * 1000; Date.now() < end; await sleep(1000)) {
+      const p = JSON.parse((await call("perf")).text.split("\n\n")[0]).players.host;
+      if (p && p.secondsOld === 0 && !seen.some((s) => s.fps === p.fps && s.p95FrameMs === p.p95FrameMs && s.slowestFrameMs === p.slowestFrameMs)) seen.push({ fps: p.fps, p95FrameMs: p.p95FrameMs, slowestFrameMs: p.slowestFrameMs });
+    }
+    const sorted = (k) => seen.map((s) => s[k]).sort((a, b) => a - b);
+    return { reports: seen.length, fpsMedian: sorted("fps")[seen.length >> 1], p95FrameMsMedian: sorted("p95FrameMs")[seen.length >> 1], p95FrameMsWorst: sorted("p95FrameMs").at(-1) };
+  };
+  /** The playtest's own processes: the live world starts its copy of the world and its hidden game each leading a process group. Chromium rewrites its environment block, so the hidden game is found by its parent. */
+  const playtestProcesses = () => {
+    const read = (pid, file) => {
+      try {
+        return readFileSync(`/proc/${pid}/${file}`, "utf8");
+      } catch {
+        return "";
+      }
+    };
+    const procs = readdirSync("/proc").filter((p) => /^\d+$/.test(p)).map((pid) => {
+      const f = read(pid, "stat").split(") ")[1]?.split(" ") ?? [];
+      return { pid, state: f[0], parent: f[1], group: f[2], env: read(pid, "environ") };
+    });
+    const worlds = new Set(procs.filter((p) => p.env.includes("SANDBOX_PLAYTEST_APP=") && p.env.includes(`${join(dir, "playtest")}`)).map((p) => p.pid));
+    const groups = new Set(procs.filter((p) => worlds.has(p.parent) && p.group === p.pid).map((p) => p.pid));
+    return procs.filter((p) => groups.has(p.group));
+  };
+  /** Every window the X server shows, and the one with the keyboard. */
+  const screen = async () => {
+    const run = (...args) => new Promise((resolve) => execFile("xdotool", args, (_e, stdout) => resolve(stdout.trim())));
+    return { visible: (await run("search", "--onlyvisible", "--name", "")).split("\n").sort(), focus: await run("getwindowfocus"), appFocused: await app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().some((w) => w.isFocused())) };
+  };
+
+  test("an agent plays a hidden copy: w moves its view in the screenshot, with no new window and the player's window keeping focus", async () => {
+    const without = await frames(20);
+    const before = await screen();
+    const started = await retried("playtest");
+    assert.equal(started.status, 200, started.text);
+    assert.match(started.text, /^Started a playtest: a hidden copy of the world as it is now, with you in it as host\./);
+    assert.ok(playtestProcesses().length >= 2);
+    const first = await retried("screenshot");
+    assert.equal(first.status, 200, first.text);
+    const moved = await retried("play", { keys: "w", ms: 1000 });
+    assert.match(moved.text, /^In the playtest you held w for 1000 ms\. You moved from \(.+\) to \(.+\)\./);
+    const turned = await retried("play", { look: "400,200", ms: 300 });
+    assert.equal(turned.status, 200, turned.text);
+    const second = await retried("screenshot");
+    writeFileSync(join(out, "playtest-before.jpg"), first.image);
+    writeFileSync(join(out, "playtest-after.jpg"), second.image);
+    // Share of pixels below the HUD's top bar that changed clearly: turning and tilting the camera moves the horizon and the ground.
+    const changed = await app.evaluate(({ nativeImage }, [a, b]) => {
+      const [x, y] = [a, b].map((s) => nativeImage.createFromBuffer(Buffer.from(s, "base64")).toBitmap());
+      const { width } = nativeImage.createFromBuffer(Buffer.from(a, "base64")).getSize();
+      let n = 0;
+      let total = 0;
+      for (let i = width * 4 * 80; i < x.length; i += 4, total++) if (Math.abs(x[i] - y[i]) + Math.abs(x[i + 1] - y[i + 1]) + Math.abs(x[i + 2] - y[i + 2]) > 60) n++;
+      return n / total;
+    }, [first.image.toString("base64"), second.image.toString("base64")]);
+    const withPlaytest = await frames(20);
+    const after = await screen();
+    writeFileSync(join(out, "frametime.json"), JSON.stringify({ without, withPlaytest, pauses, screen: { before, after }, moved: moved.text, turned: turned.text, changed }, null, 2));
+    assert.deepEqual(after, before);
+    assert.ok(changed > 0.1, `only ${changed} of the view changed`);
+    assert.equal((await call("playtest", { action: "stop" })).text, "The playtest stopped and its copy of the world is gone.");
+    await until("the playtest's processes gone", async () => !playtestProcesses().length, 10000);
+  });
+
+  test("the player's game slowing down pauses the playtest, and it resumes once their game is smooth again", async () => {
+    assert.equal((await retried("playtest")).status, 200);
+    const busy = (ms) => `import type { ClientMod } from "../../api";\nexport default { frame() { const until = performance.now() + ${ms}; while (performance.now() < until); } } satisfies ClientMod;`;
+    await call("write_file", { path: "mods/hog/client.ts", content: busy(100) });
+    assert.match((await call("reload", { mod: "hog" })).text, /^hog v1 is live/);
+    const seen = [];
+    const paused = await until("the playtest to pause", async () => {
+      const res = await call("play", { ms: 10 });
+      const host = JSON.parse((await call("perf")).text.split("\n\n")[0]).players.host;
+      seen.push({ status: res.status, text: res.text.slice(0, 60), fps: host?.fps, hidden: host?.hidden });
+      writeFileSync(join(out, "guard.json"), JSON.stringify(seen, null, 2));
+      return res.text.startsWith("paused:") && res.text;
+    }, 30000);
+    assert.match(paused, /^paused: your player's game needs the computer\./);
+    const stopped = playtestProcesses().map((p) => p.state);
+    await call("write_file", { path: "mods/hog/client.ts", content: busy(0) });
+    assert.match((await call("reload", { mod: "hog" })).text, /^hog v2 is live/);
+    const resumed = await until("the playtest to resume", async () => {
+      const res = await call("play", { ms: 10 });
+      const host = JSON.parse((await call("perf")).text.split("\n\n")[0]).players.host;
+      seen.push({ status: res.status, text: res.text.slice(0, 60), fps: host?.fps, resuming: true });
+      writeFileSync(join(out, "guard.json"), JSON.stringify(seen, null, 2));
+      return res.status === 200;
+    }, 120000);
+    const log = JSON.parse(readFileSync(join(out, "frametime.json"), "utf8"));
+    writeFileSync(join(out, "frametime.json"), JSON.stringify({ ...log, guard: { stoppedStates: stopped, resumed: !!resumed } }, null, 2));
+    assert.ok(stopped.length >= 2 && stopped.every((s) => s === "T"), JSON.stringify(stopped));
+  });
+
+  test("quitting the app ends a running playtest", async () => {
+    assert.ok(playtestProcesses().length >= 2);
+    await close(app);
+    app = null;
+    await until("the playtest's processes gone", async () => !playtestProcesses().length, 15000);
   });
 });

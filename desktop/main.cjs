@@ -1,4 +1,6 @@
 // A thin shell around the web client: one window, a trusted launch screen and title bar, and the game in a view with no extra powers.
+// The same app started by a world it hosts, as the hidden game a playtest plays.
+if (process.env.SANDBOX_PLAYTEST) return void require("./playtest.cjs");
 const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, safeStorage, session, shell: desktop } = require("electron");
 const { execFile, spawn } = require("node:child_process");
 const { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } = require("node:fs");
@@ -43,6 +45,8 @@ app.on("second-instance", (_event, argv) => {
 
 /** The engine this app hosts worlds with: its launcher, run by the bun shipped inside the app, with its worlds in the app's data folder. */
 const ENGINE = app.isPackaged ? join(process.resourcesPath, "engine") : join(__dirname, "..");
+/** How a hosted world starts this app again as a playtest's hidden game. */
+const PLAYTEST_APP = [process.execPath, ...(app.isPackaged ? [] : [app.getAppPath()]), ...(app.commandLine.hasSwitch("no-sandbox") ? ["--no-sandbox"] : [])];
 const BUN = app.isPackaged ? join(ENGINE, windows ? "bun.exe" : "bun") : "bun";
 /** The game's own front end (fonts, stills, menu styles), which the start screen uses too, so it works offline. */
 const FRONT = join(ENGINE, "engine/client");
@@ -239,7 +243,7 @@ function startServer() {
     const log = openSync(logPath, "a");
     const from = statSync(logPath).size;
     const proc = spawn(BUN, [join(ENGINE, "engine/launcher.ts")], {
-      env: { ...process.env, PORT: String(port), SANDBOX_DATA: DATA, SANDBOX_NO_OPEN: "1", SANDBOX_EXIT_WITH_STDIN: "1", SANDBOX_RELAY: RELAY, SANDBOX_VERSION: app.getVersion() },
+      env: { ...process.env, PORT: String(port), SANDBOX_DATA: DATA, SANDBOX_NO_OPEN: "1", SANDBOX_EXIT_WITH_STDIN: "1", SANDBOX_RELAY: RELAY, SANDBOX_VERSION: app.getVersion(), SANDBOX_PLAYTEST_APP: JSON.stringify(PLAYTEST_APP) },
       stdio: ["pipe", log, log],
     });
     const exited = new Promise((resolve) => proc.once("exit", resolve));

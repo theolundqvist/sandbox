@@ -4,6 +4,7 @@ import type { Server, ServerWebSocket } from "bun";
 import { frontFile } from "./front";
 import { createCli, joinCodes, joinCommand, joinScript, type Task } from "./cli";
 import { ENGINE_KEYS, hasGit, Mods } from "./mods";
+import { playtests } from "./playtest";
 import { latencies, openRecord, route } from "./record";
 import { Sims } from "./sims";
 import type { Perf } from "./simhost";
@@ -107,6 +108,7 @@ if (hasGit) {
 }
 
 const record = openRecord(join(DATA, "record.sqlite"));
+const playtest = playtests(DATA, ROOT);
 const logs: { at: number; mod: string; level: string; text: string; player?: string }[] = [];
 const clientPerf = new Map<string, { at: number } & Record<string, unknown>>();
 /** Each player's last join: ms until their first frame and the mods that took longest to start. */
@@ -323,6 +325,7 @@ async function timelapseFor(who: string | null) {
   return (await inWorker<{ gz: Uint8Array<ArrayBuffer> }>({ t: "encode", ticks: seen })).gz;
 }
 function shutdown() {
+  playtest.stop();
   record.close();
   store.save(hub);
   sims.saveAll();
@@ -449,8 +452,10 @@ const cli = createCli({
   status,
   perf,
   record,
+  playtest,
+  // While a playtest runs, agents look at it rather than at their player's game.
   screenshot: (who) =>
-    new Promise((resolve, reject) => {
+    playtest.running ? playtest.screenshot() : new Promise((resolve, reject) => {
       const ws = sockets.get(who);
       if (!ws) return reject(new Error(`${who} doesn't have the game open, so there is nothing to see. Check with query_world and logs instead, or set your task blocked with the status "needs your game open".`));
       const id = crypto.randomUUID();
@@ -777,6 +782,7 @@ const server = Bun.serve<Conn>({
         clientPerf.set(ws.data.name, { ...report, at: Date.now() });
         ws.send(JSON.stringify({ t: "pong", at }));
         samplePlayer(ws.data.name, report);
+        playtest.frame(ws.data.name, report);
         const before = slowFrames.get(ws.data.name) ?? {};
         const slow = Object.entries<number>(report.modsMsPerFrame ?? {}).filter(([, ms]) => ms >= 16);
         slowFrames.set(ws.data.name, Object.fromEntries(slow.map(([mod]) => [mod, (before[mod] ?? 0) + 1])));

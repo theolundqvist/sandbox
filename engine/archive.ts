@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { unzipSync, zipSync, type Zippable } from "fflate";
+import { unzipSync, zipSync } from "fflate";
 
 declare var self: Worker;
 
@@ -56,14 +56,14 @@ function snapshot(path: string, into: string, secrets: string[], community: bool
   return readFileSync(into);
 }
 
-function pack(dir: string, community: boolean) {
+/** The world's files as an export holds them, by path; `leaveOut` names top-level files to skip. */
+function collect(dir: string, community: boolean, scratch: string, leaveOut: Set<string>) {
   const config = readJson(join(dir, "config.json"));
   const secrets = [config.hostKey, config.invite, ...Object.keys(readJson(join(dir, "keys.json")))].filter(Boolean);
-  const scratch = mkdtempSync(join(tmpdir(), "sandbox-export-"));
-  const files: Zippable = {};
+  const files: Record<string, Uint8Array | [Uint8Array, { level: 0 }]> = {};
   const add = (rel: string) => {
     const path = join(dir, rel);
-    if (community && PRIVATE.has(rel)) return;
+    if (leaveOut.has(rel)) return;
     if (rel === "config.json") files[rel] = json({ name: config.name, rules: config.rules, start: config.start, ...(config.forkOf && { forkOf: config.forkOf }) });
     else if (rel === "mods.json") {
       // Server builds are named by absolute path; relative to build/ they point at the builds wherever the world lands.
@@ -87,12 +87,31 @@ function pack(dir: string, community: boolean) {
       else if (entry.isFile()) add(child);
     }
   };
+  // Whatever points is read before what it points to, so a reload landing mid-export can't leave it dangling: mods.json before the builds, git's refs before its objects.
+  for (const part of [...FILES, ...DIRS]) if (existsSync(join(dir, part))) statSync(join(dir, part)).isDirectory() ? walk(part) : add(part);
+  if (existsSync(join(dir, "games"))) for (const id of readdirSync(join(dir, "games"))) if (GAME_ID.test(id) && existsSync(join(dir, "games", id, "world.sqlite"))) add(`games/${id}/world.sqlite`);
+  for (const rel of objects) walk(rel);
+  return files;
+}
+
+function pack(dir: string, community: boolean) {
+  const scratch = mkdtempSync(join(tmpdir(), "sandbox-export-"));
   try {
-    // Whatever points is read before what it points to, so a reload landing mid-export can't leave it dangling: mods.json before the builds, git's refs before its objects.
-    for (const part of [...FILES, ...DIRS]) if (existsSync(join(dir, part))) statSync(join(dir, part)).isDirectory() ? walk(part) : add(part);
-    if (existsSync(join(dir, "games"))) for (const id of readdirSync(join(dir, "games"))) if (GAME_ID.test(id) && existsSync(join(dir, "games", id, "world.sqlite"))) add(`games/${id}/world.sqlite`);
-    for (const rel of objects) walk(rel);
-    return zipSync(files);
+    return zipSync(collect(dir, community, scratch, community ? PRIVATE : new Set()));
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/** A running world's copy in another folder, as an export would carry it, without its record or picture: a playtest's own world. */
+export function copyWorld(dir: string, into: string) {
+  const scratch = mkdtempSync(join(tmpdir(), "sandbox-copy-"));
+  try {
+    for (const [name, entry] of Object.entries(collect(dir, false, scratch, new Set(["record.sqlite", "cover.jpg"])))) {
+      const path = join(into, name);
+      mkdirSync(name.endsWith("/") ? path : dirname(path), { recursive: true });
+      if (!name.endsWith("/")) writeFileSync(path, Array.isArray(entry) ? entry[0] : entry);
+    }
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -137,7 +156,7 @@ function unpack(zip: Uint8Array, into: string) {
   return { name: config.name, rules: config.rules, start: config.start, ...(typeof config.forkOf === "string" && { forkOf: config.forkOf }) };
 }
 
-self.onmessage = ({ data: msg }) => {
+if (!Bun.isMainThread) self.onmessage = ({ data: msg }) => {
   try {
     if (msg.t === "pack") {
       const zip = pack(msg.dir, msg.community === true);
