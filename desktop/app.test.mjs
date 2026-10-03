@@ -242,11 +242,22 @@ async function leave(app, shell) {
   await Promise.all(left.map((w) => w.isClosed() || w.waitForEvent("close")));
 }
 const gamePage = (app) => until("the game view", async () => app.windows().find((w) => /^https?:/.test(w.url())));
-/** Where the game view and the app's other pages are, for a failure's message: each address up to its path, since a query or a #fragment may carry a key, with how far the game's page loaded and the frames it holds. */
-async function whereAll(app, game) {
+/** For a failure's message, a page or the app that may not answer: what it said, or that it didn't within 2 s, which is itself the finding. */
+const within = (promise) => Promise.race([promise.catch((e) => `failed: ${e.message.split("\n")[0]}`), sleep(2000).then(() => "no answer in 2 s")]);
+/**
+ * Where the game view and the app's other pages are, for a failure's message: each address up to its path, since a query or a #fragment may carry a key.
+ * With how far the game's page loaded, the frames it holds, every web page as the app itself sees it, and the world the launcher at `menuAt` hosts, by name only.
+ */
+async function whereAll(app, game, menuAt, key) {
   const at = (u) => u.split(/[?#]/)[0];
-  const ready = game.isClosed() ? "closed" : await game.evaluate(() => document.readyState).catch((e) => `unreadable (${e.message.split("\n")[0]})`);
-  return JSON.stringify({ game: at(game.url()), ready, frames: game.isClosed() ? [] : game.frames().map((f) => at(f.url())), windows: app.windows().map((w) => at(w.url())) });
+  return JSON.stringify({
+    game: at(game.url()),
+    ready: game.isClosed() ? "closed" : await within(game.evaluate(() => document.readyState)),
+    frames: game.isClosed() ? [] : game.frames().map((f) => at(f.url())),
+    windows: app.windows().map((w) => at(w.url())),
+    views: await within(app.evaluate(({ webContents }) => webContents.getAllWebContents().map((wc) => ({ url: wc.getURL().split(/[?#]/)[0], loading: wc.isLoading(), waiting: wc.isWaitingForResponse(), crashed: wc.isCrashed() })))),
+    hosting: await within(menu(menuAt, key, "state").then((s) => (s.running ? { id: s.running.id, name: s.running.name } : (s.error ?? null)))),
+  });
 }
 const menuShown = (shell) => shell.locator("#title .items").isVisible();
 const shown = (page, sel) => page.locator(sel).isVisible();
@@ -422,7 +433,12 @@ describe("hosting and joining", () => {
     await game.keyboard.press("Enter");
     // The menu goes to the world, or says why it couldn't.
     const outcome = await until("the hosted world or the menu's error", async () => (/:\d+\/(#.*)?$/.test(game.url()) ? "hosted" : (await game.evaluate(() => document.getElementById("error")?.textContent).catch(() => null)) || false), 30000).catch(() => null);
-    if (outcome !== "hosted") assert.fail((unhosted = `${outcome ? `the menu said: ${outcome}` : "neither the world nor an error in 30 s"}; ${await whereAll(app, game)}`));
+    if (outcome !== "hosted") {
+      const where = await whereAll(app, game, `http://127.0.0.1:${state().port}`, JSON.parse(readFileSync(join(dir, "host", "Sandbox", "data", "launcher.json"), "utf8")).hostKey);
+      // Kept now: closing the app has hung after this before, and the run's deadline then ends it before the group's after.
+      keepLogs("host");
+      assert.fail((unhosted = `${outcome ? `the menu said: ${outcome}` : "neither the world nor an error in 30 s"}; ${where}`));
+    }
     await playing(game);
     unhosted = null;
     const world = await game.textContent("#world-name");
