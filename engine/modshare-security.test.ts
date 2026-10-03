@@ -16,7 +16,7 @@ test("a Community mod cannot install a host path supplied as an npm dependency",
   const zip = zipSync({ "server.ts": new TextEncoder().encode("export default {};\n") });
   const service = Bun.serve({
     hostname: "127.0.0.1", port: 0,
-    fetch(req) {
+    fetch(req): Response {
       if (new URL(req.url).pathname === "/mod.zip") return new Response(zip);
       return Response.json({ name: "garden", title: "Garden", author: "maker", packages: { "private-canary": `file:${outside}` }, zip: `http://127.0.0.1:${service.port}/mod.zip` });
     },

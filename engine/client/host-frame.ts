@@ -66,22 +66,24 @@ export async function hostControls(o: {
   /** What the game offered as About when it last opened the Share page, for a Share frame that loads after it did; null before it ever has. */
   let shareAbout: string | null = null;
   const post = (f: Frame, msg: object, transfer: Transferable[] = []) => f.el.contentWindow?.postMessage(msg, menu, transfer);
-  /** The keyboard goes into a frame asked for it only once it shows and has drawn since its page opened. */
+  /** The keyboard goes into a frame only when it was asked for in the last 3 s, and once the frame shows and has drawn for this showing. */
   const settle = (f: Frame) => {
-    if (!f.el.hasAttribute("data-shown") || f.el.style.visibility !== "visible" || performance.now() - f.focusAt > 3000) return;
+    if (!f.focusAt || !f.el.hasAttribute("data-shown") || f.el.style.visibility !== "visible" || performance.now() - f.focusAt > 3000) return;
     f.focusAt = 0;
     f.el.focus();
   };
-  // Chromium stops drawing a hidden frame from another origin, and sends a click into it by where it last drew: one that comes after its page opens
-  // but before it draws again reaches neither it nor this page. Each time a frame's page opens, the frame is asked to say when it has drawn, and once
-  // this page has drawn too, the frame is marked shown (data-shown). Until then, the keyboard waits.
+  // Chromium can retain stale hit-test data after a cross-origin frame shows or resizes.
+  // Keep it rendering, but defer input until both the frame and its parent have repainted.
+  const pending = (f: Frame, shows: boolean) => {
+    f.el.removeAttribute("data-shown");
+    f.el.style.pointerEvents = "none";
+    f.paint = shows ? ++seq : 0;
+    if (f.paint) post(f, { t: "paint", id: f.paint });
+  };
   const showing = new IntersectionObserver((entries) => {
     for (const entry of entries) {
       const f = frames.find((x) => x.el === entry.target);
-      if (!f) continue;
-      f.el.removeAttribute("data-shown");
-      f.paint = entry.isIntersecting ? ++seq : 0;
-      if (f.paint) post(f, { t: "paint", id: f.paint });
+      if (f) pending(f, entry.isIntersecting);
     }
   });
   const layout = () => {
@@ -93,7 +95,7 @@ export async function hostControls(o: {
     const el = Object.assign(document.createElement("iframe"), { src, title: TITLES[view] });
     // Share copies its link from inside the frame.
     if (view === "share") el.allow = "clipboard-write";
-    el.style.cssText = "display: block; width: 100%; height: 0; border: 0; visibility: hidden";
+    el.style.cssText = "display: block; width: 100%; height: 0; border: 0; visibility: hidden; pointer-events: none";
     const f: Frame = { view, el, src, beat: 0, shownAt: 0, focusAt: 0, paint: 0 };
     el.addEventListener("focus", () => post(f, { t: "focus" }));
     frames.push(f);
@@ -116,7 +118,7 @@ export async function hostControls(o: {
         if (f.view === "world") known.resolve(msg.hosting === true);
         if (f.view === "share" && shareAbout !== null) post(f, { t: "show", about: shareAbout });
         // A frame that loads again while its page shows draws for that showing.
-        if (f.paint) post(f, { t: "paint", id: f.paint });
+        if (f.paint) pending(f, true);
         layout();
       } else if (msg.t === "beat") {
         f.beat = performance.now();
@@ -129,6 +131,7 @@ export async function hostControls(o: {
           requestAnimationFrame(() => {
             if (f.paint !== paint) return;
             f.el.setAttribute("data-shown", "");
+            f.el.style.pointerEvents = "";
             settle(f);
           }),
         );
@@ -136,8 +139,14 @@ export async function hostControls(o: {
         f.beat = 0;
         f.el.style.visibility = "hidden";
         f.el.removeAttribute("data-shown");
-      } else if (msg.t === "size") f.el.style.height = `${Math.ceil(Number(msg.height) || 0)}px`;
-      else if (msg.t === "toast") o.toast(String(msg.text).slice(0, 300), msg.kind === "error" ? "error" : "info");
+        f.el.style.pointerEvents = "none";
+      } else if (msg.t === "size") {
+        const height = `${Math.ceil(Number(msg.height) || 0)}px`;
+        if (f.el.style.height === height) return;
+        f.el.style.height = height;
+        // Resized while it shows, it is somewhere new until it draws there.
+        if (f.paint) pending(f, true);
+      } else if (msg.t === "toast") o.toast(String(msg.text).slice(0, 300), msg.kind === "error" ? "error" : "info");
       else if (msg.t === "key" && (msg.code === "Escape" || msg.code === "Tab" || msg.code === "ArrowLeft")) o.key(msg.code);
       else if ((msg.t === "joined" || msg.t === "covered" || msg.t === "staged") && typeof msg.id === "number") waiting.get(msg.id)?.(msg);
       else if (msg.t === "stopping" && f.view === "world") o.stopping();
