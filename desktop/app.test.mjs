@@ -1303,3 +1303,93 @@ describe("the installer", () => {
     await until("the app opened", async () => existsSync(join(home, "opened")), 5000);
   });
 });
+
+describe("usage stats", () => {
+  /** Community as usage stats see it: it signs the computer up and keeps every batch, with who sent it. */
+  const STATS = port();
+  const batches = [];
+  const stats = createServer(async (req, res) => {
+    if (req.method === "POST" && req.url === "/installs") return res.end(JSON.stringify({ id: "install00001", token: "install-token-1" }));
+    if (req.method === "POST" && req.url === "/events") {
+      batches.push({ auth: req.headers.authorization, raw: String(await body(req)) });
+      res.statusCode = 204;
+      return res.end();
+    }
+    res.statusCode = 404;
+    res.end("{}");
+  }).listen(STATS);
+  const env = { SANDBOX_COMMUNITY: `http://127.0.0.1:${STATS}` };
+  /** Everything the tests type, none of which may ever be sent. */
+  const typed = [];
+  const type = (page, sel, value) => (typed.push(value), page.fill(sel, value));
+  const sent = (surface) => batches.flatMap((b) => JSON.parse(b.raw).events.map((e) => ({ ...e, app: JSON.parse(b.raw).app }))).filter((e) => e.surface === surface);
+  /** Whether `steps` happened in this order, other events between them. */
+  const inOrder = (events, steps) => {
+    let at = 0;
+    for (const e of events) if (at < steps.length && e.screen === steps[at][0] && e.action === steps[at][1]) at++;
+    return at === steps.length || `stopped before ${JSON.stringify(steps[at])} in ${JSON.stringify(events.map((e) => [e.screen, e.action]))}`;
+  };
+  const quit = async (app, shell) => {
+    await answer(app, 0);
+    const closed = app.waitForEvent("close");
+    await shell.click("#quit");
+    await closed;
+  };
+  after(() => stats.close());
+
+  test("a first launch through naming, Settings, Join and hosting a world lands as each screen, button and step, under the computer's install, and nothing typed", async () => {
+    const { app, shell } = await launch("newcomer", env, null);
+    await type(shell, "#name-first", "Newcomer7");
+    await shell.click("#name-go");
+    await until("the menu", () => menuShown(shell));
+    await shell.click("text=Settings");
+    await shell.keyboard.press("Escape");
+    await shell.click("text=Join world");
+    await type(shell, "#join-link", "http://127.0.0.1:1/#invite=SECRETINVITE42");
+    await shell.press("#join-link", "Enter");
+    await shell.locator("#waiting").waitFor();
+    await shell.click("#waiting-back");
+    await until("the menu", () => menuShown(shell));
+    await shell.click("text=Host world");
+    const game = await gamePage(app);
+    await game.locator("#create").waitFor();
+    await type(game, "#create-name", "Secret Valley");
+    await type(game, "#create-password", "hunter22");
+    await game.click("#create-start i:last-child");
+    await game.click("#create-go");
+    await game.waitForURL(/:\d+\/(#.*)?$/);
+    await shell.click("#leave");
+    await until("the menu", () => menuShown(shell));
+    await quit(app, shell);
+
+    assert.equal(
+      inOrder(sent("app"), [["name", "screen"], ["name", "name-go"], ["name", "named"], ["title", "screen"], ["title", "to-settings"], ["settings", "screen"], ["title", "to-join"], ["join", "screen"], ["join", "join"], ["waiting", "screen"], ["waiting", "waiting-back"], ["title", "go-new"]]),
+      true,
+    );
+    assert.equal(inOrder(sent("menu"), [["create", "screen"], ["create", "create-start"], ["create", "create-go"], ["create", "hosted"]]), true);
+    assert.deepEqual(sent("menu").find((e) => e.action === "create-start").props, { value: "hills" });
+    assert.deepEqual(sent("app")[0].app, { version: VERSION, os: process.platform });
+    assert.equal(sent("menu")[0].app.os, process.platform);
+    assert.deepEqual([...new Set(batches.map((b) => b.auth))], ["Bearer install-token-1"]);
+    assert.ok(batches.every((b) => JSON.parse(b.raw).events.length <= 50));
+    for (const b of batches) for (const value of typed) assert.equal(b.raw.toLowerCase().includes(value.toLowerCase()), false, `${JSON.stringify(value)} was sent`);
+  });
+
+  test("with Share usage stats off, nothing more is sent", async () => {
+    const { app, shell } = await launch("newcomer", env);
+    await shell.click("text=Settings");
+    await until("the setting", async () => (await shell.textContent("#share-usage output")) === "On");
+    await shell.click("#share-usage i:last-child");
+    assert.equal(await shell.textContent("#share-usage output"), "Off");
+    const before = batches.length;
+    await shell.keyboard.press("Escape");
+    await shell.click("text=Worlds");
+    await shell.keyboard.press("Escape");
+    await shell.click("text=Join world");
+    await quit(app, shell);
+    await sleep(1000);
+    const after = batches.slice(before).flatMap((b) => JSON.parse(b.raw).events);
+    assert.deepEqual(after.filter((e) => ["saved", "join"].includes(e.screen) || e.action === "share-usage"), []);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "newcomer", "Sandbox", "data", "usage.json"), "utf8")), { share: false });
+  });
+});

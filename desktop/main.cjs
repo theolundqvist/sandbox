@@ -193,6 +193,7 @@ function waitFor(url) {
 }
 
 const DATA = join(app.getPath("userData"), "data");
+const usage = require("./usage.cjs")(DATA, app.getVersion());
 /** @type {{ proc: import("node:child_process").ChildProcess, base: string, key: string } | null} */ let server = null;
 /** @type {Promise<{ base: string, key: string }> | null} */ let starting = null;
 
@@ -562,10 +563,21 @@ app.whenReady().then(() => {
   ipcMain.handle("update", (event) => (fromShell(event) || event.sender === game?.view.webContents) && install());
   ipcMain.on("quit", (event) => fromShell(event) && app.quit());
   ipcMain.handle("ready", (event) => fromShell(event) && ready);
+  ipcMain.on("events", (event, events) => fromShell(event) && usage.add(events));
+  ipcMain.handle("share-usage", (event, on) => {
+    if (!fromShell(event)) return null;
+    if (typeof on === "boolean") usage.share(on);
+    return usage.sharing();
+  });
   const fromGame = (event) => event.sender === game?.view.webContents;
   const fromAgent = (event) => event.sender === agent?.view.webContents;
   ipcMain.on("agents", (event) => (event.returnValue = fromGame(event) ? Object.entries(AGENTS).map(([id, a]) => ({ id, name: a.name })) : []));
-  ipcMain.handle("build", (event, id, key) => (fromGame(event) ? buildWith(String(id), key) : false));
+  ipcMain.handle("build", async (event, id, key) => {
+    if (!fromGame(event)) return false;
+    const started = await buildWith(String(id), key);
+    usage.step("agent", "build-with", { agent: Object.hasOwn(AGENTS, id) ? id : null, outcome: started === true ? "started" : started === false ? "declined" : "failed" });
+    return started;
+  });
   ipcMain.on("agent-name", (event) => (event.returnValue = fromAgent(event) ? agent.name : ""));
   ipcMain.on("agent-input", (event, data) => fromAgent(event) && agent.pty?.write(String(data)));
   ipcMain.on("agent-resize", (event, cols, rows) => {
@@ -680,7 +692,7 @@ async function install() {
   state.updatedTo = update;
   quitting = true;
   stopAgent();
-  await stopServer();
+  await Promise.all([stopServer(), usage.drain()]);
   save();
   app.quit();
   return null;
@@ -698,7 +710,7 @@ function quit() {
     }
     quitting = true;
     stopAgent();
-    await stopServer();
+    await Promise.all([stopServer(), usage.drain()]);
     app.quit();
   })().finally(() => (confirming = null));
   return confirming;

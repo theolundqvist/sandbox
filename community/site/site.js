@@ -1,14 +1,35 @@
 // The public face of Sandbox: join a friend's world, browse Community worlds, get the app. Every screen has its own address; a world's is /w/<id>.
-import { COMPUTERS, backdrop, computerPick, joinLink, logo } from "/front.js";
+import { COMPUTERS, backdrop, computer, computerPick, joinLink, logo, usage } from "/front.js";
 
 const API = "https://sandbox.api.lundqvistliss.com";
+
 const $ = (id) => document.getElementById(id);
 const el = (tag, props, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
   node.append(...children);
   return node;
 };
+
+/** Usage stats under an anonymous id this browser keeps, unless the visitor turned Share usage stats off; storage that can't be used means no stats. */
+const stored = (key, value) => {
+  try {
+    if (value !== undefined) localStorage.setItem(key, value);
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+const anon = stored("sandbox-anon") ?? stored("sandbox-anon", crypto.randomUUID());
+const sharing = () => stored("sandbox-usage") !== "off";
+// Plain text, so no preflight, and keepalive, so the last batch outlives the page.
+const stats = usage("site", (events) => anon && sharing() && fetch(`${API}/events`, { method: "POST", keepalive: true, body: JSON.stringify({ anon, events, app: { os: computer } }) }).catch(() => {}));
+const showSharing = () => ($("share-usage").textContent = `Share usage stats: ${sharing() ? "On" : "Off"}`);
 logo($("logo"));
+showSharing();
+$("share-usage").onclick = () => {
+  stored("sandbox-usage", sharing() ? "off" : "on");
+  showSharing();
+};
 
 backdrop($("backdrop"));
 
@@ -42,6 +63,7 @@ async function showWorlds() {
   $("world-list").replaceChildren(
     ...list.map((w) => {
       const get = el("button", { className: "quiet", textContent: "Host or remix it in the app" });
+      get.dataset.event = "world-get";
       const row = el("a", { className: "world", href: `/w/${w.id}` }, el("span", { className: "cover" }, media(w)), el("span", { className: "what" }, el("b", { textContent: w.title }), el("small", { textContent: `by ${w.author}` }), get));
       get.onclick = (e) => {
         e.preventDefault();
@@ -77,6 +99,7 @@ async function route() {
   const id = path.match(/^\/w\/([a-z0-9]{12})$/)?.[1];
   const screen = id ? "world" : (SCREENS[path] ?? "home");
   for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== screen;
+  stats.screen(screen);
   $("back").hidden = screen === "home";
   $("back").href = id ? "/worlds" : "/";
   $("error").textContent = "";
@@ -107,7 +130,9 @@ addEventListener("keydown", (e) => {
 $("join-form").onsubmit = (e) => {
   e.preventDefault();
   try {
-    location.assign(joinLink($("join-link").value));
+    const link = joinLink($("join-link").value);
+    stats.step("join");
+    location.assign(link);
   } catch (err) {
     $("join-error").textContent = err.message;
   }

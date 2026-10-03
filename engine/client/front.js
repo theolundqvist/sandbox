@@ -142,3 +142,57 @@ export function computerPick(el, onChange) {
   pick(el, onChange);
   onChange(computer);
 }
+
+/**
+ * Usage stats for a page outside the game: each screen it shows and each button pressed there, by the button's id, never anything typed. One listener sees every click, so buttons need no code of their own: a button is named by its data-event, else its id, data-to or data-copy, a link by its path, and a pick by its id with the option chosen when its options are fixed.
+ * `send` gets the events in batches of 50 at most, every `every` ms at most and whatever is left when the page hides; it must never hold anything up. `every` 0 hands each event over at once to a sender that batches on its own.
+ */
+export function usage(surface, send, every = 10_000) {
+  // randomUUID is only there on https and localhost; a host may open the menu by their Wi-Fi address.
+  const session = crypto.randomUUID?.() ?? "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
+  let queue = [];
+  let timer = null;
+  let sent = 0;
+  let screen = null;
+  const flush = () => {
+    clearTimeout(timer);
+    timer = null;
+    sent = Date.now();
+    send(queue.splice(0, 50));
+    if (queue.length) later();
+  };
+  const later = () => (timer ??= setTimeout(flush, Math.max(0, sent + every - Date.now())));
+  const log = (action, props) => {
+    queue.push({ session, surface, screen, action, ...(props && { props }) });
+    later();
+  };
+  const last = () => {
+    clearTimeout(timer);
+    timer = null;
+    while (queue.length) send(queue.splice(0, 50));
+  };
+  addEventListener("pagehide", last);
+  document.addEventListener("visibilitychange", () => document.hidden && last());
+  // A button counts on the screen it was pressed on, before its handler moves on; a pick after its handler, with its new option.
+  document.addEventListener("click", (e) => {
+    const el = e.target.closest?.("button, a[href]");
+    if (!el || e.target.closest(".pick")) return;
+    const link = el.matches("a") && new URL(el.href, location.href);
+    const name = el.dataset.event || el.id || (el.dataset.to && `to-${el.dataset.to}`) || (el.dataset.copy && `copy-${el.dataset.copy}`) || (link && link.origin === location.origin && `link:${link.pathname.replace(/[a-z0-9]{12}$/, ":id")}`);
+    if (name) log(name);
+  }, true);
+  document.addEventListener("click", (e) => {
+    const pick = e.target.closest?.(".pick > i")?.parentElement;
+    if (pick?.id) log(pick.id, pick.dataset.options ? { value: pick.dataset.value } : undefined);
+  });
+  return {
+    /** The screen now showing; a step of its own once it changes. */
+    screen(name) {
+      if (name === screen) return;
+      screen = name;
+      log("screen");
+    },
+    /** A step a click alone doesn't show, like a world that actually started. */
+    step: log,
+  };
+}

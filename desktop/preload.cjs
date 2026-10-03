@@ -13,5 +13,7 @@ contextBridge.exposeInMainWorld("shell", {
   update: () => ipcRenderer.invoke("update"),
   version: () => ipcRenderer.invoke("version"),
   ready: () => ipcRenderer.invoke("ready"),
+  events: (list) => ipcRenderer.send("events", list),
+  shareUsage: (on) => ipcRenderer.invoke("share-usage", on),
   on: (channel, fn) => ["mode", "down", "update", "starting"].includes(channel) && ipcRenderer.on(channel, (_, value) => fn(value)),
 });

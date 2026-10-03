@@ -13,8 +13,8 @@ const KINDS = {
   clip: { name: "clip.webm", type: "video/webm", magic: [0x1a, 0x45, 0xdf, 0xa3], refusal: "A clip is a WebM under 6 MB." },
 } as const;
 type Kind = keyof typeof KINDS;
-/** How often each action may happen: per IP, or per install for voice. */
-const RATE = { publish: [10, "1 hour"], update: [30, "1 hour"], report: [10, "1 hour"], install: [5, "1 hour"], voice: [30, "1 minute"] } as const;
+/** How often each action may happen: per IP, or per install (or the site's anonymous id) for voice and usage stats. Usage stats come every 10 s from each of an install's pages, plus a last batch as one closes. */
+const RATE = { publish: [10, "1 hour"], update: [30, "1 hour"], report: [10, "1 hour"], install: [5, "1 hour"], voice: [30, "1 minute"], events: [20, "1 minute"] } as const;
 const ID = /^[a-z0-9]{12}$/;
 
 const SITE = process.env.SITE!;
@@ -277,9 +277,34 @@ async function listen(req: Request) {
   return json({ text: String(heard.text ?? "") });
 }
 
+/** Usage stats: a batch of screens shown and buttons pressed outside the game, from an install (by its token, stored only as the install's id) or from the site (by an anonymous id). */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const EVENT_NAME = /^[a-z0-9][a-z0-9:._/-]{0,63}$/;
+const SURFACES = ["app", "menu", "site"];
+async function events(req: Request) {
+  const body = await req.json();
+  const install = req.headers.has("authorization") ? (await installOf(req)).id : null;
+  const anon = install ? null : String(body.anon ?? "");
+  if (anon !== null && !UUID.test(anon)) throw new Refusal("Send the install's token or an anonymous id.", 401);
+  const list: any[] = Array.isArray(body.events) ? body.events : [];
+  if (!list.length || list.length > 50) throw new Refusal("Send 1 to 50 events at a time.");
+  await limit(install ?? `anon:${anon}`, "events", "Send usage stats every 10 seconds at most.");
+  const app = Object.fromEntries(["version", "os"].flatMap((k) => (typeof body.app?.[k] === "string" ? [[k, body.app[k].slice(0, 40)]] : [])));
+  const rows = list.map((e) => {
+    if (JSON.stringify(e).length > 4096) throw new Refusal("An event is 4 KB at most.", 413);
+    const props = e.props ?? {};
+    if (!SURFACES.includes(e.surface) || !EVENT_NAME.test(e.action) || (e.screen != null && !EVENT_NAME.test(e.screen)) || !UUID.test(e.session) || typeof props !== "object" || Array.isArray(props))
+      throw new Refusal("An event is a session, surface, screen, action and props.");
+    return { install, session: e.session, surface: e.surface, screen: e.screen ?? null, action: e.action, props: { ...props, ...app, ...(anon && { anon }) } };
+  });
+  await sql`insert into events ${sql(rows)}`;
+  return new Response(null, { status: 204, headers: cors });
+}
+
 async function route(req: Request, ip: string) {
   const url = new URL(req.url);
   if (req.method === "POST" && url.pathname === "/installs") return register(req, ip);
+  if (req.method === "POST" && url.pathname === "/events") return events(req);
   if (req.method === "POST" && url.pathname === "/ai/tts") return speak(req);
   if (req.method === "POST" && url.pathname === "/ai/stt") return listen(req);
   if (req.method === "GET" && url.pathname === "/ai/usage") return json({ used: Number((await installOf(req)).spent) / 1e6, of: ALLOWANCE / 1e6 });

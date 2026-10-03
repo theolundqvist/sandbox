@@ -373,6 +373,24 @@ async function signUp() {
   if (running) await world("voice", {});
 }
 
+/** Usage stats from this computer's menu pages, sent on to Community under this install, the way the desktop app sends its own (desktop/usage.cjs); its Share usage stats setting, in usage.json, stops both. Offline, they're dropped. */
+const USAGE = join(DATA, "usage.json");
+const sharingUsage = () => readJson(USAGE).share !== false;
+const reporting = new Set<Promise<unknown>>();
+function report(events: unknown) {
+  const { install } = secrets();
+  if (!sharingUsage() || !install || !Array.isArray(events) || !events.length) return;
+  const sent = fetch(`${install.host}/events`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${install.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ events: events.slice(0, 50), app: { version: ENGINE_VERSION, os: process.platform } }),
+    signal: AbortSignal.timeout(5_000),
+  })
+    .catch(() => {})
+    .finally(() => reporting.delete(sent));
+  reporting.add(sent);
+}
+
 /** How much of this computer's free voice is used, while it is the voice the host's worlds use. */
 async function freeVoiceUsed() {
   const { voice, install } = secrets();
@@ -393,6 +411,7 @@ async function menuState() {
     relay: RELAY,
     voiceKey: voice ? `${voice.provider} ••••${voice.key.slice(-4)}` : null,
     voiceProviders: PROVIDERS.map(({ name, keys, free }) => ({ name, keys, free: !!free })),
+    shareUsage: sharingUsage(),
   };
 }
 
@@ -413,6 +432,10 @@ async function menuApi(req: Request, action: string) {
   if (action === "cover") return cover(req, new URL(req.url).searchParams.get("id") ?? "");
   const body = req.method === "POST" && action !== "import" ? await req.json() : {};
   try {
+    if (action === "events") {
+      report(body.events);
+      return new Response(null, { status: 204 });
+    }
     if (action === "community") return Response.json(await communityList());
     if (action === "free-voice") return Response.json(await freeVoiceUsed());
     if (action === "community-world") return Response.json(await communityWorld(body.link));
@@ -445,6 +468,7 @@ async function menuApi(req: Request, action: string) {
       configure(body.id, body);
     } else if (["remove", "rewind"].includes(action)) await world(action, body);
     else if (action === "voice") await setVoiceKey(body.key);
+    else if (action === "share-usage") writeFileSync(USAGE, JSON.stringify({ share: body.share !== false }));
     else if (action !== "state") return Response.json({ error: "Unknown action" }, { status: 404 });
     return Response.json(await menuState());
   } catch (e: any) {
@@ -606,7 +630,7 @@ Bun.serve<Pipe>({
 
 async function shutdown() {
   tunnel?.ws.close();
-  await stop();
+  await Promise.all([stop(), Promise.allSettled(reporting)]);
   process.exit(0);
 }
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutdown);
