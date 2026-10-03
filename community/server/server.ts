@@ -29,6 +29,9 @@ const RATE = {
   heartbeat: [10, "1 minute"],
   comment: [1, "20 seconds"],
   playtime: [5, "1 minute"],
+  message: [1, "3 seconds"],
+  conversation: [10, "1 day"],
+  credits: [30, "1 minute"],
   "agent-usage": [30, "1 minute"],
 } as const;
 const ID = /^[a-z0-9]{12}$/;
@@ -72,7 +75,7 @@ async function limit(who: string, action: keyof typeof RATE, refusal: string) {
 
 type Account = { id: string; email: string; username: string; created_at: Date; username_changed_at: Date | null; banned_at: Date | null };
 const USERNAME = /^[a-z0-9_]{3,20}$/;
-const RESERVED = new Set(["admin", "administrator", "sandbox", "community", "support", "help", "moderator", "mod", "mods", "staff", "root", "system", "official", "api", "www", "account", "settings", "null", "undefined"]);
+const RESERVED = new Set(["unread", "admin", "administrator", "sandbox", "community", "support", "help", "moderator", "mod", "mods", "staff", "root", "system", "official", "api", "www", "account", "settings", "null", "undefined"]);
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SESSION_DAYS = 90;
 const COOKIE = "session";
@@ -652,6 +655,150 @@ async function agentUsage(req: Request) {
   return new Response(null, { status: 204, headers: cors });
 }
 
+// ---------- builders and profiles ----------
+
+/**
+ * A world's builders: its owner, and everyone who accepted a credit. The owner names builders by their in-world names and sends, for each, checks made from that player's key; a builder's app holds a token made from the same key, and accepting shows it, so only the person who played as that name can take the credit, and only signed in as themselves.
+ * check = sha256(token), token = HMAC-SHA256(player key, "sandbox-credit:" + the world's id on the host's computer). This server never sees a player key.
+ */
+const HEX = /^[0-9a-f]{64}$/;
+async function inviteBuilders(req: Request, id: string) {
+  const { row, account } = await owned(req, id);
+  allowed(account!);
+  const credits = (await req.json()).credits;
+  if (!Array.isArray(credits) || credits.length > 50) throw new Refusal("Credit up to 50 builders.");
+  const named = credits.map((c: any) => {
+    const name = String(c?.name ?? "");
+    const checks = Array.isArray(c?.checks) ? c.checks.map(String) : [];
+    if (!/^[a-z0-9][a-z0-9_-]{1,15}$/.test(name) || !checks.length || checks.length > 10 || !checks.every((x: string) => HEX.test(x))) throw new Refusal("Each builder is a name and the checks of their keys.");
+    return { name, checks };
+  });
+  // Accepted credits stay; pending ones are replaced by this list.
+  await sql`delete from credits where world = ${row.id} and state = 'pending' and not (name = any(${sql.array(named.map((c) => c.name), "TEXT")}))`;
+  for (const c of named)
+    await sql`insert into credits (world, name, checks) values (${row.id}, ${c.name}, ${sql.array(c.checks, "TEXT")}) on conflict (world, name) do update set checks = excluded.checks where credits.state = 'pending'`;
+  return json({ invited: named.length });
+}
+
+/** Credits waiting for whoever holds these tokens: the app sends every token it has, and shows what matches. */
+async function waitingCredits(req: Request) {
+  const account = await signedIn(req);
+  await limit(account.id, "credits", "Too many tries. Wait a minute.");
+  const tokens = (await req.json()).tokens;
+  if (!Array.isArray(tokens) || tokens.length > 500) throw new Refusal("Send up to 500 tokens.");
+  const byCheck = new Map(tokens.map((t: unknown) => [sha256(String(t)), String(t)]));
+  const rows = await sql`select c.world, c.name, c.checks, w.title, coalesce(a.username, w.author) as owner from credits c join worlds w on w.id = c.world left join accounts a on a.id = w.account
+    where c.state = 'pending' and c.checks && ${sql.array([...byCheck.keys()], "TEXT")} and w.removed_at is null and w.zip_key is not null and w.account is distinct from ${account.id}
+      and not exists (select 1 from credits mine where mine.world = c.world and mine.account = ${account.id})`;
+  return json(rows.map((r: any) => ({ world: { id: r.world, title: r.title, author: r.owner }, name: r.name, token: byCheck.get(r.checks.find((x: string) => byCheck.has(x))) })));
+}
+
+async function acceptCredit(req: Request) {
+  const account = allowed(await signedIn(req));
+  await limit(account.id, "credits", "Too many tries. Wait a minute.");
+  const token = String((await req.json()).token ?? "");
+  const [row] = await sql`update credits c set account = ${account.id}, state = 'accepted', accepted_at = now()
+    where c.state = 'pending' and ${sha256(token)} = any(c.checks)
+      and not exists (select 1 from credits mine where mine.world = c.world and mine.account = ${account.id})
+      and exists (select 1 from worlds w where w.id = c.world and w.removed_at is null and w.account is distinct from ${account.id})
+    returning world`;
+  if (!row) throw new Refusal("That credit isn't waiting any more.", 404);
+  return json({ world: row.world });
+}
+
+async function dropCredit(req: Request, id: string) {
+  const account = await signedIn(req);
+  await sql`delete from credits where world = ${id} and account = ${account.id}`;
+  return new Response(null, { status: 204, headers: cors });
+}
+
+const builders = async (world: string) =>
+  (await sql`select a.username from credits c join accounts a on a.id = c.account where c.world = ${world} and c.state = 'accepted' and a.banned_at is null order by c.accepted_at`).map((r: any) => r.username as string);
+
+/** A builder's public page: their username, when they joined, and the listed worlds they own or are credited on, with those worlds' players and votes. Never their email. */
+async function profile(req: Request, name: string) {
+  const viewer = await sessionOf(req);
+  const [who] = /^[a-z0-9_]{3,20}$/.test(name.toLowerCase()) ? await sql`select id, username, created_at from accounts where username = ${name} and banned_at is null` : [];
+  if (!who) throw new Refusal("There is no such builder.", 404);
+  const rows = await sql`${worldRows(viewer)} where ${listed()} and (w.account = ${who.id} or exists (select 1 from credits c where c.world = w.id and c.account = ${who.id} and c.state = 'accepted'))
+    order by w.players desc, w.created_at desc, w.id desc limit 100`;
+  const worlds = await Promise.all(rows.map((row: any) => shown(row, viewer)));
+  return json({
+    username: who.username,
+    joined: new Date(who.created_at).getTime(),
+    players: worlds.reduce((n, w) => n + w.players, 0),
+    votes: worlds.reduce((n, w) => n + w.votes, 0),
+    worlds,
+    me: viewer?.id === who.id,
+    blocked: viewer ? (await sql`select 1 from blocks where account = ${viewer.id} and blocked = ${who.id}`).length > 0 : false,
+  });
+}
+
+// ---------- messages ----------
+
+/** Messages are read only by their two parties. A block stops new ones from the blocked account; it is checked in the same statement that stores a message. */
+const accountNamed = async (name: string) => {
+  const [a] = /^[a-z0-9_]{3,20}$/.test(name.toLowerCase()) ? await sql`select id, username from accounts where username = ${name} and banned_at is null` : [];
+  if (!a) throw new Refusal("There is no such builder.", 404);
+  return a as { id: string; username: string };
+};
+const shownMessage = (m: any, me: Account) => ({ id: String(m.id), body: m.body, at: new Date(m.at).getTime(), mine: m.sender === me.id, read: !!m.read_at });
+
+async function send(req: Request) {
+  const me = allowed(await signedIn(req));
+  const b = await req.json();
+  const to = await accountNamed(String(b.to ?? ""));
+  if (to.id === me.id) throw new Refusal("That's you.");
+  const body = String(b.body ?? "").trim();
+  if (!body || body.length > 2000) throw new Refusal("A message is 1 to 2,000 characters.");
+  await limit(me.id, "message", "Wait a few seconds between messages.");
+  const [before] = await sql`select 1 from messages where (sender = ${me.id} and recipient = ${to.id}) or (sender = ${to.id} and recipient = ${me.id}) limit 1`;
+  if (!before) await limit(me.id, "conversation", "That's 10 new conversations today. Try again tomorrow.");
+  const [m] = await sql`insert into messages (sender, recipient, body) select ${me.id}, ${to.id}, ${body}
+    where not exists (select 1 from blocks where account = ${to.id} and blocked = ${me.id}) returning *`;
+  if (!m) throw new Refusal(`You can't message ${to.username}.`, 403);
+  return json(shownMessage(m, me), 201);
+}
+
+/** Every conversation, the newest first, with its last message and how many to this account are unread. */
+async function inbox(req: Request) {
+  const me = await signedIn(req);
+  const rows = await sql`select distinct on (other) other, a.username, m.id, m.body, m.at, m.sender, m.read_at,
+      (select count(*)::int from messages u where u.sender = other and u.recipient = ${me.id} and u.read_at is null) as unread
+    from (select *, case when sender = ${me.id} then recipient else sender end as other from messages where sender = ${me.id} or recipient = ${me.id}) m
+    join accounts a on a.id = other order by other, m.id desc`;
+  rows.sort((x: any, y: any) => Number(y.id) - Number(x.id));
+  return json(rows.slice(0, 200).map((r: any) => ({ with: r.username, unread: r.unread, last: shownMessage(r, me) })));
+}
+
+/** One conversation, 100 messages at a time going back from ?before=<id>, oldest first; opening it marks what came in as read. */
+async function thread(req: Request, name: string) {
+  const me = await signedIn(req);
+  const other = await accountNamed(name);
+  const before = Number(new URL(req.url).searchParams.get("before")) || Number.MAX_SAFE_INTEGER;
+  const rows = await sql`select * from messages where ((sender = ${me.id} and recipient = ${other.id}) or (sender = ${other.id} and recipient = ${me.id})) and id < ${before} order by id desc limit 100`;
+  await sql`update messages set read_at = now() where sender = ${other.id} and recipient = ${me.id} and read_at is null`;
+  const [blocked] = await sql`select 1 from blocks where account = ${me.id} and blocked = ${other.id}`;
+  return json({ with: other.username, blocked: !!blocked, messages: rows.reverse().map((m: any) => shownMessage(m, me)) });
+}
+
+async function block(req: Request, name: string, on: boolean) {
+  const me = await signedIn(req);
+  const other = await accountNamed(name);
+  if (on) await sql`insert into blocks (account, blocked) values (${me.id}, ${other.id}) on conflict do nothing`;
+  else await sql`delete from blocks where account = ${me.id} and blocked = ${other.id}`;
+  return json({ blocked: on });
+}
+
+/** Only the recipient reports a message, which shares it with the moderators. */
+async function reportMessage(req: Request, id: string) {
+  const me = await signedIn(req);
+  const [m] = /^\d{1,18}$/.test(id) ? await sql`select id from messages where id = ${id} and recipient = ${me.id}` : [];
+  if (!m) throw new Refusal("There is no such message.", 404);
+  await sql`insert into reports (kind, target, reporter) values ('message', ${id}, ${me.id}) on conflict do nothing`;
+  return json({ reported: true });
+}
+
 // ---------- comments ----------
 
 const shownComment = (c: any, account: Account | null) => ({
@@ -720,11 +867,23 @@ async function route(req: Request, ip: string) {
   if (at === "PATCH /account") return rename(req);
   if (at === "DELETE /account") return deleteAccount(req);
   if (at === "POST /plays") return startPlay(req);
+  if (at === "POST /credits/waiting") return waitingCredits(req);
+  if (at === "POST /credits/accept") return acceptCredit(req);
+  if (at === "GET /messages") return inbox(req);
+  if (at === "POST /messages") return send(req);
+  if (at === "GET /account/unread") {
+    const me = await signedIn(req);
+    return json({ unread: (await sql`select count(*)::int as n from messages where recipient = ${me.id} and read_at is null`)[0].n });
+  }
   if (at === "POST /playtime") return playtime(req);
   if (at === "POST /agent-usage") return agentUsage(req);
   const [, part, part2, part3] = url.pathname.split("/");
   if (req.method === "PUT" && part === "plays" && part2 && !part3) return beat(req, part2);
   if (req.method === "DELETE" && part === "comments" && part2 && !part3) return uncomment(req, part2);
+  if (req.method === "GET" && part === "users" && part2 && !part3) return profile(req, decodeURIComponent(part2));
+  if (req.method === "GET" && part === "messages" && part2 && !part3) return thread(req, decodeURIComponent(part2));
+  if (req.method === "POST" && part === "messages" && part2 && part3 === "report") return reportMessage(req, part2);
+  if ((req.method === "PUT" || req.method === "DELETE") && part === "blocks" && part2 && !part3) return block(req, decodeURIComponent(part2), req.method === "PUT");
   if (req.method === "POST" && part === "comments" && part2 && part3 === "report") return report(req, ip, "comment", part2);
   if (at === "GET /account/worlds") {
     const account = await signedIn(req);
@@ -760,7 +919,7 @@ async function route(req: Request, ip: string) {
       if (!row) throw new Refusal("There is no such world.", 404);
       if (row.removed_at) throw new Refusal("This world was taken down.", 410);
       const [{ forks }] = await sql`select count(*)::int as forks from worlds w left join accounts a on a.id = w.account where w.remix_of = ${id} and ${listed()}`;
-      return json({ ...(await shown(row, account)), parent: await parentOf(row.remix_of), forks });
+      return json({ ...(await shown(row, account)), parent: await parentOf(row.remix_of), forks, builders: [row.username ?? row.author, ...(await builders(id!))] });
     }
     case "GET :id/forks": {
       // Newest first, 50 at a time, going on from ?after=<id>.
@@ -780,6 +939,10 @@ async function route(req: Request, ip: string) {
       return remove(req, id!);
     case "PUT :id/vote":
       return vote(req, id!);
+    case "PUT :id/credits":
+      return inviteBuilders(req, id!);
+    case "DELETE :id/credits":
+      return dropCredit(req, id!);
     case "GET :id/comments":
       return comments(req, id!);
     case "POST :id/comments":

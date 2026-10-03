@@ -1,4 +1,4 @@
-// Moderation from the box: `bun takedown.ts` lists the most reported worlds, `bun takedown.ts <id>` takes one down for good, `bun takedown.ts ban <username>` bans an account, `bun takedown.ts comments` lists the most reported comments and `bun takedown.ts comment <id>` removes one.
+// Moderation from the box: `bun takedown.ts` lists the most reported worlds, `bun takedown.ts <id>` takes one down for good, `bun takedown.ts ban <username>` bans an account, `bun takedown.ts comments` lists the most reported comments and `bun takedown.ts comment <id>` removes one, and `bun takedown.ts messages` lists reported messages, the only ones moderators see.
 import { sql, takeDown } from "./server";
 
 const [first, second] = process.argv.slice(2);
@@ -6,6 +6,9 @@ if (!first) console.table(await sql`select id, title, author, visibility, report
 else if (first === "comments")
   console.table(await sql`select c.id, a.username, c.world, left(c.body, 80) as body, count(r.*)::int as reports from comments c join accounts a on a.id = c.account join reports r on r.kind = 'comment' and r.target = c.id::text
     where c.removed_at is null group by c.id, a.username order by reports desc limit 20`);
+else if (first === "messages")
+  console.table(await sql`select m.id, s.username as sender, t.username as recipient, left(m.body, 80) as body, m.at from messages m join accounts s on s.id = m.sender join accounts t on t.id = m.recipient
+    join reports r on r.kind = 'message' and r.target = m.id::text group by m.id, s.username, t.username order by m.at desc limit 20`);
 else if (first === "comment") {
   const [c] = await sql`update comments set removed_at = now(), removed_by = 'moderator', body = '' where id = ${Number(second) || 0} and removed_at is null returning id`;
   if (!c) throw new Error(`There is no comment ${second}.`);

@@ -39,7 +39,7 @@ Deleting an account needs its password. Its sessions end at once and its worlds 
 | `POST /worlds/:id/claim` | Signed in, `{ ownerToken }`: moves a world shared before accounts to this account. |
 | `DELETE /worlds/:id` | Its account, or the owner token of an unclaimed world. Leaves a tombstone (`410 Gone`) and deletes its files. |
 | `GET /worlds` | Public live worlds, 50 at a time: by players, or newest first with `?sort=new`; `?after=<id>` goes on from that world, ties broken by id. Worlds of banned accounts are left out. |
-| `GET /worlds/:id` | One world, link-only included, `410` once removed, with `zip`, `cover` and `clip` URLs that last the hour, `parent` (the world it was forked from: its id, title and author while that one is listed, otherwise only `removed` or `unlisted`) and its number of `forks`. |
+| `GET /worlds/:id` | One world, link-only included, `410` once removed, with `zip`, `cover` and `clip` URLs that last the hour, `parent` (the world it was forked from: its id, title and author while that one is listed, otherwise only `removed` or `unlisted`) and its number of `forks`, and `builders`: its author, then each credited builder who accepted. |
 | `GET /worlds/:id/forks` | Its listed forks, newest first, 50 at a time, `?after=<id>`. |
 | `PUT /worlds/:id/vote` | Signed in, `{ up: true }` or `{ up: false }`: the vote the account wants, so sending it twice changes nothing. Answers `{ votes, voted }`. 60 a minute. |
 | `POST /worlds/:id/report` | Counts a report. 10 per IP an hour. |
@@ -49,12 +49,25 @@ Deleting an account needs its password. Its sessions end at once and its worlds 
 | `GET /worlds/:id/comments` | Oldest first, 100 at a time, `?after=<id>`. Comments of banned accounts are left out; removed ones show as removed. |
 | `POST /worlds/:id/comments` | Signed in, `{ body }`, 1 to 1,000 characters of plain text. One every 20 s. |
 | `DELETE /comments/:id`, `POST /comments/:id/report` | Removal by its author or the world's owner, which also wipes its text; a report, once per account or IP. |
+| `PUT /worlds/:id/credits` | Its account, `{ builders: [{ name, checks }] }`, up to 20: asks each builder, by in-world name, to be credited. Replaces the waiting ones; accepted credits stay. |
+| `DELETE /worlds/:id/credits` | Signed in: drops the account's own credit on that world. |
+| `POST /credits/waiting`, `POST /credits/accept` | Signed in, `{ tokens }`: the credits those tokens prove, not yet accepted. `{ token }`: accepts one, which then shows on the world. |
+| `GET /users/:username` | A profile: `joined`, `players` and `votes` over its listed worlds, those `worlds`, its own and credited, and whether the asker `blocked` it. `404` for a banned account. |
+| `POST /messages` | Signed in, `{ to, body }`, 1 to 2,000 characters of plain text. One every 3 s, and 10 new conversations a day. `403` when the recipient blocked the sender. |
+| `GET /messages`, `GET /messages/:username` | The conversations, newest first, each with its last message and unread count. One conversation, 50 at a time going back with `?before=<id>`; reading it marks its messages read. |
+| `GET /account/unread` | `{ unread }` messages. |
+| `PUT /blocks/:username`, `DELETE /blocks/:username` | Block or unblock: a blocked account can't message the blocker, and earlier messages stay. |
+| `POST /messages/:id/report` | Its recipient only: shares that message with the moderators. |
 
 The app authenticates with `Authorization: Bearer <session>`. Rate limits are counter rows, each bumped in one statement, so requests at the same moment can't slip past them. Shares never finished are swept after a day.
 
 A play is time in a Community world hosted by the desktop app, only while its window has focus, and only with Share usage stats on; joining players aren't counted yet. The server credits no more than the time since the play started on its own clock, a play's seconds never go down, and only an install's newest play counts, so two at once can't both add up. Plays are the plays of a minute or more; players are the installs with at least one. Installs are free to make, so a determined player can still inflate these.
 
 Playtime covers every game the app has open, its own, joined ones and Community's, with the same focus rule and switch. A world goes under its Community id, the random id a world keeps in its `config.json` (`telemetry`), or, for a joined world, a random id the app keeps for that world's address in its `state.json`; names and links never leave the computer. Each heartbeat is credited at most the time since the install's last one (a minute for its first, two at most), so a replay or two worlds at once add nothing. Playtime and agent usage outlive a deleted account, without it. The site's origin is the only one browsers may read the API from.
+
+A credit is consent from both sides, proven without accounts knowing each other's player keys. Publishing, the owner picks builders from the names in the world's `keys.json`; for each, the launcher sends `sha256(HMAC-SHA256(playerKey, "sandbox-credit:" + localWorldId))` for that name's keys. A builder's game page computes the same HMAC with its own key when it joins and hands it to the app, which keeps the last 500 in `state.json`; the server sees only the hash until the builder, signed in, shows a token whose hash matches and accepts it. So credits are accepted from the desktop app, by someone who played in that world under that name.
+
+Messages are plain text, seen only by their two accounts, and reports are the only way moderators see one.
 
 ## Free voice
 
@@ -79,4 +92,4 @@ Backups: every hour `pg_dump | zstd` to `sandbox-backups/pg/<time>.sql.zst`, the
 
 ## Takedown
 
-On the box, `cd /opt/sandbox-api && docker compose exec app bun takedown.ts` lists the most reported worlds; `bun takedown.ts <id>` takes one down, and a world with the same local id can't be published again; `bun takedown.ts ban <username>` stops an account publishing, voting and commenting and takes its worlds and comments out of the lists; `bun takedown.ts comments` lists the most reported comments and `bun takedown.ts comment <id>` removes one. That id is chosen by the app, so a determined author can still get around it.
+On the box, `cd /opt/sandbox-api && docker compose exec app bun takedown.ts` lists the most reported worlds; `bun takedown.ts <id>` takes one down, and a world with the same local id can't be published again; `bun takedown.ts ban <username>` stops an account publishing, voting and commenting and takes its worlds and comments out of the lists; `bun takedown.ts comments` lists the most reported comments and `bun takedown.ts comment <id>` removes one; `bun takedown.ts messages` lists reported messages. A banned account also can't message, and its profile is gone. That id is chosen by the app, so a determined author can still get around it.

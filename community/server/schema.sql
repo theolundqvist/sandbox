@@ -169,3 +169,31 @@ create table if not exists comments (
 create index if not exists comments_world on comments (world, id);
 -- Reports of anything people post besides worlds, one per reporter and thing.
 create table if not exists reports (kind text not null, target text not null, reporter text not null, at timestamptz not null default now(), primary key (kind, target, reporter));
+
+-- Builders credited on a world by their in-world name. A credit waits until someone signed in shows a token whose sha256 is one of its checks (see inviteBuilders in server.ts), then belongs to that account.
+create table if not exists credits (
+  world text not null references worlds (id) on delete cascade,
+  name text not null,
+  checks text[] not null,
+  account uuid references accounts (id) on delete cascade,
+  state text not null default 'pending' check (state in ('pending', 'accepted')),
+  invited_at timestamptz not null default now(),
+  accepted_at timestamptz,
+  primary key (world, name)
+);
+create unique index if not exists credits_account on credits (account, world) where account is not null;
+create index if not exists credits_checks on credits using gin (checks) where state = 'pending';
+
+-- Personal messages, plain text, read only by their two parties; an account's deletion takes every message it sent or got.
+create table if not exists messages (
+  id bigserial primary key,
+  sender uuid not null references accounts (id) on delete cascade,
+  recipient uuid not null references accounts (id) on delete cascade,
+  body text not null,
+  at timestamptz not null default now(),
+  read_at timestamptz
+);
+create index if not exists messages_sender on messages (sender, recipient, id);
+create index if not exists messages_recipient on messages (recipient, sender, id);
+create index if not exists messages_unread on messages (recipient) where read_at is null;
+create table if not exists blocks (account uuid not null references accounts (id) on delete cascade, blocked uuid not null references accounts (id) on delete cascade, at timestamptz not null default now(), primary key (account, blocked));

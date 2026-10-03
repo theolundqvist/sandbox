@@ -80,6 +80,16 @@ async function join(body: object) {
   key = data.key;
   me = data.name;
   history.replaceState(null, "", location.pathname);
+  void creditToken(data.key);
+}
+
+/** The desktop app keeps a token made from this player's key for each world they play in, so they can later accept a credit for building it on Community; the key stays here. */
+async function creditToken(playerKey: string) {
+  const app = (window as { sandboxDesktop?: { credit?(token: string): void } }).sandboxDesktop;
+  if (!app?.credit) return;
+  const hmac = await crypto.subtle.importKey("raw", new TextEncoder().encode(playerKey), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", hmac, new TextEncoder().encode(`sandbox-credit:${info.id}`)));
+  app.credit(btoa(String.fromCharCode(...mac)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""));
 }
 
 /** The join screen, over the game itself when the link holds an invite. A player who left the world comes back to it and rejoins as themselves. */

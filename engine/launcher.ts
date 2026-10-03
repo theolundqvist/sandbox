@@ -1,4 +1,5 @@
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash, createHmac } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { Server, ServerWebSocket, Subprocess } from "bun";
@@ -459,6 +460,8 @@ async function menuApi(req: Request, action: string) {
     } else if (action === "publish-stage") return Response.json(await stagePublish(body));
     else if (action === "publish-upload") return Response.json(await uploadStaged(body));
     else if (action === "staged") return Response.json(staged.get(body.id)?.stage ?? null);
+    else if (action === "builders") return Response.json(builders(body.id));
+    else if (action === "credit-checks") return Response.json(creditChecks(body.id, body.names));
     else if (action === "published") published(body);
     else if (action === "unshare") await unshareWorld(body.id);
     else if (action === "community-claimed") forgetOwnerTokens(body.ids);
@@ -582,6 +585,24 @@ async function stagePublish(body: any) {
   const stage = { details, sizes: Object.fromEntries(Object.entries(files).map(([k, f]) => [k, f.bytes.length])), community: before.id ?? null };
   staged.set(body.id, { files, stage });
   return stage;
+}
+
+/** Everyone who has played in a world here, by name. */
+function builders(id: unknown) {
+  if (!exists(id)) throw new Error("That world doesn't exist.");
+  return [...new Set(Object.values(readJson(join(WORLDS, String(id), "keys.json")) as Record<string, string>))].sort();
+}
+/** For each named builder, a check per key they play with: Community credits a builder who shows a token made from one of those keys, which never leave this computer (see inviteBuilders in community/server/server.ts). */
+function creditChecks(id: unknown, names: unknown) {
+  if (!exists(id)) throw new Error("That world doesn't exist.");
+  const wanted = new Set(Array.isArray(names) ? names.map(String) : []);
+  const byName = new Map<string, string[]>();
+  for (const [key, name] of Object.entries(readJson(join(WORLDS, String(id), "keys.json")) as Record<string, string>)) {
+    if (!wanted.has(name)) continue;
+    const token = createHmac("sha256", key).update(`sandbox-credit:${id}`).digest("base64url");
+    byName.set(name, [...(byName.get(name) ?? []), createHash("sha256").update(token).digest("hex")]);
+  }
+  return [...byName].map(([name, checks]) => ({ name, checks: checks.slice(0, 10) }));
 }
 
 async function uploadStaged(body: any) {

@@ -52,8 +52,8 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
 const STATE = join(app.getPath("userData"), "state.json");
-/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], last?: string, port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string, worldKeys: Record<string, string> }} The name this player joins every world as; joined worlds by shareable address; main menus opened, by host key; the world last played, as its address in Worlds; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed; the random id each joined world's playtime goes under. */
-const state = { recents: [], hosts: {}, mic: [], worldKeys: {} };
+/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], last?: string, port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string, worldKeys: Record<string, string>, creditTokens: string[] }} The name this player joins every world as; joined worlds by shareable address; main menus opened, by host key; the world last played, as its address in Worlds; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed; the random id each joined world's playtime goes under; a token per world played in, to accept credit for building it. */
+const state = { recents: [], hosts: {}, mic: [], worldKeys: {}, creditTokens: [] };
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
 } catch {}
@@ -472,6 +472,10 @@ const worldId = (id) => {
   if (!/^[a-z0-9]{12}$/.test(String(id))) throw new Error("That world isn't in Community.");
   return String(id);
 };
+const userName = (name) => {
+  if (!/^[A-Za-z0-9_]{3,20}$/.test(String(name))) throw new Error("There is no such builder.");
+  return String(name);
+};
 const commentId = (id) => {
   if (!/^[0-9]{1,18}$/.test(String(id))) throw new Error("That comment isn't there any more.");
   return String(id);
@@ -503,11 +507,26 @@ const COMMUNITY_ACTIONS = {
   },
   /** This computer's worlds, to pick one to publish. */
   local: async () => (await startServer(), await hostState())?.worlds.map((w) => ({ id: w.id, name: w.name, shared: w.shared })) ?? [],
-  publish: async ({ id, title, description, visibility }) => {
+  /** Publishing invites the builders picked, by name; each is credited once they accept. */
+  publish: async ({ id, title, description, visibility, builders }) => {
     await startServer();
     const stage = await menu("publish-stage", { id: String(id), title, description, visibility });
-    return publishStaged(String(id), stage);
+    const world = await publishStaged(String(id), stage);
+    if (Array.isArray(builders) && builders.length) await community(`/worlds/${world.id}/credits`, { method: "PUT", body: { credits: await menu("credit-checks", { id: String(id), names: builders }) } });
+    return world;
   },
+  builders: async ({ id }) => (await startServer(), menu("builders", { id: String(id) })),
+  /** Credits waiting for this player: the tokens from the worlds they played in, matched by Community. */
+  credits: () => community("/credits/waiting", { method: "POST", body: { tokens: state.creditTokens } }),
+  accept: ({ token }) => community("/credits/accept", { method: "POST", body: { token: String(token) } }),
+  "drop-credit": ({ id }) => community(`/worlds/${worldId(id)}/credits`, { method: "DELETE" }),
+  profile: ({ name }) => community(`/users/${userName(name)}`),
+  inbox: () => community("/messages"),
+  unread: () => community("/account/unread"),
+  thread: ({ name, before }) => community(`/messages/${userName(name)}${before ? `?before=${commentId(before)}` : ""}`),
+  send: ({ to, body }) => community("/messages", { method: "POST", body: { to: userName(to), body: String(body ?? "") } }),
+  block: ({ name, on }) => community(`/blocks/${userName(name)}`, { method: on === true ? "PUT" : "DELETE" }),
+  "report-message": ({ id }) => community(`/messages/${commentId(id)}/report`, { method: "POST" }),
 };
 
 /** Players in the world this app hosts, besides the host playing it here. */
@@ -801,6 +820,11 @@ app.whenReady().then(() => {
   ipcMain.on("quit", (event) => fromShell(event) && app.quit());
   ipcMain.handle("ready", (event) => fromShell(event) && ready);
   ipcMain.on("events", (event, events) => fromShell(event) && usage.add(events));
+  ipcMain.on("credit-token", (event, token) => {
+    if (!fromGame(event) || !/^[A-Za-z0-9_-]{43}$/.test(String(token)) || state.creditTokens.includes(token)) return;
+    state.creditTokens = [...state.creditTokens, token].slice(-500);
+    save();
+  });
   ipcMain.handle("share-usage", (event, on) => {
     if (!fromShell(event)) return null;
     if (typeof on === "boolean") usage.share(on);

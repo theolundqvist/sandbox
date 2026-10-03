@@ -95,7 +95,8 @@ async function showWorld(id) {
   document.title = `${w.title} · Sandbox`;
   $("world-stage").replaceChildren(media(w));
   $("world-title").textContent = w.title;
-  $("world-by").textContent = [`by ${w.author}`, counted(w.players, "player"), counted(w.plays, "play"), w.mods ? `${w.mods} mods` : ""].filter(Boolean).join(" · ");
+  const names = w.builders ?? [w.author];
+  $("world-by").replaceChildren("by ", ...names.flatMap((n, i) => [i ? ", " : "", el("a", { href: `/u/${n}`, textContent: n })]), ["", counted(w.players, "player"), counted(w.plays, "play"), w.mods ? `${w.mods} mods` : ""].filter((x, i) => !i || x).join(" · "));
   $("world-about").textContent = w.description;
   $("world-tip").hidden = true;
   $("world-get").onclick = () => copyFor(w, $("world-tip"));
@@ -221,7 +222,7 @@ const go = (path) => {
   route();
 };
 /** Where to carry on after signing in: the page that asked for it. */
-const then = () => new URLSearchParams(location.search).get("then")?.match(/^\/[a-z0-9/]*$/)?.[0] ?? "/account";
+const then = () => new URLSearchParams(location.search).get("then")?.match(/^\/[A-Za-z0-9_/]*$/)?.[0] ?? "/account";
 async function enterAccount(path, body) {
   $("error").textContent = "";
   try {
@@ -260,17 +261,95 @@ $("delete-form").onsubmit = async (e) => {
 async function showAccount() {
   if (!(await whoAmI())) return go("/signin");
   $("account-name").textContent = account.username;
+  $("go-profile").href = `/u/${account.username}`;
+  api("/account/unread").then(({ unread }) => ($("unread").textContent = unread ? String(unread) : ""), () => {});
   const mine = await api("/account/worlds");
   $("my-worlds").replaceChildren(...mine.map(worldRow));
   $("my-none").hidden = !!mine.length;
 }
 
-const SCREENS = { "/": "home", "/join": "join", "/worlds": "worlds", "/host": "host", "/signin": "signin", "/signup": "signup", "/account": "account", "/account/delete": "delete" };
-const BACK = { world: "/worlds", signup: "/signin", delete: "/account" };
+/** A builder's page: their worlds, and for a signed-in visitor, a message and a block. */
+async function showProfile(name) {
+  const p = await api(`/users/${name}`);
+  document.title = `${p.username} · Sandbox`;
+  $("profile-name").textContent = p.username;
+  $("profile-about").textContent = `Joined ${new Date(p.joined).toLocaleDateString(undefined, { month: "long", year: "numeric" })} · ${counted(p.players, "player")} · ${counted(p.votes, "vote")}`;
+  $("profile-worlds").replaceChildren(...p.worlds.map(worldRow));
+  $("profile-none").hidden = p.worlds.length > 0;
+  const signedIn = !!(await whoAmI());
+  $("profile-message").hidden = p.me;
+  $("profile-message").href = signedIn ? `/messages/${p.username}` : `/signin?then=/messages/${p.username}`;
+  $("profile-block").hidden = p.me || !signedIn;
+  const showBlock = () => ($("profile-block").textContent = p.blocked ? "Unblock" : "Block");
+  showBlock();
+  $("profile-block").onclick = async () => {
+    try {
+      p.blocked = (await api(`/blocks/${p.username}`, { method: p.blocked ? "DELETE" : "PUT" })).blocked;
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    showBlock();
+  };
+}
+
+/** Messages: plain text, read only by the two people in a conversation. */
+async function showMessages() {
+  if (!(await whoAmI())) return go("/signin?then=/messages");
+  const threads = await api("/messages");
+  $("threads-none").hidden = threads.length > 0;
+  $("threads").replaceChildren(
+    ...threads.map((t) =>
+      el("a", { className: "world", href: `/messages/${t.with}` }, el("span", { className: "what" }, el("b", { textContent: t.with }), el("small", { textContent: `${t.last.mine ? "You: " : ""}${t.last.body}` })), el("span", { className: "value", textContent: t.unread ? `${t.unread} new` : ago(t.last.at) })),
+    ),
+  );
+}
+async function showThread(name) {
+  if (!(await whoAmI())) return go(`/signin?then=/messages/${name}`);
+  $("thread-name").textContent = name;
+  $("thread-profile").href = `/u/${name}`;
+  $("message-list").replaceChildren();
+  const t = await api(`/messages/${name}`);
+  $("thread-name").textContent = t.with;
+  $("thread-blocked").hidden = !t.blocked;
+  const row = (m) => {
+    const head = el("small", { textContent: `${m.mine ? "You" : t.with} · ${ago(m.at)}` });
+    if (!m.mine)
+      head.append(
+        el("button", {
+          className: "quiet",
+          textContent: "Report",
+          onclick: async (e) => {
+            e.target.disabled = true;
+            await api(`/messages/${m.id}/report`, { method: "POST" }).catch(() => {});
+            e.target.textContent = "Reported";
+          },
+        }),
+      );
+    return el("div", { className: m.mine ? "comment mine" : "comment" }, head, el("p", { textContent: m.body }));
+  };
+  $("message-list").replaceChildren(...t.messages.map(row));
+  $("message-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const body = $("message-text").value.trim();
+    if (!body) return;
+    try {
+      $("message-list").append(row(await api("/messages", { method: "POST", body: JSON.stringify({ to: t.with, body }) })));
+    } catch (err) {
+      return void ($("error").textContent = err.message);
+    }
+    $("message-text").value = "";
+  };
+  $("message-text").focus();
+}
+
+const SCREENS = { "/": "home", "/join": "join", "/worlds": "worlds", "/host": "host", "/signin": "signin", "/signup": "signup", "/account": "account", "/account/delete": "delete", "/messages": "messages" };
+const BACK = { world: "/worlds", signup: "/signin", delete: "/account", messages: "/account", thread: "/messages" };
 async function route() {
   const path = location.pathname.replace(/\/+$/, "") || "/";
   const id = path.match(/^\/w\/([a-z0-9]{12})$/)?.[1];
-  const screen = id ? "world" : (SCREENS[path] ?? "home");
+  const user = path.match(/^\/u\/([A-Za-z0-9_]{3,20})$/)?.[1];
+  const talking = path.match(/^\/messages\/([A-Za-z0-9_]{3,20})$/)?.[1];
+  const screen = id ? "world" : user ? "profile" : talking ? "thread" : (SCREENS[path] ?? "home");
   for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== screen;
   stats.screen(screen);
   $("back").hidden = screen === "home";
@@ -282,6 +361,9 @@ async function route() {
     if (screen === "worlds") await showWorlds();
     if (screen === "world") await showWorld(id);
     if (screen === "account") await showAccount();
+    if (screen === "profile") await showProfile(user);
+    if (screen === "messages") await showMessages();
+    if (screen === "thread") await showThread(talking);
     if (screen === "delete" && !(await whoAmI())) return go("/signin");
   } catch (e) {
     $("error").textContent = e.message;

@@ -54,6 +54,14 @@
   .comment.removed p { color: var(--dim); }
   .comment small { color: var(--dim); font-size: 13px; }
   .comment .quiet { margin-left: 20px; padding: 0 4px; }
+  .comment.mine small { color: var(--accent); }
+  #world-by a, a.quiet { text-decoration: none; }
+  #world-by a:hover { color: var(--text); }
+  #profile-about { margin: -24px 0 20px; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .12em; text-transform: uppercase; }
+  #message-list { width: min(720px, 100%); margin-bottom: 16px; }
+  #threads .world { padding: 14px 0; }
+  #threads .world b { font-size: 22px; }
+  #threads .value { color: var(--dim); font: 700 13px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; }
   #me { position: fixed; top: 24px; right: 32px; z-index: 1; text-decoration: none; }
   form.entries { display: flex; flex-direction: column; }
 
@@ -159,7 +167,30 @@
     <h1 id="account-name"></h1>
     <div class="worlds" id="my-worlds"></div>
     <p class="note" id="my-none" hidden>Worlds you publish from the app show up here.</p>
-    <div class="items"><button class="item" id="sign-out">Sign out</button><a class="item" href="/account/delete">Delete account</a></div>
+    <div class="items"><a class="item" id="go-profile">Your profile</a><a class="item" href="/messages">Messages<span class="value" id="unread"></span></a><button class="item" id="sign-out">Sign out</button><a class="item" href="/account/delete">Delete account</a></div>
+  </section>
+
+  <section id="profile" class="screen" data-nav hidden>
+    <h1 id="profile-name"></h1>
+    <p id="profile-about"></p>
+    <div class="items"><a class="item" id="profile-message" hidden>Message</a></div>
+    <div class="worlds" id="profile-worlds"></div>
+    <p class="note" id="profile-none" hidden>No worlds yet</p>
+    <div class="actions"><button class="quiet" id="profile-block" hidden>Block</button></div>
+  </section>
+
+  <section id="messages" class="screen" data-nav hidden>
+    <h1>Messages</h1>
+    <div class="worlds" id="threads"></div>
+    <p class="note" id="threads-none" hidden>No messages yet. Message a builder from their profile.</p>
+  </section>
+
+  <section id="thread" class="screen" data-nav hidden>
+    <h1 id="thread-name"></h1>
+    <div id="message-list"></div>
+    <form id="message-form"><label class="item entry"><input type="text" id="message-text" maxlength="2000" placeholder="Write a message" autocomplete="off"></label></form>
+    <p class="note" id="thread-blocked" hidden>You blocked them. Unblock them on their profile to hear from them again.</p>
+    <div class="actions"><a class="quiet" id="thread-profile">Profile</a></div>
   </section>
 
   <section id="delete" class="screen" data-nav hidden>

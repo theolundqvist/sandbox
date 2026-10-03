@@ -33,6 +33,12 @@
   .comment button { margin-left: 16px; padding: 0; background: none; border: 0; color: var(--dim); font: 700 12px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; cursor: pointer; outline: none; }
   .comment button:is(:hover, :focus-visible) { color: var(--text); }
   #comment-list { margin-top: 16px; }
+  #message-list { max-width: 720px; margin-bottom: 16px; }
+  .comment.mine small { color: var(--accent); }
+  #cworld-by button { padding: 0; background: none; border: 0; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; outline: none; }
+  #cworld-by button:is(:hover, :focus-visible) { color: var(--text); }
+  #credits-part h2 { margin: 24px 0 8px; font-size: 12px; }
+  #profile-about { margin: -16px 0 20px; }
   .cover video { display: block; width: 100%; height: 100%; object-fit: cover; }
   @media (max-width: 1000px), (max-height: 640px) {
     .front { bottom: 64px; padding: 28px 48px 0; }
@@ -96,7 +102,7 @@
   <section id="community" class="screen" data-nav hidden>
     <h1>Community</h1>
     <div class="field"><span>Show</span><div class="pick" id="community-tab" data-options="top:Most played,new:Newest,mine:My worlds"></div></div>
-    <div class="items"><button class="item" id="go-publish">Publish a world</button></div>
+    <div class="items"><button class="item" id="go-publish">Publish a world</button><button class="item" id="go-inbox">Messages<span class="value" id="unread"></span></button><button class="item" id="go-me">Your profile</button></div>
     <div class="items" id="community-list"></div>
     <p id="community-status" class="status" hidden></p>
     <div class="items"><button class="item" id="community-more" hidden>More</button></div>
@@ -118,6 +124,32 @@
       <button class="item danger" id="cworld-down" hidden>Take down</button>
       <button class="item" id="cworld-report" hidden>Report</button>
     </div>
+  </section>
+
+  <section id="profile" class="screen" data-nav hidden>
+    <h1 id="profile-name"></h1>
+    <p class="status" id="profile-about"></p>
+    <div class="items">
+      <button class="item" id="profile-message" hidden>Message</button>
+      <button class="item" id="profile-block" hidden>Block</button>
+    </div>
+    <div id="credits-part" hidden><h2 class="status">Credits waiting</h2><div class="items" id="credit-list"></div></div>
+    <div class="items" id="profile-worlds"></div>
+    <p class="status" id="profile-none" hidden>No worlds yet</p>
+  </section>
+
+  <section id="inbox" class="screen" data-nav hidden>
+    <h1>Messages</h1>
+    <div class="items" id="thread-list"></div>
+    <p class="status" id="inbox-none" hidden>No messages yet. Message a builder from their profile.</p>
+  </section>
+
+  <section id="thread" class="screen" data-nav hidden>
+    <h1 id="thread-name"></h1>
+    <div id="message-list"></div>
+    <label class="item entry" id="message-entry"><input type="text" id="message-text" maxlength="2000" placeholder="Write a message" autocomplete="off"></label>
+    <div class="items"><button class="item" id="message-go">Send</button><button class="item" id="thread-profile">Profile</button></div>
+    <p class="status" id="thread-blocked" hidden>You blocked them. Unblock them on their profile to hear from them again.</p>
   </section>
 
   <section id="forks" class="screen" data-nav hidden>
@@ -158,6 +190,7 @@
     <label class="field"><span>Title</span><input type="text" id="publish-title" maxlength="60" autocomplete="off" spellcheck="false"></label>
     <label class="field"><span>Description</span><input type="text" id="publish-description" maxlength="200" autocomplete="off"></label>
     <div class="field"><span>Who can play</span><div class="pick" id="publish-visibility" data-options="public:Everyone,link:Anyone with the link"></div></div>
+    <div id="publish-builders"></div>
     <div class="items"><button class="item" id="publish-go">Publish</button></div>
   </section>
 
@@ -295,7 +328,7 @@
       e.preventDefault();
       if (current()?.id === "join") join();
       else if (current()?.id === "name") $("name-go").click();
-      else if (["signin", "signup", "delete-account", "publish", "comments"].includes(current()?.id)) $({ signin: "signin-go", signup: "signup-go", "delete-account": "delete-yes", publish: "publish-go", comments: "comment-go" }[current().id]).click();
+      else if (["signin", "signup", "delete-account", "publish", "comments", "thread"].includes(current()?.id)) $({ signin: "signin-go", signup: "signup-go", "delete-account": "delete-yes", publish: "publish-go", comments: "comment-go", thread: "message-go" }[current().id]).click();
       else document.activeElement.blur();
     }
   });
@@ -407,7 +440,10 @@
     if (r.error) throw new Error(r.error);
     return r.account;
   }
-  const showAccount = () => ($("account-value").textContent = account?.username ?? "Sign in");
+  const showAccount = () => {
+    $("account-value").textContent = account?.username ?? "Sign in";
+    showUnread();
+  };
   async function refreshAccount() {
     account = await accountCall("account").catch(() => account);
     showAccount();
@@ -521,7 +557,8 @@
     const w = opened;
     $("cworld-stage").replaceChildren(clipOf(w, "stage-art"));
     $("cworld-title").textContent = w.title;
-    $("cworld-by").textContent = `by ${w.author} · ${counted(w.players, "player")} · ${counted(w.plays, "play")}`;
+    const names = w.builders ?? [w.author];
+    $("cworld-by").replaceChildren("by ", ...names.flatMap((n, i) => [i ? ", " : "", el("button", { textContent: n, onclick: () => openProfile(n) })]), ` · ${counted(w.players, "player")} · ${counted(w.plays, "play")}`);
     $("cworld-about").textContent = w.description;
     $("cworld-votes").textContent = String(w.votes);
     $("cworld-vote").firstChild.textContent = w.voted ? "Upvoted" : "Upvote";
@@ -686,6 +723,129 @@
     loadCommunity();
   };
 
+  /** A builder's profile: their worlds, and for anyone else, a message and a block. On your own, the credits waiting for you. */
+  let profiled = null;
+  async function openProfile(name) {
+    show("profile");
+    $("profile-name").textContent = name;
+    $("profile-about").textContent = "";
+    for (const id of ["profile-message", "profile-block", "credits-part"]) $(id).hidden = true;
+    $("profile-worlds").replaceChildren();
+    $("profile-none").hidden = true;
+    let p;
+    try {
+      p = await communityCall("profile", { name });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    profiled = p;
+    $("profile-name").textContent = p.username;
+    $("profile-about").textContent = `Joined ${new Date(p.joined).toLocaleDateString(undefined, { month: "long", year: "numeric" })} · ${counted(p.players, "player")} · ${counted(p.votes, "vote")}`;
+    $("profile-message").hidden = $("profile-block").hidden = p.me;
+    $("profile-block").textContent = p.blocked ? "Unblock" : "Block";
+    $("profile-worlds").replaceChildren(...p.worlds.map(worldRow));
+    $("profile-none").hidden = p.worlds.length > 0;
+    if (p.me) loadCredits();
+  }
+  async function loadCredits() {
+    const waiting = await communityCall("credits").catch(() => []);
+    $("credits-part").hidden = !waiting.length;
+    $("credit-list").replaceChildren(
+      ...waiting.map((c) => {
+        const b = el("button", { className: "item" }, `Accept ${c.world.title}`, el("span", { className: "value", textContent: `as ${c.name}, by ${c.world.author}` }));
+        b.onclick = async () => {
+          try {
+            await communityCall("accept", { token: c.token });
+          } catch (e) {
+            return void ($("error").textContent = e.message);
+          }
+          openProfile(account.username);
+        };
+        return b;
+      }),
+    );
+  }
+  $("go-me").onclick = () => needAccount(() => openProfile(account.username));
+  $("profile-message").onclick = () => needAccount(() => openThread(profiled.username));
+  $("profile-block").onclick = () =>
+    needAccount(async () => {
+      try {
+        profiled.blocked = (await communityCall("block", { name: profiled.username, on: !profiled.blocked })).blocked;
+      } catch (e) {
+        return void ($("error").textContent = e.message);
+      }
+      $("profile-block").textContent = profiled.blocked ? "Unblock" : "Block";
+    });
+
+  /** Messages: plain text, read only by the two people in a conversation. */
+  async function showUnread() {
+    if (!account) return void ($("unread").textContent = "");
+    const { unread } = await communityCall("unread").catch(() => ({ unread: 0 }));
+    $("unread").textContent = unread ? String(unread) : "";
+  }
+  $("go-inbox").onclick = () =>
+    needAccount(async () => {
+      show("inbox");
+      let threads = [];
+      try {
+        threads = await communityCall("inbox");
+      } catch (e) {
+        $("error").textContent = e.message;
+      }
+      $("inbox-none").hidden = threads.length > 0;
+      $("thread-list").replaceChildren(
+        ...threads.map((t) => el("button", { className: "item pictured", onclick: () => openThread(t.with) }, el("span", { className: "what", textContent: t.with }, el("small", { textContent: `${t.last.mine ? "You: " : ""}${t.last.body}` })), el("span", { className: "value", textContent: t.unread ? `${t.unread} new` : ago(t.last.at) }))),
+      );
+      enter();
+    });
+  let talking = null;
+  async function openThread(name) {
+    talking = name;
+    $("thread-name").textContent = name;
+    $("message-text").value = "";
+    $("message-list").replaceChildren();
+    show("thread");
+    let t;
+    try {
+      t = await communityCall("thread", { name });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    $("thread-blocked").hidden = !t.blocked;
+    $("message-list").replaceChildren(...t.messages.map(messageRow));
+    $("message-list").lastElementChild?.scrollIntoView({ block: "nearest" });
+    showUnread();
+  }
+  function messageRow(m) {
+    const head = el("small", { textContent: `${m.mine ? "You" : talking} · ${ago(m.at)}` });
+    if (!m.mine)
+      head.append(
+        el("button", {
+          textContent: "Report",
+          onclick: async (e) => {
+            await communityCall("report-message", { id: m.id }).catch(() => {});
+            e.target.textContent = "Reported";
+            e.target.disabled = true;
+          },
+        }),
+      );
+    return el("div", { className: m.mine ? "comment mine" : "comment" }, head, el("p", { textContent: m.body }));
+  }
+  $("message-go").onclick = async () => {
+    const body = $("message-text").value.trim();
+    if (!body) return $("message-text").focus();
+    let m;
+    try {
+      m = await communityCall("send", { to: talking, body });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    $("message-text").value = "";
+    $("message-list").append(messageRow(m));
+    $("message-list").lastElementChild.scrollIntoView({ block: "nearest" });
+  };
+  $("thread-profile").onclick = () => openProfile(talking);
+
   /** Publishing starts from one of this computer's worlds; the form signs in first if it has to, then carries on. */
   let publishing = null;
   $("go-publish").onclick = async () => {
@@ -709,7 +869,28 @@
     $("publish-description").value = w.shared?.description ?? "";
     $("publish-visibility").set(w.shared?.visibility ?? "public");
     $("publish-go").firstChild.textContent = w.shared ? "Update" : "Publish";
+    $("publish-builders").replaceChildren();
     show("publish");
+    loadBuilders(w);
+  }
+  /** Who played in the world, to credit: each one picked is asked on Community, and shows once they accept. */
+  async function loadBuilders(w) {
+    const names = await communityCall("builders", { id: w.id }).catch(() => []);
+    const mine = (await shell.name()).name;
+    if (publishing !== w) return;
+    $("publish-builders").replaceChildren(
+      ...names
+        .filter((n) => n !== mine)
+        .map((n) => {
+          const field = el("div", { className: "field" }, el("span", { textContent: `Credit ${n}` }));
+          const choice = el("div", { className: "pick" });
+          choice.dataset.options = "no:No,yes:Yes";
+          choice.dataset.builder = n;
+          field.append(choice);
+          pick(choice);
+          return field;
+        }),
+    );
   }
   pick($("publish-visibility"));
   $("publish-go").onclick = () =>
@@ -717,7 +898,8 @@
       busy("Uploading…", async () => {
         let world;
         try {
-          world = await communityCall("publish", { id: publishing.id, title: $("publish-title").value, description: $("publish-description").value, visibility: $("publish-visibility").dataset.value });
+          const builders = [...document.querySelectorAll("#publish-builders [data-builder]")].filter((b) => b.dataset.value === "yes").map((b) => b.dataset.builder);
+          world = await communityCall("publish", { id: publishing.id, title: $("publish-title").value, description: $("publish-description").value, visibility: $("publish-visibility").dataset.value, builders });
         } catch (e) {
           return e.message;
         }
