@@ -367,9 +367,14 @@ test.skipIf(process.platform === "win32")("the Agent page's install command sets
   expect(readFileSync(join(made, ".key"), "utf8")).toBe(key);
   expect(statSync(join(made, ".key")).mode & 0o777).toBe(0o600);
   expect(readFileSync(join(made, "world"), "utf8")).not.toContain(key);
+  const skill = readFileSync(join(import.meta.dir, "skills", "libraries.md"), "utf8");
+  expect(readFileSync(join(made, "skills", "libraries.md"), "utf8")).toBe(skill);
+  expect(readFileSync(join(made, ".claude", "skills", "libraries", "SKILL.md"), "utf8")).toStartWith(`---\nname: libraries\ndescription: "${skill.match(/^When to use: (.+)$/m)![1]}"\n---\n\n# Libraries`);
+  expect(readFileSync(join(made, "AGENTS.md"), "utf8")).toContain("`skills/libraries.md`");
   const [said, out] = run(`./world say text="Hey everyone"`, made);
   expect(said).toBe(0);
   expect(String(out)).not.toContain("isn't valid");
+  expect(run(`./world say text=@scope/package`, made)[0]).toBe(0); // a scoped package name, not a file to upload
   expect(run(command)).toEqual([1, "This install command expired or was used already. Copy a new one from the Agent page of the game menu."]);
 });
 

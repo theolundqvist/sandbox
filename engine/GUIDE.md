@@ -64,7 +64,18 @@ Make each change feel finished in whatever style this world has, not just the ob
 - Fairness when several players use it at once.
 - Speed: reuse geometry with `clone()` or `InstancedMesh`, keep shadow-casting lights few, and check `perf`.
 
-Assets from the web: `add_asset` needs a direct file link, not a zip or a web page. Many sites (Poly Pizza, Sketchfab) block direct downloads; raw links to `.glb`/`.gltf` files in public GitHub repositories, the Khronos and three.js sample models, Poly Haven (`dl.polyhaven.org`) textures and HDR skies, freesound previews (`cdn.freesound.org/previews/...mp3`) and OpenGameArt files work. Load models with `GLTFLoader`, and put the author and licence of anything downloaded in the mod's `CREDITS.md`.
+After adding any visual asset or effect, take a `screenshot` and look at it before calling it done.
+
+## Skills
+
+Your world folder's `skills/` holds tested how-tos. Read the matching one before that kind of task and start from its recipes:
+
+- `libraries.md`: physics, navmesh pathfinding, steering AI, particles, post-processing, sky, fast raycasts, 3D text, VRM avatars and smaller models, each with its `add_package` line.
+- `lighting.md`: sun and shadows, lamps, environment maps, god rays, fog, bloom and grading, 2D lights, light probes and day-night cycles.
+- `finding-assets.md`: any model, texture, sky, sound or shader from the web; where to search, choosing from a preview grid, and fixing scale and materials.
+- `pbr-textures.md`: realistic surface materials from Poly Haven and ambientCG.
+- `shaders.md`: custom shader effects and Shadertoy ports.
+- `animations.md`: animated characters, Mixamo clips and blending.
 
 ## The world
 
@@ -228,7 +239,7 @@ Client mods do the same with `exports` receiving `(ctx, ...args)` and `ctx.use("
 
 ## Packages
 
-`add_package` installs any npm package for every mod to import, server or client: physics (`@dimforge/rapier3d-compat`), noise, pathfinding, audio, whatever the idea needs. Packages are shared and cannot be removed.
+`add_package` installs any npm package for every mod to import, server or client: noise, audio, whatever the idea needs (tested ones are in `skills/libraries.md`). Packages are shared and cannot be removed.
 
 ## Time and the internet
 

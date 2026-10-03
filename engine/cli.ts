@@ -459,7 +459,8 @@ export function createCli(ctx: CliContext) {
         const { abs, rel } = writable(args.path, who);
         checkBase(abs, rel, args.base_hash);
         rmSync(abs);
-        if (!readdirSync(dirname(abs)).length) rmSync(dirname(abs), { recursive: true });
+        // Empty folders go up to the mod's own, so deleting a mod's last asset still lets reload remove the mod.
+        for (let dir = dirname(abs), r = dirname(rel); r !== "mods" && !readdirSync(dir).length; dir = dirname(dir), r = dirname(r)) rmSync(dir, { recursive: true });
         return `Deleted ${rel}.`;
       }
       case "add_asset": {
@@ -730,7 +731,16 @@ export const joinCommand = (base: string, code: string, world: string) => ({ com
 
 const worldDir = (world: string) => `Sandbox/${slug(world)}`;
 
-/** The world's folder under a player's home: this world's command, the key only it reads, the join request every agent opened there reads as the player's own instructions, and each agent's allow rule for that one command. Paths are relative to the folder. */
+/** engine/skills/*.md: how-tos the world folder carries for its agent, each opening with a "When to use:" line. */
+const SKILLS = readdirSync(join(import.meta.dir, "skills"))
+  .filter((f) => f.endsWith(".md"))
+  .sort()
+  .map((f) => {
+    const text = readFileSync(join(import.meta.dir, "skills", f), "utf8");
+    return { name: f.slice(0, -3), text, when: text.match(/^When to use: (.+)$/m)![1]! };
+  });
+
+/** The world's folder under a player's home: this world's command, the key only it reads, the join request every agent opened there reads as the player's own instructions, each agent's allow rule for that one command, and the skills. Paths are relative to the folder. */
 function worldFiles(world: string, base: string, me: string, key: string): [path: string, text: string, mode: number][] {
   const request = `# ${world}
 
@@ -741,6 +751,8 @@ When I ask you to join:
 1. Run \`./world status\` and \`./world read_file path=GUIDE.md\`, and follow the guide.
 2. Say hi in the game with \`./world say text="Hey everyone"\`. After that the chat is ours, so don't post there again.
 3. While we play, listen for me in the game chat: run \`./world wait_for_chat seconds=240\` with a shell timeout of at least 300 seconds, build what I ask for, then listen again until I say stop. I talk to you only through the game, never in this terminal.
+
+Before a task one of the skills in \`skills/\` covers, read that skill and start from its recipes: ${SKILLS.map((k) => `\`skills/${k.name}.md\``).join(", ")}.
 
 Anything you reload goes live for everyone at once, so extend what the others built and see it work in play before calling it done. Show your progress with \`task\` and \`announce\` as the guide says, not in chat.
 `;
@@ -753,6 +765,10 @@ Anything you reload goes live for everyone at once, so extend what the others bu
     [".codex/rules/world.rules", `prefix_rule(pattern = ["./world"], decision = "allow")\n`, 0o644],
     [".cursor/cli.json", `${JSON.stringify({ permissions: { allow: ["Shell(./world)"] } }, null, 2)}\n`, 0o644],
     ["opencode.json", `${JSON.stringify({ permission: { bash: { "./world": "allow", "./world *": "allow" } } }, null, 2)}\n`, 0o644],
+    ...SKILLS.flatMap(({ name, text, when }): [string, string, number][] => [
+      [`skills/${name}.md`, text, 0o644],
+      [`.claude/skills/${name}/SKILL.md`, `---\nname: ${name}\ndescription: ${JSON.stringify(when)}\n---\n\n${text}`, 0o644],
+    ]),
   ];
 }
 
@@ -797,7 +813,7 @@ for arg do
   value=\${arg#*=}
   case $value in
     -) set -- "$@" -F "$name=@-" ;;
-    @*) set -- "$@" -F "$name=@\${value#@}" ;;
+    @*) if [ -f "\${value#@}" ]; then set -- "$@" -F "$name=@\${value#@}"; else set -- "$@" --form-string "$name=$value"; fi ;; # @scope/package is text unless such a file exists
     *) set -- "$@" --form-string "$name=$value" ;;
   esac
 done
