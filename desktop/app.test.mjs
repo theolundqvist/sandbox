@@ -1457,12 +1457,12 @@ describe("usage stats", () => {
 describe("playtest", () => {
   /** Screenshots and frame times go where CI uploads them from. */
   const out = process.env.SANDBOX_CAPTURES ?? join(dir, "captures");
-  let app, shell, state, base, key;
+  let app, shell, state, base, key, game;
   before(async () => {
     mkdirSync(out, { recursive: true });
     ({ app, shell, state } = await launch("playtest"));
     await shell.click("text=Host world");
-    const game = await gamePage(app);
+    game = await gamePage(app);
     await game.locator("#create-go").waitFor();
     await game.keyboard.press("Enter");
     await game.waitForURL(/:\d+\/(#.*)?$/);
@@ -1560,9 +1560,16 @@ describe("playtest", () => {
 
   test("the player's game slowing down pauses the playtest, and it resumes once their game is smooth again", async () => {
     assert.equal((await retried("playtest")).status, 200);
-    const busy = (ms) => `import type { ClientMod } from "../../api";\nexport default { frame() { const until = performance.now() + ${ms}; while (performance.now() < until); } } satisfies ClientMod;`;
-    await call("write_file", { path: "mods/hog/client.ts", content: busy(400) });
-    assert.match((await call("reload", { mod: "hog" })).text, /^hog v1 is live/);
+    // Every frame of the player's own game takes 400 ms more, until the test lets go.
+    await game.evaluate(() => {
+      window.hog = true;
+      const frame = () => {
+        if (!window.hog) return;
+        for (const until = performance.now() + 400; performance.now() < until; );
+        requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    });
     const seen = [];
     const paused = await until("the playtest to pause", async () => {
       const res = await call("play", { ms: 10 });
@@ -1573,12 +1580,11 @@ describe("playtest", () => {
     }, 90000);
     assert.match(paused, /^paused: your player's game needs the computer\./);
     const stopped = playtestProcesses().map((p) => p.state);
-    await call("write_file", { path: "mods/hog/client.ts", content: busy(0) });
-    assert.match((await call("reload", { mod: "hog" })).text, /^hog v2 is live/);
+    await game.evaluate(() => (window.hog = false));
     const resumed = await until("the playtest to resume", async () => {
       const res = await call("play", { ms: 10 });
       const host = JSON.parse((await call("perf")).text.split("\n\n")[0]).players.host;
-      seen.push({ status: res.status, text: res.text.slice(0, 60), fps: host?.fps, resuming: true });
+      seen.push({ status: res.status, text: res.text.slice(0, 60), fps: host?.fps, secondsOld: host?.secondsOld, resuming: true });
       writeFileSync(join(out, "guard.json"), JSON.stringify(seen, null, 2));
       return res.status === 200;
     }, 120000);
