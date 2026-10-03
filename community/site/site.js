@@ -42,8 +42,9 @@ computerPick($("host-os"), (os) => {
 });
 
 const media = (w) => (w.clip ? el("video", { src: w.clip, poster: w.cover, muted: true, loop: true, autoplay: true, playsInline: true }) : el("img", { src: w.cover, alt: "" }));
-const api = async (path, init) => {
-  const res = await fetch(`${API}${path}`, init);
+/** The API with the visitor's session cookie, which only the API can read; its header tells the API the request comes from this site. */
+const api = async (path, init = {}) => {
+  const res = await fetch(`${API}${path}`, { ...init, credentials: "include", headers: { "x-sandbox": "1", ...(init.body && { "content-type": "application/json" }) } });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? "Community can't be reached right now.");
   return data;
@@ -93,7 +94,62 @@ async function showWorld(id) {
   };
 }
 
-const SCREENS = { "/": "home", "/join": "join", "/worlds": "worlds", "/host": "host" };
+/** Who is signed in, asked once per page load and after signing in or out. */
+let account;
+async function whoAmI(fresh = false) {
+  if (fresh || account === undefined) account = (await api("/account").catch(() => ({}))).account ?? null;
+  $("me").hidden = false;
+  $("me").textContent = account ? account.username : "Sign in";
+  return account;
+}
+const go = (path) => {
+  history.pushState(null, "", path);
+  route();
+};
+/** Where to carry on after signing in: the page that asked for it. */
+const then = () => new URLSearchParams(location.search).get("then")?.match(/^\/[a-z0-9/]*$/)?.[0] ?? "/account";
+async function enterAccount(path, body) {
+  $("error").textContent = "";
+  try {
+    await api(path, { method: "POST", body: JSON.stringify(body) });
+  } catch (e) {
+    return void ($("error").textContent = e.message);
+  }
+  for (const input of document.querySelectorAll("input[type=password]")) input.value = "";
+  await whoAmI(true);
+  go(then());
+}
+$("signin-form").onsubmit = (e) => {
+  e.preventDefault();
+  enterAccount("/sessions", { email: $("signin-email").value, password: $("signin-password").value });
+};
+$("signup-form").onsubmit = (e) => {
+  e.preventDefault();
+  enterAccount("/accounts", { username: $("signup-username").value, email: $("signup-email").value, password: $("signup-password").value });
+};
+$("sign-out").onclick = async () => {
+  await api("/sessions", { method: "DELETE" }).catch(() => {});
+  await whoAmI(true);
+  go("/");
+};
+$("delete-form").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api("/account", { method: "DELETE", body: JSON.stringify({ password: $("delete-password").value }) });
+  } catch (err) {
+    return void ($("error").textContent = err.message);
+  }
+  $("delete-password").value = "";
+  await whoAmI(true);
+  go("/");
+};
+async function showAccount() {
+  if (!(await whoAmI())) return go("/signin");
+  $("account-name").textContent = account.username;
+}
+
+const SCREENS = { "/": "home", "/join": "join", "/worlds": "worlds", "/host": "host", "/signin": "signin", "/signup": "signup", "/account": "account", "/account/delete": "delete" };
+const BACK = { world: "/worlds", signup: "/signin", delete: "/account" };
 async function route() {
   const path = location.pathname.replace(/\/+$/, "") || "/";
   const id = path.match(/^\/w\/([a-z0-9]{12})$/)?.[1];
@@ -101,24 +157,29 @@ async function route() {
   for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== screen;
   stats.screen(screen);
   $("back").hidden = screen === "home";
-  $("back").href = id ? "/worlds" : "/";
+  $("back").href = BACK[screen] ?? "/";
+  $("go-signup").search = location.search;
   $("error").textContent = "";
   document.title = "Sandbox";
   try {
     if (screen === "worlds") await showWorlds();
     if (screen === "world") await showWorld(id);
+    if (screen === "account") await showAccount();
+    if (screen === "delete" && !(await whoAmI())) return go("/signin");
   } catch (e) {
     $("error").textContent = e.message;
   }
   if (screen === "join") $("join-link").focus();
+  $("me").hidden = screen === "home" || screen === "signin" || screen === "signup";
+  if (!$("me").hidden) whoAmI();
 }
 
 // Links between screens change the address without reloading the page.
 addEventListener("click", (e) => {
-  const a = e.target.closest?.("a[href^='/']");
+  const a = e.target.closest?.("a[href^='/'], a#go-signup");
   if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.defaultPrevented) return;
   e.preventDefault();
-  history.pushState(null, "", a.getAttribute("href"));
+  history.pushState(null, "", a.pathname + a.search);
   scrollTo(0, 0);
   route();
 });

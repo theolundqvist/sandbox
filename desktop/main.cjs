@@ -1,7 +1,7 @@
 // A thin shell around the web client: one window, a trusted launch screen and title bar, and the game in a view with no extra powers.
-const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, session, shell: desktop } = require("electron");
+const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, safeStorage, session, shell: desktop } = require("electron");
 const { execFile, spawn } = require("node:child_process");
-const { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } = require("node:fs");
+const { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } = require("node:fs");
 const { createServer } = require("node:net");
 const { homedir, userInfo } = require("node:os");
 const { delimiter, join, normalize } = require("node:path");
@@ -11,6 +11,7 @@ const mac = process.platform === "darwin";
 const windows = process.platform === "win32";
 const BAR = 36;
 const RELAY = process.env.SANDBOX_RELAY ?? "https://sandbox-relay.lundqvistliss.com";
+const COMMUNITY = process.env.SANDBOX_COMMUNITY ?? "https://sandbox.api.lundqvistliss.com";
 const RELEASES = process.env.SANDBOX_UPDATES ?? "https://api.github.com/repos/theolundqvist/sandbox/releases/latest";
 /** The installer and the build from the release being installed, so a broken master never breaks an update. */
 const INSTALLER = (version) => process.env.SANDBOX_INSTALLER ?? `https://raw.githubusercontent.com/theolundqvist/sandbox/v${version}/desktop/install${windows ? ".ps1" : ""}`;
@@ -291,10 +292,118 @@ async function stopServer() {
   if (current.proc.exitCode === null && !current.proc.signalCode) current.proc.kill("SIGKILL");
 }
 
+/** The Community account's session lives only here, encrypted at rest: never in the engine's data folder, a world's environment or any page. Where the system can't encrypt it, it lasts until the app quits. */
+const ACCOUNT = join(app.getPath("userData"), "account.bin");
+/** @type {string | null | undefined} */ let accountToken;
+function sessionToken() {
+  if (accountToken === undefined) {
+    try {
+      accountToken = safeStorage.decryptString(readFileSync(ACCOUNT));
+    } catch {
+      accountToken = null;
+    }
+  }
+  return accountToken;
+}
+function keepSession(token) {
+  accountToken = token;
+  rmSync(ACCOUNT, { force: true });
+  const plain = process.platform === "linux" && safeStorage.getSelectedStorageBackend?.() === "basic_text";
+  if (token && safeStorage.isEncryptionAvailable() && !plain) writeFileSync(ACCOUNT, safeStorage.encryptString(token), { mode: 0o600 });
+}
+/** Community's API as the signed-in account; a session it no longer knows signs this app out. */
+async function community(path, { method = "GET", body } = {}) {
+  const token = sessionToken();
+  const res = await fetch(`${COMMUNITY}${path}`, {
+    method,
+    headers: { ...(body && { "content-type": "application/json" }), ...(token && { authorization: `Bearer ${token}` }) },
+    body: body && JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  }).catch(() => null);
+  if (!res) throw new Error("Can't reach Community. Check your connection.");
+  const data = res.status === 204 ? {} : await res.json().catch(() => ({}));
+  if (res.status === 401 && token && path !== "/sessions") keepSession(null);
+  if (!res.ok) throw Object.assign(new Error(data.error ?? `Community answered ${res.status}. Try again.`), { status: res.status });
+  return data;
+}
+/** A menu action on this app's own launcher. */
+async function menu(action, body) {
+  const { base, key } = await startServer();
+  const res = await fetch(`${base}/api/menu/${action}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error);
+  return data;
+}
+/** Worlds this computer shared before accounts move to the account signed in here; the launcher then forgets their owner tokens, which no longer do anything. */
+async function claimWorlds() {
+  let shared = {};
+  try {
+    shared = JSON.parse(readFileSync(join(DATA, "community.json"), "utf8"));
+  } catch {}
+  const settled = [];
+  for (const [local, s] of Object.entries(shared))
+    if (s.id && s.ownerToken) await community(`/worlds/${s.id}/claim`, { method: "POST", body: { ownerToken: s.ownerToken } }).then(() => settled.push(local), (e) => [403, 409].includes(e.status) && settled.push(local));
+  if (settled.length) await menu("community-claimed", { ids: settled });
+}
+const ACCOUNT_ACTIONS = {
+  account: async () => (sessionToken() ? (await community("/account").catch((e) => (e.status === 401 ? {} : Promise.reject(e)))).account ?? null : null),
+  "sign-up": async ({ email, password, username }) => signedInAs(await community("/accounts", { method: "POST", body: { email, password, username } })),
+  "sign-in": async ({ email, password }) => signedInAs(await community("/sessions", { method: "POST", body: { email, password } })),
+  "sign-out": async () => {
+    await community("/sessions", { method: "DELETE" }).catch(() => {});
+    keepSession(null);
+    return null;
+  },
+  rename: async ({ username }) => (await community("/account", { method: "PATCH", body: { username } })).account,
+  "delete-account": async ({ password }) => {
+    await community("/account", { method: "DELETE", body: { password } });
+    keepSession(null);
+    return null;
+  },
+};
+async function signedInAs({ token, account }) {
+  keepSession(token);
+  await claimWorlds().catch((e) => console.log(`Couldn't claim shared worlds: ${e.message}`));
+  return account;
+}
+
+/** Publishes a world this app staged, as the signed-in account, once the player confirms in a dialog no world can draw. Null once it's done or the player said no, or why it couldn't. */
+async function publishWorld(id) {
+  const stage = await menu("staged", { id });
+  if (!stage) return "Share it again.";
+  const account = await ACCOUNT_ACTIONS.account();
+  if (!account) return "Sign in to Community in Settings, then share again.";
+  const { details, sizes } = stage;
+  const where = details.visibility === "public" ? "Anyone can find it in Community." : "Anyone with the link can play it.";
+  const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Publish", "Cancel"], defaultId: 0, cancelId: 1, message: `Publish ${details.title} as ${account.username}?`, detail: where });
+  if (response !== 0) return null;
+  const body = { ...details, files: sizes };
+  const created = stage.community && (await community(`/worlds/${stage.community}`, { method: "PUT", body }).catch((e) => ([404, 410].includes(e.status) ? null : Promise.reject(e))));
+  const { id: world, uploads } = created || (await community("/worlds", { method: "POST", body }));
+  await menu("publish-upload", { id, uploads });
+  await menu("published", { id, world: await community(`/worlds/${world}/done`, { method: "POST" }) });
+  return null;
+}
+/** Takes a world this app published out of Community, once the player confirms. */
+async function unpublishWorld(id) {
+  const shared = (await hostState())?.worlds.find((w) => w.id === id)?.shared?.id;
+  if (!shared) return "That world isn't shared.";
+  const { response } = await dialog.showMessageBox(win, { type: "warning", buttons: ["Remove", "Cancel"], defaultId: 1, cancelId: 1, message: "Remove this world from Community?", detail: "Its link stops working for everyone." });
+  if (response !== 0) return null;
+  // A world shared before accounts and not yet claimed is still taken down by the owner token the launcher keeps.
+  const legacy = await community(`/worlds/${shared}`, { method: "DELETE" }).then(() => false, (e) => ([401, 403].includes(e.status) ? true : e.status === 410 ? false : Promise.reject(e)));
+  await (legacy ? menu("unshare", { id }) : menu("published", { id }));
+  return null;
+}
+/** Only the world this app is hosting and playing may ask to publish itself. */
+const hostState = () => server && ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null);
+async function hostingHere(event, id) {
+  return event.sender === game?.view.webContents && (await hostState())?.running?.id === id;
+}
+
 /** Players in the world this app hosts, besides the host playing it here. */
 async function guests() {
-  if (!server) return null;
-  const s = await ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null);
+  const s = await hostState();
   if (!s?.running) return null;
   return { name: s.running.name, count: s.running.players.filter((p) => p.online && p.name !== state.name).length };
 }
@@ -548,6 +657,10 @@ app.whenReady().then(() => {
     return null;
   });
   ipcMain.handle("name", (event) => (fromShell(event) ? { name: state.name ?? null, suggested: suggestedName() } : null));
+  ipcMain.handle("account", async (event, action, body) => {
+    if (!fromShell(event) || !Object.hasOwn(ACCOUNT_ACTIONS, action)) return { error: "Unknown action" };
+    return ACCOUNT_ACTIONS[action](body ?? {}).then((account) => ({ account }), (e) => ({ error: e.message }));
+  });
   ipcMain.handle("set-name", (event, raw) => {
     if (!fromShell(event)) return null;
     const name = String(raw).trim().toLowerCase();
@@ -578,6 +691,8 @@ app.whenReady().then(() => {
     usage.step("agent", "build-with", { agent: Object.hasOwn(AGENTS, id) ? id : null, outcome: started === true ? "started" : started === false ? "declined" : "failed" });
     return started;
   });
+  for (const [channel, fn] of [["publish", publishWorld], ["unpublish", unpublishWorld]])
+    ipcMain.handle(channel, async (event, id) => ((await hostingHere(event, String(id))) ? fn(String(id)).catch((e) => e.message) : "Publish from the Sandbox app."));
   ipcMain.on("agent-name", (event) => (event.returnValue = fromAgent(event) ? agent.name : ""));
   ipcMain.on("agent-input", (event, data) => fromAgent(event) && agent.pty?.write(String(data)));
   ipcMain.on("agent-resize", (event, cols, rows) => {

@@ -53,3 +53,42 @@ create table if not exists events (
 );
 create index if not exists events_by_install on events (install, at);
 create index if not exists events_by_action on events (action, at);
+
+-- Accounts: needed only to publish, take down, upvote and comment. The password is an argon2id hash; usernames are the public name, a-z 0-9 _.
+create extension if not exists citext;
+create table if not exists accounts (
+  id uuid primary key default gen_random_uuid(),
+  email citext unique not null,
+  password_hash text not null,
+  username citext unique not null,
+  username_changed_at timestamptz,
+  -- Set by a moderator: the account can't publish, comment or message, and its worlds leave discovery.
+  banned_at timestamptz,
+  created_at timestamptz not null default now()
+);
+-- Sessions by their token's hash; idle for 90 days, they stop working.
+create table if not exists sessions (token_hash text primary key, account uuid not null references accounts(id) on delete cascade, created_at timestamptz not null default now(), last_seen timestamptz not null default now());
+create index if not exists sessions_account on sessions (account);
+-- Hashed IPs an account has signed in from: the per-email limit never locks those out, so nobody can keep an owner out of their own account.
+create table if not exists known_ips (account uuid not null references accounts(id) on delete cascade, ip text not null, primary key (account, ip));
+
+-- A world belongs to an account, or, shared before accounts, to its owner token until that is claimed. A removed world stays as a tombstone, so forks still know they had a parent.
+alter table worlds add column if not exists account uuid references accounts(id) on delete set null;
+alter table worlds alter column owner_token_hash drop not null;
+alter table worlds alter column author set default '';
+alter table worlds add column if not exists removed_at timestamptz;
+alter table worlds add column if not exists removed_by text check (removed_by in ('owner', 'account', 'moderator'));
+-- The publishing computer's random id for its local world: a world a moderator removed can't come back under a new id.
+alter table worlds add column if not exists origin text;
+create index if not exists worlds_account on worlds (account) where removed_at is null;
+create index if not exists worlds_origin on worlds (origin) where removed_by = 'moderator';
+
+-- Rate limits as one counter per caller and action over a fixed window, bumped in one statement so requests at the same moment can't slip past.
+create table if not exists limits (who text not null, action text not null, since timestamptz not null default now(), n integer not null default 1, primary key (who, action));
+-- Files of removed worlds still to delete from R2; the sweep retries until they're gone.
+create table if not exists doomed (key text primary key, at timestamptz not null default now());
+-- Usage stats outlive an account, without it.
+do $$ begin
+  alter table events add constraint events_account foreign key (account) references accounts (id) on delete set null;
+exception when duplicate_object then null;
+end $$;

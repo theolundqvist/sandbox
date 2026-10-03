@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("shell", {
   forget: (url) => ipcRenderer.invoke("forget", url),
   name: () => ipcRenderer.invoke("name"),
   setName: (name) => ipcRenderer.invoke("set-name", name),
+  account: (action, body) => ipcRenderer.invoke("account", action, body),
   leave: () => ipcRenderer.send("leave"),
   quit: () => ipcRenderer.send("quit"),
   update: () => ipcRenderer.invoke("update"),

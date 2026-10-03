@@ -99,6 +99,35 @@
     <label class="field"><span>Name</span><input type="text" id="name-field" maxlength="16" autocomplete="off" spellcheck="false"></label>
     <div class="field"><span>Share usage stats</span><div class="pick" id="share-usage" data-options="on:On,off:Off"></div></div>
     <p class="note">Sends which screens and buttons you use, never what you type.</p>
+    <div class="items"><button class="item" id="go-account">Account<span class="value" id="account-value">Sign in</span></button></div>
+  </section>
+
+  <section id="signin" class="screen" data-nav hidden>
+    <h1>Sign in</h1>
+    <label class="item entry"><input type="email" id="signin-email" placeholder="Email" autocomplete="email" spellcheck="false"></label>
+    <label class="item entry"><input type="password" id="signin-password" placeholder="Password" autocomplete="current-password"></label>
+    <div class="items"><button class="item" id="signin-go">Sign in</button><button class="item" id="go-signup">Create account</button></div>
+  </section>
+
+  <section id="signup" class="screen" data-nav hidden>
+    <h1>Create account</h1>
+    <label class="item entry"><input type="text" id="signup-username" placeholder="Username" maxlength="20" autocomplete="username" spellcheck="false"></label>
+    <label class="item entry"><input type="email" id="signup-email" placeholder="Email" autocomplete="email" spellcheck="false"></label>
+    <label class="item entry"><input type="password" id="signup-password" placeholder="Password" autocomplete="new-password"></label>
+    <div class="items"><button class="item" id="signup-go">Create account</button></div>
+  </section>
+
+  <section id="account" class="screen" data-nav hidden>
+    <h1>Account</h1>
+    <label class="field"><span>Username</span><input type="text" id="account-username" maxlength="20" autocomplete="off" spellcheck="false"></label>
+    <div class="items"><button class="item" id="sign-out">Sign out</button><button class="item danger" id="go-delete">Delete account</button></div>
+  </section>
+
+  <section id="delete-account" class="screen" data-nav hidden>
+    <h1>Delete account?</h1>
+    <p class="lead">Your published worlds, votes and comments go with it.</p>
+    <label class="item entry"><input type="password" id="delete-password" placeholder="Password" autocomplete="current-password"></label>
+    <div class="items"><button class="item danger" id="delete-yes">Delete account</button><button class="item" id="delete-no">Cancel</button></div>
   </section>
 
   <section id="down" class="screen" data-nav hidden>
@@ -162,7 +191,7 @@
     target?.focus();
   }
   addEventListener("keydown", (e) => {
-    const typing = document.activeElement?.matches("input[type=text]");
+    const typing = document.activeElement?.matches("input");
     if (e.key === "Escape" || (e.key === "Backspace" && !typing)) {
       e.preventDefault();
       back();
@@ -171,6 +200,7 @@
       e.preventDefault();
       if (current()?.id === "join") join();
       else if (current()?.id === "name") $("name-go").click();
+      else if (["signin", "signup", "delete-account"].includes(current()?.id)) $({ signin: "signin-go", signup: "signup-go", "delete-account": "delete-yes" }[current().id]).click();
       else document.activeElement.blur();
     }
   });
@@ -273,6 +303,81 @@
     $("share-usage").set((await shell.shareUsage()) ? "on" : "off");
   });
   pick($("share-usage"), (value) => shell.shareUsage(value === "on"));
+
+  // ---------- the Community account: the app keeps its session, this page only asks for what to do ----------
+  let account = null;
+  let afterSignIn = null;
+  async function accountCall(action, body) {
+    const r = await shell.account(action, body);
+    if (r.error) throw new Error(r.error);
+    return r.account;
+  }
+  const showAccount = () => ($("account-value").textContent = account?.username ?? "Sign in");
+  async function refreshAccount() {
+    account = await accountCall("account").catch(() => account);
+    showAccount();
+  }
+  /** What needs an account signs in first, then carries on. */
+  function needAccount(then) {
+    if (account) return then();
+    afterSignIn = then;
+    show("signin");
+  }
+  async function enterAccount(action, body) {
+    try {
+      account = await accountCall(action, body);
+    } catch (e) {
+      $("error").textContent = e.message;
+      return;
+    }
+    $("signin-password").value = $("signup-password").value = "";
+    while (["signin", "signup"].includes(current().id)) stack.pop();
+    showAccount();
+    const then = afterSignIn;
+    afterSignIn = null;
+    enter();
+    then?.();
+  }
+  $("signin-go").onclick = () => enterAccount("sign-in", { email: $("signin-email").value, password: $("signin-password").value });
+  $("go-signup").onclick = async () => {
+    $("signup-email").value ||= $("signin-email").value;
+    $("signup-username").value ||= (await shell.name()).name ?? "";
+    show("signup");
+  };
+  $("signup-go").onclick = () => enterAccount("sign-up", { username: $("signup-username").value, email: $("signup-email").value, password: $("signup-password").value });
+  $("go-account").onclick = () =>
+    needAccount(() => {
+      $("account-username").value = account.username;
+      show("account");
+    });
+  $("account-username").onchange = async () => {
+    try {
+      account = await accountCall("rename", { username: $("account-username").value });
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+    $("account-username").value = account.username;
+    showAccount();
+  };
+  $("sign-out").onclick = async () => {
+    account = await accountCall("sign-out");
+    showAccount();
+    back();
+  };
+  $("go-delete").onclick = () => show("delete-account");
+  $("delete-no").onclick = back;
+  $("delete-yes").onclick = async () => {
+    try {
+      account = await accountCall("delete-account", { password: $("delete-password").value });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    $("delete-password").value = "";
+    showAccount();
+    while (current().id !== "settings") stack.pop();
+    enter();
+  };
+  document.querySelector("[data-to=settings]").addEventListener("click", refreshAccount);
 
   $("quit").onclick = () => shell.quit();
   $("go-update").onclick = () => busy("Downloading…", shell.update);

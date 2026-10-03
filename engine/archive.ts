@@ -64,7 +64,7 @@ function pack(dir: string, community: boolean) {
   const add = (rel: string) => {
     const path = join(dir, rel);
     if (community && PRIVATE.has(rel)) return;
-    if (rel === "config.json") files[rel] = json({ name: config.name, rules: config.rules, start: config.start });
+    if (rel === "config.json") files[rel] = json({ name: config.name, rules: config.rules, start: config.start, ...(config.forkOf && { forkOf: config.forkOf }) });
     else if (rel === "mods.json") {
       // Server builds are named by absolute path; relative to build/ they point at the builds wherever the world lands.
       const portable = (b: Build) => ({ ...b, server: b.server && relative(join(dir, "build"), resolve(dir, "build", b.server)).split(sep).join("/") });
@@ -134,7 +134,7 @@ function unpack(zip: Uint8Array, into: string) {
     mkdirSync(name.endsWith("/") ? path : dirname(path), { recursive: true });
     if (!name.endsWith("/")) writeFileSync(path, data);
   }
-  return { name: config.name, rules: config.rules, start: config.start };
+  return { name: config.name, rules: config.rules, start: config.start, ...(typeof config.forkOf === "string" && { forkOf: config.forkOf }) };
 }
 
 self.onmessage = ({ data: msg }) => {

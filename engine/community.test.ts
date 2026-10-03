@@ -1,4 +1,4 @@
-// Community worlds end to end: two throwaway launchers and the community API on throwaway Postgres and S3. One shares a world, the other hosts and remixes it.
+// Community worlds end to end: two throwaway launchers and the community API on throwaway Postgres and S3. One shares a world, the other hosts and forks it.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { SQL } from "bun";
@@ -51,11 +51,28 @@ async function launcher(name: string): Promise<Launcher> {
   return { base, data, key: (await (await fetch(`${base}/api/local-key`)).json()).key };
 }
 
+/** What the desktop app does with its account's session: the launcher stages the pack, the app publishes it and hands the uploads back. */
+async function publish(l: Launcher, session: string, form: object) {
+  const stage = await menu(l, "publish-stage", form);
+  if (stage.status !== 200) return stage;
+  const api = (path: string, method: string, body?: object) => fetch(`${COMMUNITY}${path}`, { method, headers: { authorization: `Bearer ${session}`, "content-type": "application/json" }, body: body && JSON.stringify(body) }).then((r) => r.json());
+  const body = { ...stage.details, files: stage.sizes };
+  const { id, uploads } = await api(stage.community ? `/worlds/${stage.community}` : "/worlds", stage.community ? "PUT" : "POST", body);
+  expect((await menu(l, "publish-upload", { id: (form as { id: string }).id, uploads })).status).toBe(200);
+  const world = await api(`/worlds/${id}/done`, "POST");
+  expect((await menu(l, "published", { id: (form as { id: string }).id, world })).status).toBe(200);
+  return world;
+}
+const signUp = async (username: string) =>
+  (await (await fetch(`${COMMUNITY}/accounts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username, email: `${username}@example.com`, password: "correct horse" }) })).json()).token as string;
+
 let ana: Launcher, ben: Launcher;
+let anaSession: string, benSession: string;
 beforeAll(async () => {
   stack = await startStack("https://sandbox.example", { ELEVENLABS_URL: voiceStub.url.origin, ELEVENLABS_API_KEY: "community-key" });
   COMMUNITY = stack.api;
   [ana, ben] = await Promise.all([launcher("ana"), launcher("ben")]);
+  [anaSession, benSession] = await Promise.all([signUp("ana"), signUp("ben")]);
 }, 120_000);
 afterAll(async () => {
   for (const p of procs) p.kill();
@@ -65,7 +82,7 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("a shared world goes up as its export, comes down on another computer as a remix, and only its sharer changes it", async () => {
+test("a shared world goes up as its export, comes down on another computer as a fork, and only its account changes it", async () => {
   const created = await menu(ana, "create", { name: "Lava Keep", start: "basics" });
   const id = created.running.id;
   const folder = join(ana.data, "worlds", id);
@@ -82,20 +99,18 @@ test("a shared world goes up as its export, comes down on another computer as a 
   writeFileSync(join(folder, "seats.json"), JSON.stringify({ "SEAT-CANARY-player": { game: null, lastPos: {} } }));
 
   // A new world has no picture until its host plays it, so sharing asks for the current view.
-  expect((await menu(ana, "share", { id, visibility: "link", author: "ana" })).error).toBe("This world has no picture yet. Pick Current view.");
-  const shared = await menu(ana, "share", { id, title: "Lava Keep", description: "Run from the lava.", visibility: "link", author: "ana", cover: COVER, clip: CLIP });
-  expect(shared.status).toBe(200);
-  expect(shared.visibility).toBe("link");
-  const communityId = shared.link.match(/\/w\/([a-z0-9]{12})$/)[1];
-  // The owner token stays in the launcher's own file, never in the menu's state or the world's folder.
+  expect((await menu(ana, "publish-stage", { id, visibility: "link" })).error).toBe("This world has no picture yet. Host it once, or share it from the game with Current view.");
+  const shared = await publish(ana, anaSession, { id, title: "Lava Keep", description: "Run from the lava.", visibility: "link", cover: COVER, clip: CLIP });
+  expect(shared).toMatchObject({ visibility: "link", author: "ana", mine: true });
+  const communityId = shared.id;
+  // Neither the menu's state nor the launcher's own file holds anything that changes the world: the account does.
   const state = await menu(ana, "state");
-  expect(state.worlds.find((w: any) => w.id === id).shared).toEqual({ link: shared.link, visibility: "link", title: "Lava Keep", description: "Run from the lava." });
-  expect(JSON.stringify(state)).not.toContain("ownerToken");
-  expect(readFileSync(join(ana.data, "community.json"), "utf8")).toContain("ownerToken");
+  expect(state.worlds.find((w: any) => w.id === id).shared).toEqual({ id: communityId, link: shared.link, visibility: "link", title: "Lava Keep", description: "Run from the lava." });
+  expect(readFileSync(join(ana.data, "community.json"), "utf8")).not.toContain("ownerToken");
 
   // What went up is the world without its keys or what its players did and said; who made its mods stays as their credit.
   const world = await (await fetch(`${COMMUNITY}/worlds/${communityId}`)).json();
-  expect(world).toMatchObject({ title: "Lava Keep", author: "ana", visibility: "link", remixOf: null });
+  expect(world).toMatchObject({ title: "Lava Keep", author: "ana", visibility: "link", forkOf: null });
   const files = unzipSync(new Uint8Array(await (await fetch(world.zip)).arrayBuffer()));
   expect(Object.keys(files)).toContain("config.json");
   expect(Object.keys(files)).toContain("owners.json");
@@ -109,29 +124,29 @@ test("a shared world goes up as its export, comes down on another computer as a 
   expect(sharedSave.query("select at, activity from timelapse where at = 1").all()).toEqual([{ at: 1, activity: JSON.stringify([moment[0]]) }]);
   sharedSave.close();
   const text = Object.values(files).map((f) => Buffer.from(f).toString("latin1")).join("\n");
-  for (const secret of [config.invite, config.hostKey, "CHAT-CANARY", "TOOL-CANARY", "MOMENT-CHAT-CANARY", "SEAT-CANARY"]) expect(text).not.toContain(secret);
+  for (const secret of [config.invite, config.hostKey, config.telemetry, "CHAT-CANARY", "TOOL-CANARY", "MOMENT-CHAT-CANARY", "SEAT-CANARY"]) expect(text).not.toContain(secret);
 
   // Link-only: not listed, but anyone with the link opens it.
   expect((await (await fetch(`${COMMUNITY}/worlds`)).json()).map((w: any) => w.id)).not.toContain(communityId);
-  expect((await menu(ana, "community-world", { link: shared.link })).mine).toBe(true);
   const seen = await menu(ben, "community-world", { link: shared.link.replace(/^https?:\/\//, "") });
   expect(seen).toMatchObject({ id: communityId, title: "Lava Keep", mine: false });
 
   // Someone else's world runs their code here, so getting it needs trust.
   expect((await menu(ben, "community-get", { id: communityId })).error).toBe("This world runs code from ana. Only play worlds from people you trust.");
-  const remixed = await menu(ben, "community-get", { id: communityId, trust: true });
-  expect(remixed.worlds.find((w: any) => w.id === remixed.world).name).toBe("Lava Keep");
-  expect(existsSync(join(ben.data, "worlds", remixed.world, "config.json"))).toBe(true);
+  const forked = await menu(ben, "community-get", { id: communityId, trust: true });
+  expect(forked.worlds.find((w: any) => w.id === forked.world).name).toBe("Lava Keep");
+  // The copy carries the world it came from inside itself, so it survives export and import.
+  expect(JSON.parse(readFileSync(join(ben.data, "worlds", forked.world, "config.json"), "utf8")).forkOf).toBe(communityId);
 
-  // Ben's remix, shared for everyone, names the world it came from.
-  const benShared = await menu(ben, "share", { id: remixed.world, title: "Lava Keep, colder", visibility: "public", author: "ben", cover: COVER });
+  // Ben's fork, shared for everyone, names the world it came from; another account can't change Ana's.
+  const benShared = await publish(ben, benSession, { id: forked.world, title: "Lava Keep, colder", visibility: "public", cover: COVER });
   const listed = await (await fetch(`${COMMUNITY}/worlds`)).json();
-  expect(listed.map((w: any) => [w.title, w.remixOf, w.clip])).toEqual([["Lava Keep, colder", communityId, null]]);
-  const community = await (await fetch(`${ben.base}/api/menu/community`, { method: "POST", headers: { authorization: `Bearer ${ben.key}` }, body: "{}" })).json();
-  expect(community.map((w: any) => [w.title, w.mine])).toEqual([["Lava Keep, colder", true]]);
+  expect(listed.map((w: any) => [w.title, w.forkOf, w.author, w.clip])).toEqual([["Lava Keep, colder", communityId, "ben", null]]);
+  const stolen = await fetch(`${COMMUNITY}/worlds/${communityId}`, { method: "PUT", headers: { authorization: `Bearer ${benSession}`, "content-type": "application/json" }, body: JSON.stringify({ title: "Mine now", visibility: "public", files: { zip: 10 } }) });
+  expect(stolen.status).toBe(403);
 
   // Sharing again updates the same world.
-  const again = await menu(ana, "share", { id, title: "Lava Keep 2", visibility: "public", author: "ana" });
+  const again = await publish(ana, anaSession, { id, title: "Lava Keep 2", visibility: "public" });
   expect(again.link).toBe(shared.link);
   expect(await (await fetch(`${COMMUNITY}/worlds/${communityId}`)).json()).toMatchObject({ title: "Lava Keep 2", visibility: "public" });
 
@@ -140,12 +155,12 @@ test("a shared world goes up as its export, comes down on another computer as a 
   expect(hosted.running.id).toBe(hosted.world);
   expect((await menu(ben, "community-get", { id: communityId, trust: true, host: true })).world).toBe(hosted.world);
 
-  // Stopping sharing takes it out of Community; Ben's remix stays.
-  expect((await menu(ben, "unshare", { id })).error).toBe("That world isn't shared.");
-  expect((await menu(ana, "unshare", { id })).status).toBe(200);
-  expect((await fetch(`${COMMUNITY}/worlds/${communityId}`)).status).toBe(404);
+  // Taking it down leaves a tombstone its fork still points at; Ben's fork stays.
+  expect((await fetch(`${COMMUNITY}/worlds/${communityId}`, { method: "DELETE", headers: { authorization: `Bearer ${anaSession}` } })).status).toBe(204);
+  expect((await menu(ana, "published", { id })).status).toBe(200);
+  expect((await fetch(`${COMMUNITY}/worlds/${communityId}`)).status).toBe(410);
   expect((await menu(ana, "state")).worlds.find((w: any) => w.id === id).shared).toBeNull();
-  expect((await fetch(benShared.link.replace(/^.*\/w\//, `${COMMUNITY}/worlds/`))).status).toBe(200);
+  expect(await (await fetch(`${COMMUNITY}/worlds/${benShared.id}`)).json()).toMatchObject({ forkOf: communityId });
 }, 120_000);
 
 test("a host without a voice key gets free voice from Community, counted against their computer, and their own key goes around it", async () => {

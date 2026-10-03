@@ -1,6 +1,6 @@
 # Community worlds
 
-A host shares a world from the game: Tab, World, Share. Anyone hosts or remixes it from Worlds, Community in the app, and the site lists the public ones and gives each world its own page.
+A host shares a world from the game: Tab, World, Share. The desktop app asks in its own dialog, then publishes it as the Community account signed in under Settings, Account. Anyone hosts or forks it from Worlds, Community in the app, and the site lists the public ones and gives each world its own page.
 
 ## What goes up
 
@@ -9,9 +9,19 @@ A host shares a world from the game: Tab, World, Share. Anyone hosts or remixes 
 | World | What Export makes, without what its players did and said: every mod and its history, the entities and each mod's database, and `owners.json`, so mod authors keep their credit. Rewind and the Timelapse go with it, but without the chat in their moments; the record (chat, tool calls, sessions) and where each player sits (`seats.json`) are left out. Player names that are part of the game, in scores and items, stay. The invite, the host key and players' keys are never in it, and every copy of them in a database is replaced with `[secret]`. |
 | Cover | The world's picture (`cover.jpg`, the host's view without the HUD or name tags), or the current view. |
 | Clip | The whole timelapse played back in 12 s and recorded in the host's game: muted 640×360 WebM, without name tags. A world with nothing to replay yet goes up without one. |
-| Details | Title, a one-line description, the host's player name as author, link-only or public, the world it was remixed from, the engine version and the mod count. |
+| Details | Title, a one-line description, link-only or public, the world it was forked from, a random id the world keeps on this computer (so a world a moderator removed can't simply go up again), the engine version and the mod count. The author is the account's username. |
 
-Link-only worlds open by their link and are never listed. Sharing a world again updates the same community world. There is no sign-in: the launcher keeps each shared world's owner token in `data/community.json` (mode 600, outside every world's folder, so no export carries it), and only that token updates or deletes it. Mods are code that runs on whoever hosts them, so Host and Remix of anyone else's world first say "This world runs code from <author>. Only play worlds from people you trust."
+Link-only worlds open by their link and are never listed. Sharing a world again updates the same community world. A copy of a community world keeps the world it came from in its own `config.json` (`forkOf`), so the parent survives export and import; a parent never changes once set, and a chain that would loop is refused. Mods are code that runs on whoever hosts them, so Host and Fork of anyone else's world first say "This world runs code from <author>. Only play worlds from people you trust."
+
+## Accounts
+
+An account is a username (3 to 20 of `a-z`, `0-9`, `_`, unique, changeable once in 30 days, shown wherever the account appears; the app suggests the player's name), an email (trimmed and lowercased, never shown) and a password of 8 to 128 characters, hashed with Argon2id. Sign-in errors never say which of the two was wrong. A session lasts 90 days from its last use; Postgres keeps only its hash.
+
+The desktop app keeps its session only in its main process, encrypted with the system keychain (`safeStorage`; where there is none, in memory until quit), never in `data/` or where a world's code runs: the game asks the app to publish, and the app checks that the request comes from the world this computer hosts. The site keeps it in an `HttpOnly; Secure; SameSite=Lax` cookie, and every change from a browser needs the site's `Origin` and an `x-sandbox: 1` header.
+
+Worlds shared before accounts carry an owner token in `data/community.json`. Signing in moves each of them to that account (`POST /worlds/:id/claim`), once: after that the token does nothing and the launcher forgets it, and a world already claimed never moves to another account signing in on the same computer. Until claimed, the token can only take the world down.
+
+Deleting an account needs its password. Its sessions end at once and its worlds are taken down; other people's forks keep pointing at them, as removed worlds. Password reset needs an email provider and doesn't exist yet.
 
 ## Service
 
@@ -19,15 +29,19 @@ Link-only worlds open by their link and are never listed. Sharing a world again 
 
 | Endpoint | Does |
 | --- | --- |
-| `POST /worlds` | JSON details and `files: { zip, cover, clip? }` sizes (zip 200 MB, JPEG cover 2 MB, WebM clip 6 MB). Answers `{ id, link, ownerToken, uploads }`, an upload URL per file. 10 per IP an hour. |
-| `PUT /worlds/:id` | Same, with `Authorization: Bearer <ownerToken>`; a cover or clip not sent keeps the old one. 30 per IP an hour. |
-| `POST /worlds/:id/done` | Owner only, after the uploads. Checks each file landed at its size and is the kind it claims, then the world goes live; an update replaces the old files only now. |
-| `DELETE /worlds/:id` | Owner only. Removes the row and its files. |
+| `POST /accounts` | `{ username, email, password }`; signs in. |
+| `POST /sessions`, `DELETE /sessions` | Sign in with `{ email, password }`, sign out. The app gets `{ account, token }`, the site a cookie. 5 tries a minute and 20 an hour per IP, and 5 a minute per email unless the IP signed into that account before. |
+| `GET /account`, `PATCH /account`, `DELETE /account` | Who is signed in, a new `username`, deletion with `{ password }`. |
+| `POST /worlds` | Signed in. JSON details and `files: { zip, cover, clip? }` sizes (zip 200 MB, JPEG cover 2 MB, WebM clip 6 MB). Answers `{ id, link, uploads }`, an upload URL per file. 10 per IP an hour. |
+| `PUT /worlds/:id` | Same, by the account that owns it; a cover or clip not sent keeps the old one. 30 per IP an hour. |
+| `POST /worlds/:id/done` | Its account only, after the uploads. Checks each file landed at its size and is the kind it claims, then the world goes live; an update replaces the old files only now. |
+| `POST /worlds/:id/claim` | Signed in, `{ ownerToken }`: moves a world shared before accounts to this account. |
+| `DELETE /worlds/:id` | Its account, or the owner token of an unclaimed world. Leaves a tombstone (`410 Gone`) and deletes its files. |
 | `GET /worlds` | Public live worlds, newest first. |
-| `GET /worlds/:id` | One world, link-only included, with `zip`, `cover` and `clip` URLs that last the hour. |
+| `GET /worlds/:id` | One world, link-only included, `410` once removed, with `zip`, `cover` and `clip` URLs that last the hour. |
 | `POST /worlds/:id/report` | Counts a report. 10 per IP an hour. |
 
-Shares never finished are swept after a day. The site's origin is the only one browsers may read the API from.
+The app authenticates with `Authorization: Bearer <session>`. Rate limits are counter rows, each bumped in one statement, so requests at the same moment can't slip past them. Shares never finished are swept after a day. The site's origin is the only one browsers may read the API from.
 
 ## Free voice
 
@@ -48,10 +62,8 @@ Test it with `bun test community/server` (throwaway Postgres and SeaweedFS for S
 
 It runs on the `npm` box in `/opt/sandbox-api` as its own Compose project (`compose.yaml`): Postgres listening only on a socket in a volume shared with the API and the backups, password auth, no network but an internal one; the API on `127.0.0.1:9200` behind Nginx Proxy Manager at `sandbox.api.lundqvistliss.com`, non-root, read-only, no capabilities. `db.env`, `r2.env` (the bucket-scoped R2 key) and `providers.env` (the ElevenLabs key) exist only on the box. Deploy with `community/server/deploy.sh`; the site with `bun run deploy-site` from `community/` (Pages project `sandbox`, `sandbox.lundqvistliss.com`).
 
-Backups: every hour `pg_dump | zstd` to `sandbox-backups/pg/<time>.sql.zst`, then, only after that upload landed, older dumps are thinned to everything from 48 hours, one a day for 30 days and one a month for a year. Restore one with `zstd -dc <dump> | psql`.
+Backups: every hour `pg_dump | zstd` to `sandbox-backups/pg/<time>.sql.zst`, then, only after that upload landed, older dumps are thinned to everything from 48 hours, one a day for 30 days and one a month for a year. Restore one with `zstd -dc <dump> | psql`, then `docker compose exec app bun replay.ts <dump time>`: every takedown and account deletion is logged in R2 under `deletions/` before it happens, and replay does again those since the dump.
 
 ## Takedown
 
-On the box, `cd /opt/sandbox-api && docker compose exec app bun takedown.ts` lists the most reported worlds; `docker compose exec app bun takedown.ts <id>` deletes one and its files.
-
-Its owner's next Share puts it up again as a new world, so a world that must stay down needs its author told.
+On the box, `cd /opt/sandbox-api && docker compose exec app bun takedown.ts` lists the most reported worlds; `bun takedown.ts <id>` takes one down, and a world with the same local id can't be published again; `bun takedown.ts ban <username>` stops an account publishing and takes its worlds out of the list. That id is chosen by the app, so a determined author can still get around it.
