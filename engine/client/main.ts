@@ -2361,8 +2361,16 @@ for (const keysList of $("howto").querySelectorAll(".keys")) $("help-keys").appe
 /** Leaving closes this world: the host goes back to their main menu, anyone else to this world's join screen. */
 let leaving = false;
 /** The desktop app says when a newer release is out, and installs it when asked. */
-const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void; leave(): void; agents: { id: string; name: string }[]; build(id: string, key: string | null): Promise<boolean | string>; publish?(id: string): Promise<string | null>; unpublish?(id: string): Promise<string | null> } }).sandboxDesktop;
+type Updating = { downloaded?: number; installing?: boolean } | null;
+const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void; onUpdating?(fn: (progress: Updating) => void): void; leave(): void; agents: { id: string; name: string }[]; build(id: string, key: string | null): Promise<boolean | string>; publish?(id: string): Promise<string | null>; unpublish?(id: string): Promise<string | null> } }).sandboxDesktop;
 desktop?.onUpdate((version) => ($("menu-update").hidden = !version));
+// Apps before 0.2.9 don't tell how the update goes.
+desktop?.onUpdating?.((progress) => {
+  $("menu-update").querySelector("span")!.textContent = progress?.installing ? "Installing…" : progress ? "Updating…" : "Update";
+  const bar = $("menu-update").querySelector<HTMLElement>(".bar")!;
+  bar.hidden = !progress;
+  bar.querySelector("i")!.style.width = `${(progress?.installing ? 1 : (progress?.downloaded ?? 0)) * 100}%`;
+});
 $("menu-update").onclick = async () => {
   const error = await desktop?.update();
   if (error) toast(error, "error");

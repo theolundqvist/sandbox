@@ -1,7 +1,8 @@
 // A thin shell around the web client: one window, a trusted launch screen and title bar, and the game in a view with no extra powers.
 const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, safeStorage, session, shell: desktop } = require("electron");
 const { execFile, spawn } = require("node:child_process");
-const { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } = require("node:fs");
+const { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } = require("node:fs");
+const { finished } = require("node:stream/promises");
 const { createServer } = require("node:net");
 const { homedir, userInfo } = require("node:os");
 const { delimiter, join, normalize } = require("node:path");
@@ -19,8 +20,6 @@ const DOWNLOADS = (version) => process.env.SANDBOX_RELEASE ?? `https://github.co
 const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"]);
 /** Pages a game may open in the browser: where the host gets a speech key, from each provider in engine/voice.ts, and where a player downloads an agent app from the Agent page. */
 const OUTSIDE = /^https:\/\/((console\.groq\.com|platform\.openai\.com|aistudio\.google\.com|elevenlabs\.io|console\.deepgram\.com)\/|(claude|chatgpt)\.com\/download$)/;
-/** The Agent page's Open in ChatGPT, which only types the prompt into a new Codex chat. */
-const AGENT_LINK = /^codex:\/\/new\?prompt=/;
 /** The agents this app starts in its own terminal, each from its maker's installer, in the world's folder where its allow rule for the world's command sits. The game asks only by id; what runs is decided here. */
 const AGENTS = {
   "claude-code": { name: "Claude Code", maker: "Anthropic", bin: "claude", install: "curl -fsSL https://claude.ai/install.sh | bash" },
@@ -145,9 +144,7 @@ function play(raw) {
   // Lets the web client skip its "get the desktop app" offer.
   wc.setUserAgent(`${wc.getUserAgent()} SandboxDesktop`);
   const stayHome = (event, to) => {
-    if (new URL(to).origin === url.origin) return;
-    event.preventDefault();
-    if (AGENT_LINK.test(to)) void desktop.openExternal(to);
+    if (new URL(to).origin !== url.origin) event.preventDefault();
   };
   wc.on("will-navigate", stayHome);
   wc.on("will-redirect", stayHome);
@@ -740,6 +737,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  rmSync(DOWNLOADED, { recursive: true, force: true });
   Menu.setApplicationMenu(
     mac
       ? Menu.buildFromTemplate([
@@ -848,7 +846,8 @@ app.whenReady().then(() => {
     });
   }
   if (UPDATES && reopen) void checkUpdate().then(pollUpdates);
-  else if (UPDATES) ready = updateFirst().then(pollUpdates);
+  // The start screen says what it waits for only once it listens.
+  else if (UPDATES) ready = new Promise((r) => shell.webContents.once("did-finish-load", r)).then(updateFirst).then(pollUpdates);
 });
 
 const UPDATES = app.isPackaged || !!process.env.SANDBOX_UPDATES;
@@ -896,7 +895,41 @@ function pollUpdates() {
   setTimeout(() => checkUpdate().then(pollUpdates), checkEvery);
 }
 
-/** Updates the way the installer does, since Squirrel won't update an unsigned Mac app: the installer downloads the release, this app quits, and the installer swaps it in and opens it again. Says why when the download fails, and stays open. */
+/** This computer's build in a release, named as the installer names it; a Mac picks Apple silicon even when this app runs translated. */
+const ASSET = mac ? `Sandbox-mac-${process.arch === "arm64" || app.runningUnderARM64Translation ? "arm64" : "x64"}.zip` : windows ? "Sandbox-win-x64.zip" : "Sandbox-linux-x86_64.AppImage";
+/** Where the app downloads an update for the installer; whatever is left there goes when the app next starts. */
+const DOWNLOADED = join(app.getPath("userData"), "update");
+
+/** Tells the start screen and the game how the update goes: the share downloaded, then installing, or null once it has stopped. */
+function updating(progress) {
+  shell?.webContents.send("updating", progress);
+  game?.view.webContents.send("updating", progress);
+}
+
+/** Downloads this computer's build of the update, telling how far it is by the bytes received against the release's size, and returns the folder it is in. */
+async function download(version) {
+  rmSync(DOWNLOADED, { recursive: true, force: true });
+  mkdirSync(DOWNLOADED, { recursive: true });
+  const res = await net.fetch(`${DOWNLOADS(version)}/${ASSET}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const size = Number(res.headers.get("content-length"));
+  const out = createWriteStream(join(DOWNLOADED, ASSET));
+  let received = 0;
+  let told = 0;
+  for await (const chunk of res.body) {
+    if (!out.write(chunk)) await new Promise((r) => out.once("drain", r));
+    received += chunk.length;
+    if (size && Date.now() - told > 100) {
+      told = Date.now();
+      updating({ downloaded: received / size });
+    }
+  }
+  out.end();
+  await finished(out);
+  return DOWNLOADED;
+}
+
+/** Updates the way the installer does, since Squirrel won't update an unsigned Mac app: this app downloads the release and hands it to the installer, quits, and the installer swaps it in and opens it again. Says why when the download fails, and stays open. */
 let installing = false;
 async function install() {
   if (!update || installing) return null;
@@ -907,11 +940,19 @@ async function install() {
     if (response !== 0) return null;
   }
   installing = true;
+  updating({ downloaded: 0 });
+  const release = await download(update).catch((e) => console.log(`The update didn't download: ${e.message}`));
+  if (!release) {
+    installing = false;
+    updating(null);
+    return "The update didn't download. Check your connection.";
+  }
+  updating({ installing: true });
   const path = join(app.getPath("userData"), "update.log");
   const log = openSync(path, "a");
   const from = statSync(path).size;
   const [shell, args] = windows ? ["powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `irm '${INSTALLER(update)}' | iex`]] : ["bash", ["-c", `curl -fsSL '${INSTALLER(update)}' | bash`]];
-  const child = spawn(shell, args, { detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, SANDBOX_APP_PID: String(process.pid), SANDBOX_RELEASE: DOWNLOADS(update) } });
+  const child = spawn(shell, args, { detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, SANDBOX_APP_PID: String(process.pid), SANDBOX_RELEASE: pathToFileURL(release).href } });
   child.unref();
   closeSync(log);
   const exited = new Promise((resolve) => child.once("exit", () => resolve(false)));
@@ -926,6 +967,7 @@ async function install() {
   while (!ready && (await Promise.race([exited, new Promise((r) => setTimeout(() => r(true), 250))]))) ready = said().includes("Quit Sandbox to continue.");
   if (!ready) {
     installing = false;
+    updating(null);
     console.log(`The update failed: ${said().trim().split("\n").at(-1) ?? ""}`);
     return "The update didn't download. Check your connection.";
   }

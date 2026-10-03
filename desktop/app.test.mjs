@@ -18,6 +18,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Below the kernel's ephemeral range (32768 and up), where outgoing connections already hold ports.
 const port = () => 20000 + Math.floor(Math.random() * 12000);
 const children = [];
+/** Where the run saves screenshots for review, when it is given a folder. */
+const CAPTURES = process.env.SANDBOX_CAPTURES;
+const capture = (page, name) => CAPTURES && page.screenshot({ path: join(CAPTURES, `${name}.png`) });
 
 async function until(what, check, ms = 20000) {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) {
@@ -68,7 +71,9 @@ const { zipSync } = createRequire(join(DESKTOP, "../package.json"))("fflate");
 const tinyIsle = Buffer.from(zipSync({ "config.json": Buffer.from(JSON.stringify({ name: "Tiny Isle", rules: "open", start: "blank" })), "cover.jpg": COVER, "world/mods/isle/server.ts": Buffer.from("export default { load() {} };") }));
 
 /** GitHub as the app sees it: the latest release and the installer script the app runs to update; Community, with one world and whatever the app shares; and ElevenLabs, which knows one key. */
-const releases = { latest: VERSION, installer: null };
+const releases = { latest: VERSION, installer: null, build: true };
+/** The release's build for this computer, sent slowly enough to watch it download. */
+const BUILD = Buffer.alloc(4 << 20, 7);
 const RELEASES = port();
 const isle = { id: "tinyisle0001", title: "Tiny Isle", description: "One small island.", author: "maker", cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, zip: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/zip`, clip: null, link: "https://site.example/w/tinyisle0001" };
 const community = { shared: null, files: {} };
@@ -95,6 +100,14 @@ const github = createServer(async (req, res) => {
   if (req.url === "/latest") return res.end(JSON.stringify({ tag_name: `v${releases.latest}` }));
   if (req.url === "/hang") return;
   if (req.url === "/install" && releases.installer) return res.end(releases.installer);
+  if (req.url === "/release/Sandbox-linux-x86_64.AppImage" && releases.build) {
+    res.setHeader("content-length", BUILD.length);
+    for (let at = 0; at < BUILD.length && !res.destroyed; at += 1 << 17) {
+      res.write(BUILD.subarray(at, at + (1 << 17)));
+      await sleep(100);
+    }
+    return res.end();
+  }
   if (req.url === "/v1/speech-to-text") {
     res.statusCode = req.headers["xi-api-key"] === VOICE_KEY ? 400 : 401;
     return res.end("{}");
@@ -153,7 +166,7 @@ async function launch(name, env = {}, player = "host") {
   const app = await _electron.launch({
     executablePath: ELECTRON,
     args: [DESKTOP, "--no-sandbox", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
-    env: { ...ownEnv, SANDBOX_STT: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_COMMUNITY: `http://127.0.0.1:${RELEASES}`, ...env },
+    env: { ...ownEnv, SANDBOX_STT: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_RELEASE: `http://127.0.0.1:${RELEASES}/release`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_COMMUNITY: `http://127.0.0.1:${RELEASES}`, ...env },
   });
   await app.context().addInitScript(OPEN_UI);
   const shell = await until("the start screen", async () => app.windows().find((w) => w.url().startsWith("sandbox://app/shell.html")));
@@ -161,6 +174,12 @@ async function launch(name, env = {}, player = "host") {
   return { app, shell, state: () => (existsSync(saved) ? JSON.parse(readFileSync(saved, "utf8")) : {}) };
 }
 
+/** Leaves the game for the title, and waits for its page to close, which it does only once it has sent the host's view of the world. */
+async function leave(app, shell) {
+  const left = app.windows().filter((w) => /^https?:/.test(w.url()));
+  await shell.click("#leave");
+  await Promise.all(left.map((w) => w.isClosed() || w.waitForEvent("close")));
+}
 const gamePage = (app) => until("the game view", async () => app.windows().find((w) => /^https?:/.test(w.url())));
 const menuShown = (shell) => shell.locator("#title .items").isVisible();
 const shown = (page, sel) => page.locator(sel).isVisible();
@@ -222,6 +241,8 @@ describe("hosting and joining", () => {
   test("the title menu, no update, and no worlds yet", async () => {
     await until("the menu", () => menuShown(shell));
     assert.deepEqual(await shell.locator("#title .item:visible").allTextContents(), ["Worlds", "Join world", "Host world", "Settings", "Quit"]);
+    assert.equal(await shell.textContent("#version"), `Sandbox ${VERSION}`);
+    await capture(shell, "title");
     await shell.click("text=Worlds");
     assert.equal(await shown(shell, "#no-games"), true);
   });
@@ -356,6 +377,7 @@ describe("hosting and joining", () => {
     const [, folder] = await until("the world's folder", async () => (await game.textContent("#agent-start")).match(/^cd (~\/Sandbox\/[a-z0-9-]+) && claude$/));
     assert.deepEqual([await game.textContent("#agent-install"), await game.textContent("#agent-start")], ["curl -fsSL https://claude.ai/install.sh | bash", `cd ${folder} && claude`]);
     assert.deepEqual([await game.textContent("#agent-os output"), await game.textContent("#agent-terminal")], ["Linux", "Press Ctrl+Alt+T. Paste this line and press Enter."]);
+    await capture(game, "agent-page");
     await game.click("#agent-os i:last-child");
     assert.deepEqual([await game.textContent("#agent-os output"), await game.textContent("#agent-install")], ["Windows", "irm https://claude.ai/install.ps1 | iex"]);
     assert.match(await game.textContent("#agent-terminal"), /^Press the Windows key, type PowerShell, press Enter\./);
@@ -380,7 +402,7 @@ describe("hosting and joining", () => {
   });
 
   test("leaving shows the hosted world, live, marked Hosted, with the host's view as its picture", async () => {
-    await shell.click("#leave");
+    await leave(app, shell);
     await shell.click("text=Worlds");
     const [row] = await until("the hosted world", async () => (await rows(shell)).length && rows(shell));
     assert.match(row, /^.+ \| Live \| Hosted$/);
@@ -406,7 +428,7 @@ describe("hosting and joining", () => {
     assert.match(game.url(), new RegExp(`^${other.url}/`));
     assert.deepEqual(stills, []);
     await until("the saved world", async () => state().recents.find((r) => r.url === other.url && r.name === "Snow Race"));
-    await shell.click("#leave");
+    await leave(app, shell);
   });
 
   test("the joined world is listed as Joined, and Forget removes it", async () => {
@@ -427,7 +449,7 @@ describe("hosting and joining", () => {
     await shell.fill("#join-link", `${other.base}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
     await playing(await gamePage(app));
-    await shell.click("#leave");
+    await leave(app, shell);
     const bare = await shell.evaluate(async () => (await import("/front.js")).joinLink("sandbox-relay.example.com/r/ab12cd/"));
     assert.equal(bare, "https://sandbox-relay.example.com/r/ab12cd/");
   });
@@ -464,7 +486,7 @@ describe("hosting and joining", () => {
     assert.deepEqual([...community.files.clip.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3]);
     assert.equal(community.files.zip.subarray(0, 2).toString(), "PK");
     assert.equal(await game.textContent("#share-go"), "Update");
-    await shell.click("#leave");
+    await leave(app, shell);
     await until("the host's view of Tiny Isle", async () => readFileSync(join(worlds, isleId, "cover.jpg")).length > COVER.length);
   });
 
@@ -510,7 +532,7 @@ describe("a friend in a browser", () => {
   };
   /** The host's Host screen with the world they're hosting picked, its settings changed, and hosted again. */
   async function rehost(change) {
-    await shell.click("#leave");
+    await leave(app, shell);
     await shell.click("text=Host world");
     game = await until("the Host screen", async () => app.windows().find((w) => /\/menu(#.*)?$/.test(w.url())));
     await game.locator("#create").waitFor();
@@ -650,6 +672,7 @@ describe("starting up", () => {
   after(() => {
     releases.latest = VERSION;
     releases.installer = null;
+    releases.build = true;
   });
 
   test("offline, the menu shows and offers no update", async () => {
@@ -689,6 +712,7 @@ describe("starting up", () => {
 
   test("a download that fails at start opens the menu, offering Update", async () => {
     releases.latest = "9.9.9";
+    releases.build = false;
     const { app, shell, state } = await launch("start-fails");
     await until("the menu", () => menuShown(shell));
     assert.equal(await shown(shell, "#go-update"), true);
@@ -697,17 +721,23 @@ describe("starting up", () => {
     await close(app);
   });
 
-  test("a newer release installs before the menu shows, then the installer opens the new version", async () => {
+  test("a newer release downloads with a bar of the bytes received and installs before the menu shows, then the installer opens the new version", async () => {
     const marker = join(dir, "installed-at-start");
     releases.installer = installer(marker);
+    releases.build = true;
     const { app, shell, state } = await launch("start-updates");
     const pid = app.process().pid;
     const closed = new Promise((r) => app.once("close", r));
     await until("the progress", async () => (await shell.textContent("#busy")) === "Updating to 9.9.9…");
     assert.equal(await menuShown(shell), false);
+    const downloaded = () => shell.locator("#progress i").evaluate((bar) => bar.offsetWidth / bar.parentElement.offsetWidth);
+    await until("the download partway", async () => ((d) => d > 0.2 && d < 0.8)(await downloaded()));
+    await capture(shell, "update-downloading");
+    await until("Installing", async () => (await shell.textContent("#busy")) === "Installing…");
+    assert.equal(await downloaded(), 1);
     await closed;
     await until("the installer", async () => existsSync(marker) && readFileSync(marker, "utf8").trim() === String(pid));
-    assert.equal(readFileSync(`${marker}.release`, "utf8").trim(), "https://github.com/theolundqvist/sandbox/releases/download/v9.9.9");
+    assert.deepEqual(readFileSync(new URL(`${readFileSync(`${marker}.release`, "utf8").trim()}/Sandbox-linux-x86_64.AppImage`)), BUILD);
     assert.equal(state().updatedTo, "9.9.9");
   });
 
@@ -757,7 +787,7 @@ describe("updates", () => {
 
   test("a failed download says so and keeps the app and the game open", async () => {
     const own = state().port;
-    releases.installer = null;
+    releases.build = false;
     await answer(app, 0);
     await game.locator("#menu-update").evaluate((b) => b.click());
     await until("the error", async () => game.getByText("The update didn't download. Check your connection.").isVisible());
@@ -770,11 +800,15 @@ describe("updates", () => {
   test("an update downloads before the app quits, then the installer takes over", async () => {
     const marker = join(dir, "installed");
     releases.installer = installer(marker);
+    releases.build = true;
     const own = state().port;
     const pid = app.process().pid;
     await answer(app, 0);
     const closed = new Promise((r) => app.once("close", r));
-    await game.locator("#menu-update").evaluate((b) => b.click());
+    await game.locator("#menu-button").dispatchEvent("click");
+    await game.click("#menu-update");
+    await until("the download partway in the game's menu", () => game.locator("#menu-update").evaluate((b) => b.textContent === "Updating…" && ((d) => d > 0.2 && d < 0.8)(b.querySelector(".bar i").offsetWidth / b.querySelector(".bar").offsetWidth)));
+    await capture(game, "update-in-game");
     await closed;
     await until("the installer", async () => existsSync(marker) && readFileSync(marker, "utf8").trim() === String(pid));
     assert.equal(await portAnswers(own), false);
@@ -796,7 +830,7 @@ describe("updates", () => {
   });
 
   test("an update while in a friend's world brings the player back into it", async () => {
-    await shell.click("#leave");
+    await leave(app, shell);
     await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
@@ -1117,7 +1151,7 @@ describe("Continue", () => {
   before(async () => ({ app, shell, state } = await launch("continue", {}, "returner")));
   after(() => close(app));
 
-  test("the title starts on Continue, naming the world last played, hosted or joined and after a restart, and it opens that world; a forgotten world takes it away", async () => {
+  test("the title starts on Continue, which opens the world last played, hosted or joined and after a restart; a forgotten world takes it away", async () => {
     const title = () => shell.locator("#title .item:visible").allTextContents();
     const focused = () => shell.evaluate(() => document.activeElement.textContent);
     /** The game view just opened, not the one just left, which closes as it goes. */
@@ -1127,31 +1161,31 @@ describe("Continue", () => {
     await game.click("#create-go");
     await playing(game);
     const world = await game.textContent("#world-name");
-    await shell.click("#leave");
+    await leave(app, shell);
     // The title comes back under the pointer, which moves the focus as it hovers; click rather than press Enter.
-    await until("Continue on the hosted world", async () => (await title())[0] === `Continue${world}`);
+    await until("Continue on the hosted world", async () => (await title())[0] === "Continue");
     await shell.click("#go-last");
     game = await opened(game);
     await playing(game);
     assert.equal(await game.textContent("#world-name"), world);
-    await shell.click("#leave");
+    await leave(app, shell);
 
     await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
     await playing(await opened(game));
     await until("Snow Race played last", async () => state().last === other.url);
-    await shell.click("#leave");
+    await leave(app, shell);
     await close(app);
     ({ app, shell, state } = await launch("continue", {}, "returner"));
-    await until("Continue on the joined world", async () => (await focused()) === "ContinueSnow Race");
-    assert.deepEqual(await title(), ["ContinueSnow Race", "Worlds", "Join world", "Host world", "Settings", "Quit"]);
+    await until("Continue on the joined world", async () => (await focused()) === "Continue");
+    assert.deepEqual(await title(), ["Continue", "Worlds", "Join world", "Host world", "Settings", "Quit"]);
     await shell.keyboard.press("Enter");
     game = await gamePage(app);
     await playing(game);
     assert.equal(await game.textContent("#world-name"), "Snow Race");
     assert.ok(game.url().startsWith(other.url));
-    await shell.click("#leave");
+    await leave(app, shell);
 
     await shell.click("text=Worlds");
     await until("Snow Race listed", async () => (await rows(shell)).some((r) => r.startsWith("Snow Race")));
@@ -1259,7 +1293,7 @@ describe("the host closes the game", () => {
   });
 
   test("opening it again from Worlds waits for the host, keeps its name, and goes back in by itself once the host is back", async () => {
-    await shell.click("#leave");
+    await leave(app, shell);
     await shell.click("text=Worlds");
     await until("the world", async () => (await rows(shell)).some((r) => r.startsWith("Snow Race")));
     await shell.click("#games .item >> text=Snow Race");
@@ -1274,7 +1308,7 @@ describe("the host closes the game", () => {
   });
 
   test("Back stops waiting", async () => {
-    await shell.click("#leave");
+    await leave(app, shell);
     otherLauncher.kill();
     await until("the world gone", async () => !(await fetch(`${other.url}/api/info`)).ok);
     await shell.click("text=Worlds");
@@ -1358,7 +1392,7 @@ describe("usage stats", () => {
     await game.click("#create-start i:last-child");
     await game.click("#create-go");
     await game.waitForURL(/:\d+\/(#.*)?$/);
-    await shell.click("#leave");
+    await leave(app, shell);
     await until("the menu", () => menuShown(shell));
     await quit(app, shell);
 
@@ -1386,6 +1420,7 @@ describe("usage stats", () => {
     await shell.click("text=Worlds");
     await shell.keyboard.press("Escape");
     await shell.click("text=Join world");
+    await shell.keyboard.press("Escape");
     await quit(app, shell);
     await sleep(1000);
     const after = batches.slice(before).flatMap((b) => JSON.parse(b.raw).events);

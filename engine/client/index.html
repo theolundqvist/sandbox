@@ -162,7 +162,9 @@
   #mod-pages:empty { visibility: hidden; }
   #leave, #menu-update { flex: none; }
   #menu-update, #menu-update[hidden] + #leave { margin-top: auto; }
-  #pages { position: absolute; top: 0; bottom: 0; left: 400px; width: min(760px, calc(100vw - 440px)); padding: 72px 56px 40px; background: var(--pane); overflow-y: auto; }
+  #menu-update .bar { position: absolute; left: 28px; right: 0; bottom: 0; height: 3px; background: var(--line); }
+  #menu-update .bar i { display: block; height: 100%; background: var(--accent); }
+  #pages { position: absolute; top: 0; bottom: 0; left: 400px; width: min(760px, calc(100vw - 440px)); padding: 72px 56px 40px; background: var(--pane); overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.25) transparent; }
   #pages .screen-title { font-size: 44px; margin-bottom: 28px; }
   #pages:focus { outline: none; }
   /* Mods' blocks show inside their own box, so none covers the engine's page. */
@@ -360,7 +362,7 @@
       <button id="timelapse" class="item">Timelapse</button>
     </div>
     <div id="mod-pages" class="items"></div>
-    <button id="menu-update" class="item" hidden>Update</button>
+    <button id="menu-update" class="item" hidden><span>Update</span><i class="bar" hidden><i></i></i></button>
     <button id="leave" class="item">Leave</button>
   </nav>
   <div id="pages" data-nav hidden>
