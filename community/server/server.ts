@@ -349,6 +349,7 @@ async function done(req: Request, id: string) {
       zip_key = ${keys.zip}, cover_key = ${keys.cover ?? row.cover_key}, clip_key = ${keys.clip ?? row.clip_key}, pending = null, updated_at = now()
     where id = ${id} and removed_at is null and pending->>'upload' = ${pending.upload} returning *`;
   if (!live) throw new Refusal("This world changed while it uploaded. Share it again.", 409);
+  if (!row.zip_key && live.remix_of && live.visibility === "public") await notify((await sql`select account from worlds where id = ${live.remix_of} and removed_at is null`)[0]?.account ?? null, "fork", account!.id, id);
   const replaced = [row.zip_key, keys.cover && row.cover_key, keys.clip && row.clip_key].filter(Boolean) as string[];
   await Promise.allSettled(replaced.map((key) => files.delete(key)));
   const [fresh] = await sql`${worldRows(account)} where w.id = ${id}`;
@@ -691,9 +692,10 @@ async function waitingCredits(req: Request) {
   const tokens = (await req.json()).tokens;
   if (!Array.isArray(tokens) || tokens.length > 500) throw new Refusal("Send up to 500 tokens.");
   const byCheck = new Map(tokens.map((t: unknown) => [sha256(String(t)), String(t)]));
-  const rows = await sql`select c.world, c.name, c.checks, w.title, coalesce(a.username, w.author) as owner from credits c join worlds w on w.id = c.world left join accounts a on a.id = w.account
+  const rows = await sql`select c.world, c.name, c.checks, w.title, w.account, coalesce(a.username, w.author) as owner from credits c join worlds w on w.id = c.world left join accounts a on a.id = w.account
     where c.state = 'pending' and c.checks && ${sql.array([...byCheck.keys()], "TEXT")} and w.removed_at is null and w.zip_key is not null and w.account is distinct from ${account.id}
       and not exists (select 1 from credits mine where mine.world = c.world and mine.account = ${account.id})`;
+  for (const r of rows) await notify(account.id, "credit", r.account, r.world, true);
   return json(rows.map((r: any) => ({ world: { id: r.world, title: r.title, author: r.owner }, name: r.name, token: byCheck.get(r.checks.find((x: string) => byCheck.has(x))) })));
 }
 
@@ -754,10 +756,12 @@ async function befriend(req: Request, name: string) {
   if (other.id === me.id) throw new Refusal("That's you.");
   const [blocked] = await sql`select 1 from blocks where (account = ${other.id} and blocked = ${me.id}) or (account = ${me.id} and blocked = ${other.id})`;
   if (blocked) throw new Refusal(`You can't add ${other.username}.`, 403);
-  const [accepted] = await sql`update friends set accepted_at = coalesce(accepted_at, now()) where requester = ${other.id} and addressee = ${me.id} returning 1`;
-  if (!accepted) {
-    if (!(await friendship(me.id, other.id))) await limit(me.id, "friend", "That's 20 friend requests today. Try again tomorrow.");
+  const [accepted] = await sql`update friends set accepted_at = now() where requester = ${other.id} and addressee = ${me.id} and accepted_at is null returning 1`;
+  if (accepted) await notify(other.id, "friend-accepted", me.id);
+  else if (!(await friendship(me.id, other.id))) {
+    await limit(me.id, "friend", "That's 20 friend requests today. Try again tomorrow.");
     await sql`insert into friends (requester, addressee) values (${me.id}, ${other.id}) on conflict do nothing`;
+    await notify(other.id, "friend-request", me.id);
   }
   return json({ friend: await friendship(me.id, other.id) });
 }
@@ -778,6 +782,30 @@ async function friendList(req: Request) {
   const names = (keep: (r: any) => boolean) => rows.filter(keep).map((r: any) => r.username as string);
   return json({ friends: names((r) => r.accepted_at), received: names((r) => !r.accepted_at && r.requester !== me.id), sent: names((r) => !r.accepted_at && r.requester === me.id) });
 }
+
+// ---------- notifications ----------
+
+type Notice = "fork" | "comment" | "message" | "credit" | "friend-request" | "friend-accepted";
+/** Tells an account something that concerns it, unless it blocked whoever did it. A repeat while unread only moves the notice up; `once` notices never come back after being read. */
+async function notify(account: string | null, kind: Notice, actor: string | null, world: string | null = null, once = false) {
+  if (!account || account === actor) return;
+  await sql`insert into notifications (account, kind, actor, world) select ${account}, ${kind}, ${actor}, ${world}
+    where not exists (select 1 from blocks where account = ${account} and blocked = ${actor}::uuid)
+      and (${!once} or not exists (select 1 from notifications where account = ${account} and kind = ${kind} and world is not distinct from ${world} and actor is not distinct from ${actor}::uuid))
+    on conflict (account, kind, actor, world) where read_at is null do update set at = now()`;
+}
+
+/** The newest 50 notices, with who did it and on which world. */
+async function notices(req: Request) {
+  const me = await signedIn(req);
+  const rows = await sql`select n.id, n.kind, n.at, n.read_at, a.username as actor, w.id as world, w.title from notifications n
+      left join accounts a on a.id = n.actor left join worlds w on w.id = n.world
+    where n.account = ${me.id} and (n.world is null or (w.removed_at is null and w.zip_key is not null)) and (n.actor is null or a.banned_at is null)
+    order by n.at desc limit 50`;
+  return json(rows.map((r: any) => ({ id: String(r.id), kind: r.kind, actor: r.actor, world: r.world ? { id: r.world, title: r.title } : null, at: new Date(r.at).getTime(), read: !!r.read_at })));
+}
+
+const unreadNotices = async (me: string) => (await sql`select count(*)::int as n from notifications where account = ${me} and read_at is null`)[0].n as number;
 
 // ---------- live ----------
 
@@ -857,6 +885,7 @@ async function send(req: Request) {
   const [m] = await sql`insert into messages (sender, recipient, body) select ${me.id}, ${to.id}, ${body}
     where not exists (select 1 from blocks where account = ${to.id} and blocked = ${me.id}) returning *`;
   if (!m) throw new Refusal(`You can't message ${to.username}.`, 403);
+  await notify(to.id, "message", me.id);
   return json(shownMessage(m, me), 201);
 }
 
@@ -936,6 +965,7 @@ async function comment(req: Request, world: string) {
   await live(world);
   await limit(account.id, "comment", "One comment every 20 seconds.");
   const [row] = await sql`insert into comments (world, account, body) values (${world}, ${account.id}, ${body}) returning id`;
+  await notify((await sql`select account from worlds where id = ${world}`)[0]?.account ?? null, "comment", account.id, world);
   const [c] = await sql`${COMMENT_ROWS} where c.id = ${row.id}`;
   return json(shownComment(c, account), 201);
 }
@@ -982,7 +1012,13 @@ async function route(req: Request, ip: string) {
   if (at === "POST /messages") return send(req);
   if (at === "GET /account/unread") {
     const me = await signedIn(req);
-    return json({ unread: (await sql`select count(*)::int as n from messages where recipient = ${me.id} and read_at is null`)[0].n });
+    return json({ unread: (await sql`select count(*)::int as n from messages where recipient = ${me.id} and read_at is null`)[0].n, notifications: await unreadNotices(me.id) });
+  }
+  if (at === "GET /notifications") return notices(req);
+  if (at === "POST /notifications/read") {
+    const me = await signedIn(req);
+    await sql`update notifications set read_at = now() where account = ${me.id} and read_at is null`;
+    return new Response(null, { status: 204, headers: cors });
   }
   if (at === "GET /friends") return friendList(req);
   if (at === "GET /live") return liveNow(req);

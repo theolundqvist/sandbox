@@ -55,7 +55,8 @@ Deleting an account needs its password. Its sessions end at once and its worlds 
 | `GET /users/:username` | A profile: `joined`, `players` and `votes` over its listed worlds, those `worlds`, its own and credited, and whether the asker `blocked` it, and `friend`. `404` for a banned account. |
 | `POST /messages` | Signed in, `{ to, body }`, 1 to 2,000 characters of plain text. One every 3 s, and 10 new conversations a day. `403` when the recipient blocked the sender. |
 | `GET /messages`, `GET /messages/:username` | The conversations, newest first, each with its last message and unread count. One conversation, 50 at a time going back with `?before=<id>`; reading it marks its messages read. |
-| `GET /account/unread` | `{ unread }` messages. |
+| `GET /account/unread` | `{ unread, notifications }`: unread messages and notifications. |
+| `GET /notifications`, `POST /notifications/read` | The newest 50 `{ id, kind, actor, world: { id, title } \| null, at, read }`, `kind` one of `fork`, `comment`, `message`, `credit`, `friend-request`, `friend-accepted`; nothing from accounts you blocked, and one unread notice per kind, account and world. Read marks them all read. |
 | `PUT /friends/:username` | Signed in: asks to be friends, or accepts when they asked first. 20 new requests a day. Answers `{ friend }`: `sent`, `received`, `friends` or `null`, as profiles show it. |
 | `DELETE /friends/:username`, `GET /friends` | Unfriends, takes back or declines a request. `{ friends, received, sent }` by username. |
 | `PUT /live` | The host's app, with its install token and `x-session`, every 30 s while a world it hosts lets in more than its invite holders: `{ link, title, players, access, world? }`, with `access` one of `anyone`, `friends`, `password`. A room stays with the computer that listed it first (409). |

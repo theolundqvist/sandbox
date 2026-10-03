@@ -553,6 +553,8 @@ const COMMUNITY_ACTIONS = {
   "drop-credit": ({ id }) => community(`/worlds/${worldId(id)}/credits`, { method: "DELETE" }),
   profile: ({ name }) => community(`/users/${userName(name)}`),
   live: () => community("/live"),
+  notifications: () => community("/notifications"),
+  "read-notifications": () => community("/notifications/read", { method: "POST" }),
   /** A password world's invite, from its relay, which alone checks the password. */
   unlock: async ({ room, password }) => {
     if (!/^[a-z0-9-]{3,32}$/.test(String(room))) throw new Error("That world isn't live.");

@@ -58,7 +58,7 @@ async function copyFor(w, tip) {
 const counted = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
 const ago = (ms) => {
   const m = Math.round((Date.now() - ms) / 60000);
-  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : Math.round(m / 1440) === 1 ? "yesterday" : `${Math.round(m / 1440)} days ago`;
 };
 
 /** A world as a row: its clip, its name, who made it, and the link to play or fork it in the app. */
@@ -251,7 +251,31 @@ async function whoAmI(fresh = false) {
   if (fresh || account === undefined) account = (await api("/account").catch(() => ({}))).account ?? null;
   $("me").hidden = false;
   $("me").textContent = account ? account.username : "Sign in";
+  $("bell").hidden = !account;
+  if (account) api("/account/unread").then((u) => ($("bell-count").textContent = u.notifications ? String(u.notifications) : ""), () => {});
   return account;
+}
+
+/** What a notice says, and where it leads. */
+const NOTICES = {
+  fork: (n) => [`${n.actor} forked your world`, n.world.title, `/w/${n.world.id}`],
+  comment: (n) => [`${n.actor} commented`, n.world.title, `/w/${n.world.id}`],
+  message: (n) => [`${n.actor} sent you a message`, "", `/messages/${n.actor}`],
+  credit: (n) => [`${n.actor} credited you`, `${n.world.title} · accept it in the app`, `/w/${n.world.id}`],
+  "friend-request": (n) => [`${n.actor} wants to be friends`, "", `/u/${n.actor}`],
+  "friend-accepted": (n) => [`${n.actor} is your friend now`, "", `/u/${n.actor}`],
+};
+async function showNotices() {
+  if (!(await whoAmI())) return go("/signin?then=/notifications");
+  const list = await api("/notifications");
+  $("notices-none").hidden = list.length > 0;
+  $("notice-list").replaceChildren(
+    ...list.map((n) => {
+      const [what, about, href] = NOTICES[n.kind](n);
+      return el("a", { className: "world", href }, el("span", { className: "what" }, el("b", { textContent: what }), el("small", { textContent: about })), el("span", { className: n.read ? "when" : "playing", textContent: n.read ? ago(n.at) : "New" }));
+    }),
+  );
+  if (list.some((n) => !n.read)) await api("/notifications/read", { method: "POST" }).then(() => ($("bell-count").textContent = ""), () => {});
 }
 const go = (path) => {
   history.pushState(null, "", path);
@@ -415,8 +439,8 @@ async function showFriends() {
   $("friends-none").hidden = f.received.length + f.friends.length + f.sent.length > 0;
 }
 
-const SCREENS = { "/": "home", "/join": "join", "/worlds": "worlds", "/host": "host", "/signin": "signin", "/signup": "signup", "/account": "account", "/account/delete": "delete", "/messages": "messages", "/friends": "friends" };
-const BACK = { world: "/worlds", signup: "/signin", delete: "/account", messages: "/account", friends: "/account", thread: "/messages" };
+const SCREENS = { "/": "home", "/join": "join", "/worlds": "worlds", "/host": "host", "/signin": "signin", "/signup": "signup", "/account": "account", "/account/delete": "delete", "/messages": "messages", "/friends": "friends", "/notifications": "notifications" };
+const BACK = { world: "/worlds", signup: "/signin", delete: "/account", messages: "/account", friends: "/account", notifications: "/account", thread: "/messages" };
 async function route() {
   const path = location.pathname.replace(/\/+$/, "") || "/";
   const id = path.match(/^\/w\/([a-z0-9]{12})$/)?.[1];
@@ -437,6 +461,7 @@ async function route() {
     if (screen === "profile") await showProfile(user);
     if (screen === "messages") await showMessages();
     if (screen === "friends") await showFriends();
+    if (screen === "notifications") await showNotices();
     if (screen === "thread") await showThread(talking);
     if (screen === "delete" && !(await whoAmI())) return go("/signin");
   } catch (e) {

@@ -227,3 +227,16 @@ create index if not exists live_seen on live (seen_at);
 -- The admin panel: who may use it (set by hand in psql, never through the API), and its own sessions, apart from the site's and the app's.
 alter table accounts add column if not exists admin boolean not null default false;
 create table if not exists admin_sessions (token_hash text primary key, account uuid not null references accounts (id) on delete cascade, created_at timestamptz not null default now(), last_seen timestamptz not null default now());
+
+-- What happened that concerns an account: a fork or a comment on its world, a message, a credit waiting, a friend request, or a request accepted. One unread notice per kind, person and world; a repeat only moves it up.
+create table if not exists notifications (
+  id bigserial primary key,
+  account uuid not null references accounts (id) on delete cascade,
+  kind text not null check (kind in ('fork', 'comment', 'message', 'credit', 'friend-request', 'friend-accepted')),
+  actor uuid references accounts (id) on delete cascade,
+  world text references worlds (id) on delete cascade,
+  at timestamptz not null default now(),
+  read_at timestamptz
+);
+create unique index if not exists notifications_unread on notifications (account, kind, actor, world) nulls not distinct where read_at is null;
+create index if not exists notifications_account on notifications (account, at desc);

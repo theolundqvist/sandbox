@@ -11,6 +11,7 @@
   html, body { margin: 0; height: 100%; background: #1b1b1d; color: var(--text); font: 15px/1.45 system-ui, sans-serif; overflow: hidden; user-select: none; }
   #title .logo { margin-bottom: 64px; }
   .front { top: 36px; bottom: 96px; padding-top: 60px; padding-bottom: 0; }
+  .bell { width: .8em; height: .9em; margin-right: .45em; vertical-align: -.05em; fill: currentColor; }
   .lock { width: 12px; height: 14px; margin-left: 10px; vertical-align: -1px; fill: currentColor; }
   .status { margin: 0; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .16em; text-transform: uppercase; }
   #down .lead, #waiting .status { margin: -16px 0 32px; }
@@ -104,7 +105,7 @@
     <h1>Community</h1>
     <div class="items" id="live-list"></div>
     <div class="field"><span>Show</span><div class="pick" id="community-tab" data-options="top:Most played,new:Newest,mine:My worlds"></div></div>
-    <div class="items"><button class="item" id="go-publish">Publish a world</button><button class="item" id="go-inbox">Messages<span class="value" id="unread"></span></button><button class="item" id="go-friends">Friends<span class="value" id="friend-requests"></span></button><button class="item" id="go-me">Your profile</button></div>
+    <div class="items"><button class="item" id="go-notices"><span><svg class="bell" viewBox="0 0 14 16" aria-hidden="true"><path d="M7 0a1.2 1.2 0 0 1 1.2 1.3A5 5 0 0 1 12 6.2V11l2 2v1H0v-1l2-2V6.2a5 5 0 0 1 3.8-4.9A1.2 1.2 0 0 1 7 0zm-2 15h4a2 2 0 0 1-4 0z"/></svg>Notifications</span><span class="value live" id="notice-count"></span></button><button class="item" id="go-publish">Publish a world</button><button class="item" id="go-inbox">Messages<span class="value" id="unread"></span></button><button class="item" id="go-friends">Friends<span class="value" id="friend-requests"></span></button><button class="item" id="go-me">Your profile</button></div>
     <div class="items" id="community-list"></div>
     <p id="community-status" class="status" hidden></p>
     <div class="items"><button class="item" id="community-more" hidden>More</button></div>
@@ -140,6 +141,12 @@
     <div id="credits-part" hidden><h2 class="status">Credits waiting</h2><div class="items" id="credit-list"></div></div>
     <div class="items" id="profile-worlds"></div>
     <p class="status" id="profile-none" hidden>No worlds yet</p>
+  </section>
+
+  <section id="notices" class="screen" data-nav hidden>
+    <h1>Notifications</h1>
+    <div class="items" id="notice-list"></div>
+    <p class="status" id="notices-none" hidden>Nothing yet</p>
   </section>
 
   <section id="friends" class="screen" data-nav hidden>
@@ -353,7 +360,7 @@
 
   const ago = (ms) => {
     const m = Math.round((Date.now() - ms) / 60000);
-    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : Math.round(m / 1440) === 1 ? "yesterday" : `${Math.round(m / 1440)} days ago`;
   };
   const el = (tag, props, ...children) => {
     const node = Object.assign(document.createElement(tag), props);
@@ -540,6 +547,7 @@
     enter();
   };
   document.querySelector("[data-to=settings]").addEventListener("click", refreshAccount);
+  $("go-community").addEventListener("click", refreshAccount);
 
   // ---------- Community: the list, a world's screen, and publishing one of this computer's worlds ----------
   async function communityCall(action, body) {
@@ -881,12 +889,43 @@
       showFriend();
     });
 
-  /** Messages: plain text, read only by the two people in a conversation. */
+  /** Messages: plain text, read only by the two people in a conversation. Notifications count beside them. */
   async function showUnread() {
-    if (!account) return void ($("unread").textContent = "");
-    const { unread } = await communityCall("unread").catch(() => ({ unread: 0 }));
+    if (!account) return void ($("unread").textContent = $("notice-count").textContent = "");
+    const { unread, notifications } = await communityCall("unread").catch(() => ({ unread: 0, notifications: 0 }));
     $("unread").textContent = unread ? String(unread) : "";
+    $("notice-count").textContent = notifications ? `${notifications} new` : "";
   }
+  /** What a notice says, and where it leads. */
+  const NOTICES = {
+    fork: (n) => [`${n.actor} forked your world`, n.world.title, () => openWorld(n.world)],
+    comment: (n) => [`${n.actor} commented`, n.world.title, () => openWorld(n.world)],
+    message: (n) => [`${n.actor} sent you a message`, "", () => openThread(n.actor)],
+    credit: (n) => [`${n.actor} credited you`, n.world.title, () => openProfile(account.username)],
+    "friend-request": (n) => [`${n.actor} wants to be friends`, "", () => openProfile(n.actor)],
+    "friend-accepted": (n) => [`${n.actor} is your friend now`, "", () => openProfile(n.actor)],
+  };
+  $("go-notices").onclick = () =>
+    needAccount(async () => {
+      show("notices");
+      let list = [];
+      try {
+        list = await communityCall("notifications");
+      } catch (e) {
+        $("error").textContent = e.message;
+      }
+      $("notices-none").hidden = list.length > 0;
+      $("notice-list").replaceChildren(
+        ...list.map((n) => {
+          const [what, world, go] = NOTICES[n.kind](n);
+          const b = el("button", { className: "item pictured", onclick: go }, el("span", { className: "what", textContent: what }, el("small", { textContent: world })), el("span", { className: n.read ? "value" : "value live", textContent: n.read ? ago(n.at) : "New" }));
+          b.dataset.key = `notice-${n.id}`;
+          return b;
+        }),
+      );
+      enter();
+      if (list.some((n) => !n.read)) await communityCall("read-notifications").then(showUnread, () => {});
+    });
   $("go-inbox").onclick = () =>
     needAccount(async () => {
       show("inbox");
