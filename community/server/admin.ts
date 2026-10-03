@@ -37,7 +37,8 @@ const HEADERS = {
   "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; font-src ${SITE}; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
   "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
-  "referrer-policy": "no-referrer",
+  // With no-referrer, Chrome sends Origin: null on the panel's own form posts, which the origin check then refuses.
+  "referrer-policy": "same-origin",
 };
 const html = (body: string, status = 200, headers: Record<string, string> = {}) => new Response(body, { status, headers: { ...HEADERS, ...headers } });
 const back = (to: string, headers: Record<string, string> = {}) => new Response(null, { status: 303, headers: { ...HEADERS, location: to, ...headers } });
