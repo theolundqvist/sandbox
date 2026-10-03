@@ -6,7 +6,7 @@ import { copyWorld } from "./archive";
 const from = process.env.SANDBOX_PLAYTEST_FROM!;
 const into = process.env.SANDBOX_DATA!;
 const live = JSON.parse(await Bun.file(join(from, "config.json")).text());
-copyWorld(from, into);
+await copyWorld(from, into);
 const token = () => crypto.randomUUID().replaceAll("-", "");
 // Open rules, so the playtest reloads any mod; nobody else's key works here, and no invite is ever handed out.
 writeFileSync(join(into, "config.json"), JSON.stringify({ name: live.name, rules: "open", start: live.start, invite: token(), hostKey: token() }));

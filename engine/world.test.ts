@@ -138,7 +138,7 @@ test("every result, answered or refused, sends the agent back to wait_for_chat, 
 });
 
 test("a file read ends with the file's last byte, so an agent can pipe what follows the hash line into write_file", async () => {
-  await tool("write_file", { path: "mods/basics/note.txt", content: "one\ntwo\n" });
+  edit("mods/basics/note.txt", "one\ntwo\n");
   const read = await tool("read_file", { path: "mods/basics/note.txt" });
   expect(read.status).toBe(200);
   expect(read.text).toMatch(/^hash: \S+\none\ntwo\n$/);

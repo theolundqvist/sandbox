@@ -1,7 +1,7 @@
 // Free voice against real Postgres and a stand-in ElevenLabs: who may use it, and that no install and no day goes over its money, even all at once.
 import { SQL } from "bun";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { startStack } from "./stack";
+import { startStack, type CommunityStack } from "./stack";
 
 const calls: string[] = [];
 let failing = false;
@@ -20,7 +20,7 @@ const elevenLabs = Bun.serve({
   },
 });
 
-let stack: Awaited<ReturnType<typeof startStack>>;
+let stack: CommunityStack;
 let sql: SQL;
 beforeAll(async () => {
   stack = await startStack("https://sandbox.example", { ELEVENLABS_URL: elevenLabs.url.origin, ELEVENLABS_API_KEY: "test-key" });

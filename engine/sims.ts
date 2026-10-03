@@ -23,6 +23,7 @@ export type SimsEvents = {
   clientMods(game: string | null): { name: string; url: string }[];
   log(mod: string, level: string, text: string): void;
   fault(mod: string, error: string): void;
+  unavailable(reason: string): void;
   /** The mod whose reload a game's process crashed right after, which is undone as a crashed world's would be. */
   reloadedJustBefore(game: string): string | undefined;
   /** The hub's changes, which the world's own save and timelapse record. */
@@ -79,6 +80,7 @@ export class Sims {
         },
         log: (mod, level, text) => this.on.log(mod, level, text),
         fault: (mod, error) => this.on.fault(mod, error),
+        unavailable: (reason) => this.on.unavailable(reason),
         // A mod's request from a game the player already left is stale: they are elsewhere now.
         enter: (player, to) => void (this.at.has(player) && this.at.get(player) === game && this.enter(player, to)),
         crashSuspect: () => (game === null ? undefined : this.on.reloadedJustBefore(game)),

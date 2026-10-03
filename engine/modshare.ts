@@ -2,6 +2,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { unzipSync, zipSync } from "fflate";
+import { install as installPackage } from "./box/packages";
 
 export const COMMUNITY = process.env.SANDBOX_COMMUNITY ?? "https://sandbox.api.lundqvistliss.com";
 const MOD_NAME = /^[a-z][a-z0-9-]{0,31}$/;
@@ -205,13 +206,7 @@ export function communityClient(secretsPath: string | undefined, worldKey: () =>
       const res = await fetch(m.zip, { signal: AbortSignal.timeout(120_000) }).catch(() => null);
       if (!res?.ok) throw new Error("Couldn't download that mod. Try again.");
       const packages = Object.entries(m.packages ?? {}).map(([k, v]) => `${k}@${v}`);
-      for (const spec of packages) {
-        const proc = Bun.spawn([process.execPath, "add", spec], { cwd: root, stdout: "pipe", stderr: "pipe", env: { ...process.env, BUN_BE_BUN: "1" } });
-        const timer = setTimeout(() => proc.kill(), 120_000);
-        const [err, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
-        clearTimeout(timer);
-        if (code) throw new Error(`Installing ${spec} for it failed:\n${err.trim().slice(-1000)}`);
-      }
+      for (const spec of packages) await installPackage(root, spec);
       const files = unpackMod(await res.bytes(), root, name);
       writeFileSync(join(root, "mods", name, ORIGIN), `${JSON.stringify({ id: m.id, name: m.name, title: m.title, author: m.author, link: m.link, added: new Date().toISOString() }, null, 2)}\n`);
       const token = install();

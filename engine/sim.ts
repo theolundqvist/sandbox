@@ -2,10 +2,9 @@ import { Database } from "bun:sqlite";
 import { existsSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { Body, Entity, ModDb, Player, ServerHooks, ServerMod } from "./api";
+import { installNetwork } from "./box/network";
 import { PhysicsIndex } from "./physics";
 import { GameWorld, modDb, type Diff, type Tick } from "./world";
-
-declare var self: Worker;
 
 type Ground = (x: number, z: number, fromY: number) => number | null;
 /** `game` is the game the mod belongs to, or null for a mod every game shares. */
@@ -31,9 +30,8 @@ let spectating = false;
 let game: string | null = null;
 let games = new Set<string>();
 
-/** Test runs and games run in a child process, which frees everything when it exits; the hub runs in a worker. */
-const child = Bun.isMainThread;
-const post = (msg: any) => (child ? process.send!(msg) : self.postMessage(msg));
+const post = (msg: object) => process.send!(msg);
+const network = installNetwork(post);
 
 for (const level of ["log", "info", "warn", "error"] as const) {
   console[level] = (...args: any[]) =>
@@ -44,7 +42,7 @@ for (const level of ["log", "info", "warn", "error"] as const) {
 let dbDir = "";
 const writers = new Map<string, ModDb>();
 const readers = new Map<string, ModDb>();
-/** Every open database, closed before the host terminates this worker. */
+/** Every open database, closed before the host retires this process. */
 const handles: Database[] = [];
 /** Under the host's 2 s freeze limit, so a locked database throws in the mod instead of getting it reverted as frozen. */
 const BUSY_MS = 1000;
@@ -450,7 +448,8 @@ function stream(p: Player, d: Diff, full: boolean, eye: Vec | undefined, catchUp
   return out;
 }
 
-function flush() {
+/** A start's first tick goes out even when nothing changed: the world process starts the typecheck's warm-up on the hub's first tick, idle or not. */
+function flush(initial: boolean) {
   const d = world.delta();
   for (const id in d.set) physics.update(+id, world.entities.get(+id));
   for (const id in d.unset) physics.update(+id, world.entities.get(+id));
@@ -471,7 +470,7 @@ function flush() {
   events = [];
   movedBy.clear();
   for (const id in made) if (!world.entities.has(+id)) creators.delete(+id);
-  if (Object.keys(d.set).length || Object.keys(d.unset).length || d.removed.length || Object.keys(outs).length) post({ t: "tick", diff: d, nextId: world.nextId, outs, made });
+  if (initial || Object.keys(d.set).length || Object.keys(d.unset).length || d.removed.length || Object.keys(outs).length) post({ t: "tick", diff: d, nextId: world.nextId, outs, made });
   made = {};
 }
 
@@ -482,7 +481,7 @@ function tick(dt: number) {
   Atomics.add(beat, 0, 1);
 }
 
-/** A game's process shares its heartbeat with the world process through a file: memory-mapped, or on Windows, where Bun can't map one, copied in by a thread of its own and once more as the process exits. */
+/** A simulation's process shares its heartbeat with the world process through a file: memory-mapped, or on Windows, where Bun can't map one, copied in by a thread of its own and once more as the process exits. */
 function shareBeat(file: string) {
   if (process.platform !== "win32") {
     const mapped = Bun.mmap(file);
@@ -500,7 +499,7 @@ let loop: ReturnType<typeof setInterval> | undefined;
 const receive = async (msg: any) => {
   switch (msg.t) {
     case "init": {
-      beat = msg.beatFile ? shareBeat(msg.beatFile) : new Int32Array(msg.beat ?? new SharedArrayBuffer(8));
+      beat = msg.beatFile ? shareBeat(msg.beatFile) : new Int32Array(2);
       game = msg.game ?? null;
       games = new Set(msg.games ?? []);
       world.nextId = msg.nextId;
@@ -523,6 +522,7 @@ const receive = async (msg: any) => {
         }
       }
       if (trial) return runTrial();
+      let firstTick = true;
       let last = performance.now();
       let times: number[] = [];
       let engine: number[] = [];
@@ -532,7 +532,8 @@ const receive = async (msg: any) => {
         const before = modMs();
         tick(Math.min((now - last) / 1000, 0.25));
         last = now;
-        flush();
+        flush(firstTick);
+        firstTick = false;
         for (const w of walks.splice(0)) post({ t: "answer", id: w.id, value: walk(w.from, w.to, w.body ?? {}) });
         times.push(performance.now() - now);
         engine.push(times.at(-1)! - (modMs() - before));
@@ -691,10 +692,10 @@ function blocker(pos: number[], dir: [number, number], radius: number, height: n
 /** What arrives while init still loads mods waits for it, so no mod misses a player's join. */
 let initialized: Promise<unknown> = Promise.resolve();
 const deliver = (msg: any) => (msg.t === "init" ? (initialized = receive(msg).catch(() => {})) : initialized.then(() => receive(msg)));
-if (child) {
-  process.on("message", deliver);
-  process.on("disconnect", () => process.exit());
-} else self.onmessage = ({ data }) => deliver(data);
+process.on("message", (msg) => {
+  if (!network.receive(msg)) void deliver(msg);
+});
+process.on("disconnect", () => process.exit());
 
 /** Every live mod runs with the candidate swapped in, but only the candidate's errors fail the test. */
 function runTrial() {
@@ -703,7 +704,7 @@ function runTrial() {
   arrive(bot, false, undefined);
   for (let i = 0; i < 20; i++) {
     tick(0.05);
-    flush();
+    flush(false);
   }
   depart(bot, false);
   try {

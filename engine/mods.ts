@@ -1,6 +1,9 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { devNull } from "node:os";
+import { join, relative, resolve, sep } from "node:path";
+import { boxRefusal } from "./box";
+import { buildMod, buildSeed, type BuildSpent } from "./box/build";
+import { Checker, type Overlay, type Spent } from "./box/checker";
 import { declaredGame } from "./modgame";
 import type { RunningMod } from "./simhost";
 import type { Sims } from "./sims";
@@ -22,8 +25,11 @@ export type ModEvents = {
 };
 
 const MOD_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+const SEEDS = join(import.meta.dir, "seed/mods");
 /** Reloads of different mods that run at once; each test run loads every server mod in its own process. */
 const PARALLEL_RELOADS = 2;
+/** The last line of a reload's report when its typecheck waited for the checker to start or warm up, as the first reload after the world starts does. */
+const WARMING = "Warming up the type checker, first reload takes a few seconds";
 const KEY_CODE = /(?:[=!]==?\s*|\.has\(\s*|case\s+)["'`](Key[A-Z]|Digit[0-9]|F[0-9]{1,2}|Arrow(?:Up|Down|Left|Right)|Tab|Enter|Escape|Backquote|Backspace|CapsLock|Minus|Equal|Bracket(?:Left|Right)|Semicolon|Quote|Comma|Period|Slash|Backslash|Numpad\w+|(?:Control|Alt|Meta)(?:Left|Right)|Space|Shift(?:Left|Right)?)["'`]/g;
 const MENU_TAB = /menuTab\(\s*["'`]([^"'`]+)["'`]/g;
 const USES = /\buse(?:<.*?>)?\(\s*["'`]([a-z][a-z0-9-]{0,31})["'`]|["'`]\.\.\/([a-z][a-z0-9-]{0,31})\//g;
@@ -38,6 +44,13 @@ export const hasGit = (() => {
   if (process.platform === "darwin" && git === "/usr/bin/git") return Bun.spawnSync(["xcode-select", "-p"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
   return !!git;
 })();
+/**
+ * How the engine runs git on a world's history. A world may be a stranger's and bring its own .git, which import cuts down to history alone; on top of that, no hooks, no fsmonitor,
+ * and none of this computer's git config, whose filters, attributes or programs a world's .gitattributes could otherwise set off.
+ * An empty core.fsmonitor turns it off on every git: before 2.36 git takes the setting for a command, and "false" would run a program of that name on each index read.
+ */
+export const GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "core.symlinks=false"];
+export const GIT_ENV = { PATH: process.env.PATH ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: devNull, GIT_TERMINAL_PROMPT: "0", ...(process.env.SYSTEMROOT && { SYSTEMROOT: process.env.SYSTEMROOT }) };
 const sameFile = (a: string, b: string) => existsSync(a) && existsSync(b) && readFileSync(a).equals(readFileSync(b));
 const unique = (xs: Iterable<string>) => [...new Set(xs)];
 
@@ -52,22 +65,6 @@ function scan(dir: string): Source {
     owns: unique([...(text["server.ts"]?.match(OWNS)?.[1] ?? "").matchAll(/["'`]([^"'`]+)["'`]/g)].map((m) => m[1]!)),
   };
 }
-// Run by bun itself: its script asks for node, which players may not have.
-const TSC = join(import.meta.dir, "../node_modules/typescript/bin/tsc");
-
-/** Checks only these mods' files and what they import, which reports the same errors in them as checking the whole tree. */
-async function tsc(root: string, mods: string[]) {
-  const dir = mkdtempSync(join(tmpdir(), "sandbox-tsconfig-"));
-  try {
-    writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ extends: join(root, "tsconfig.json"), include: mods.map((mod) => join(root, "mods", mod, "**/*.ts")) }));
-    const proc = Bun.spawn([process.execPath, TSC, "-p", join(dir, "tsconfig.json"), "--pretty", "false"], { cwd: root, stdout: "pipe", stderr: "pipe" });
-    const lines = (await new Response(proc.stdout).text()).split("\n");
-    await proc.exited;
-    return lines;
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
 
 export class Mods {
   running = new Map<string, Mod>();
@@ -79,16 +76,60 @@ export class Mods {
   private commits: Promise<unknown> = Promise.resolve();
   sims!: Pick<Sims, "trial" | "apply" | "hasGame">;
   private awaitingKeys = new Map<string, () => void>();
+  /**
+   * Why mod code can't run in the sandbox on this computer, or null when it can; then only the engine's unchanged seed mods run.
+   * Asked afresh each time: a sandbox that fails partway stays failed, and every reload after that gets the same sentence.
+   */
+  private get refusal() {
+    return boxRefusal();
+  }
+  /** Server builds this process made from the engine's own seed files, the only ones a computer without the sandbox runs. */
+  private trusted = new Set<string>();
+  /** The world's typecheck, kept running from its warm-up or first reload until close. */
+  private checker: Checker;
+  private closed = false;
+  private warmUpStarted = false;
 
   constructor(
     private root: string,
     private buildDir: string,
     private statePath: string,
     private events: ModEvents,
-  ) {}
+  ) {
+    this.checker = new Checker(root);
+  }
+
+  /** Stops the world's typecheck; reloads after this are refused. */
+  close() {
+    this.closed = true;
+    return this.checker.close();
+  }
+
+  /**
+   * Brings the world's typecheck up to date with every mod and package, starting it afresh after an install replaced the packages; resolves once it is warm, so the next reload doesn't pay for that.
+   * Rejects when it couldn't start or check, its config included; the mods' own errors don't count.
+   */
+  warm() {
+    return this.refusal ? Promise.resolve() : this.checker.warm();
+  }
+
+  /** Warm-up failure is reported here; reloads still require a successful check. */
+  startWarmUp() {
+    if (this.warmUpStarted || this.closed) return;
+    this.warmUpStarted = true;
+    void this.warm().catch((e) => {
+      if (!this.closed) this.events.feed(`The typecheck couldn't start; each reload tries it again and is refused until it runs:\n${e instanceof Error ? e.message : String(e)}`, "error");
+    });
+  }
 
   list(): RunningMod[] {
-    return [...this.running].map(([name, m]) => ({ name, id: m.id, server: m.build.server, game: m.build.game ?? null }));
+    return [...this.running].map(([name, m]) => this.runAs(name, m.id, m.build));
+  }
+
+  /** A build as the simulations run it, marked trusted only when this process built it from the engine's seed files. */
+  private runAs(name: string, id: number, build: Build | undefined): RunningMod {
+    const server = build?.server ?? null;
+    return { name, id, server, game: build?.game ?? null, ...(server !== null && this.trusted.has(server) && { trusted: true as const }) };
   }
 
   gameOf(name: string) {
@@ -106,25 +147,84 @@ export class Mods {
     return existsSync(dir) ? readdirSync(dir).filter((n) => MOD_NAME.test(n)).sort() : [];
   }
 
-  /** Restores exactly the builds that were live at shutdown; a fresh world builds its seed mods. */
+  /**
+   * Restores exactly the builds that were live at shutdown; a fresh world builds its seed mods.
+   * A saved build is used only when its server file is a plain file inside build/; any other (an imported world with doctored state) is built again from the mod's files.
+   * Without the sandbox only the engine's unchanged seed mods load, built afresh from the engine's own files, since the saved builds are the world's.
+   * Neither waits for the typecheck: the world opens and players join at once, its warm-up starts when the hub first ticks (startWarmUp), and the first reload waits for the warm-up and says so.
+   */
   async loadAll(owners: Record<string, string>) {
-    if (existsSync(this.statePath)) {
-      // An imported world names its server builds relative to build/, wherever it was exported from.
-      const here = (b: Build) => ({ ...b, server: b.server && resolve(this.buildDir, b.server) });
-      const saved: Record<string, Mod> = JSON.parse(readFileSync(this.statePath, "utf8"));
-      this.running = new Map(Object.entries(saved).map(([name, m]) => [name, { ...m, build: here(m.build), previous: m.previous.map(here), source: m.source ?? scan(join(this.root, "mods", name)) }]));
-      this.nextId = Math.max(0, ...[...this.running.values()].map((m) => m.id)) + 1;
+    const refusal = this.refusal;
+    if (refusal) this.events.feed(refusal, "error");
+    await this.restore(owners, refusal);
+  }
+
+  private async restore(owners: Record<string, string>, refusal: string | null) {
+    if (!existsSync(this.statePath)) {
+      for (const name of this.names()) {
+        if (refusal && !this.unchangedSeed(name)) continue;
+        const result = await this.build(name);
+        if (typeof result === "string") this.events.feed(`${name} failed to load: ${result}`, "error");
+        else this.running.set(name, { id: this.nextId++, author: owners[name] ?? "world", version: 1, build: result, previous: [], source: scan(join(this.root, "mods", name)) });
+      }
+      this.save();
       return;
     }
-    for (const name of this.names()) {
+    const saved: Record<string, Mod> = JSON.parse(readFileSync(this.statePath, "utf8"));
+    const entries = Object.entries(saved).filter(([name, m]) => MOD_NAME.test(name) && typeof m?.id === "number" && typeof m.build === "object" && m.build);
+    this.nextId = Math.max(0, ...entries.map(([, m]) => m.id)) + 1;
+    let rebuilt = false;
+    for (const [name, m] of entries) {
+      const build = refusal ? null : this.restored(m.build);
+      const previous = refusal || !Array.isArray(m.previous) ? [] : m.previous.flatMap((b) => this.restored(b) ?? []);
+      if (build) {
+        this.running.set(name, { ...m, build, previous, source: m.source ?? scan(join(this.root, "mods", name)) });
+        continue;
+      }
+      if (refusal && !this.unchangedSeed(name)) continue;
+      rebuilt = true;
       const result = await this.build(name);
       if (typeof result === "string") this.events.feed(`${name} failed to load: ${result}`, "error");
-      else this.running.set(name, { id: this.nextId++, author: owners[name] ?? "world", version: 1, build: result, previous: [], source: scan(join(this.root, "mods", name)) });
+      else this.running.set(name, { ...m, build: result, previous, source: scan(join(this.root, "mods", name)) });
     }
-    this.save();
+    if (rebuilt) this.save();
+  }
+
+  /** A saved build the simulations may be given: its server a plain file inside build/, named by its real path (an imported world names it relative to build/), and its client a /build/ path. Null for anything else. */
+  private restored(build: Build): Build | null {
+    const { server, client } = build;
+    if (client !== null && (typeof client !== "string" || !client.startsWith("/build/") || client.split("/").includes(".."))) return null;
+    if (build.game !== undefined && typeof build.game !== "string") return null;
+    if (server === null) return build;
+    if (typeof server !== "string") return null;
+    try {
+      const path = realpathSync(resolve(this.buildDir, server));
+      return path.startsWith(realpathSync(this.buildDir) + sep) && lstatSync(path).isFile() ? { ...build, server: path } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Whether a mod's folder is one of the engine's seed mods exactly, file for file and byte for byte. What the world's own seeded.json says doesn't count. */
+  private unchangedSeed(name: string) {
+    const seed = join(SEEDS, name);
+    const mine = join(this.root, "mods", name);
+    if (!MOD_NAME.test(name) || !existsSync(seed) || !existsSync(mine) || !lstatSync(mine).isDirectory()) return false;
+    const theirs = readdirSync(seed, { recursive: true, encoding: "utf8" }).sort();
+    const ours = readdirSync(mine, { recursive: true, encoding: "utf8" }).sort();
+    return (
+      theirs.length === ours.length &&
+      theirs.every((file, i) => {
+        if (file !== ours[i]) return false;
+        const stat = lstatSync(join(mine, file));
+        return lstatSync(join(seed, file)).isDirectory() ? stat.isDirectory() : stat.isFile() && readFileSync(join(seed, file)).equals(readFileSync(join(mine, file)));
+      })
+    );
   }
 
   private save() {
+    // Without the sandbox the world runs a cut-down set of mods; its saved state stays as it was, for a computer that has one.
+    if (this.refusal) return;
     writeFileSync(this.statePath, JSON.stringify(Object.fromEntries(this.running), null, 2));
   }
 
@@ -196,20 +296,35 @@ export class Mods {
       ms[stage] = Math.round(now - mark);
       mark = now;
     };
+    // Where the typecheck's and the build's time went, for the reload's record; the typecheck's also tells whether it waited for the checker to warm up.
+    const checked: Spent = { wait: 0, run: 0, ipc: 0, warming: false };
+    const built: BuildSpent = { boot: 0, bundle: 0, box: 0 };
     const reject = (stage: string, report: string) => {
       if (ms[stage] === undefined) lap(stage);
       this.events.record("reload", who, { mod: name, ok: false, stage, ms: { ...ms, total: Math.round(performance.now() - started) }, report: report.slice(0, 500) });
-      return this.fail(name, who, report);
+      // A reload that waited for the typecheck to warm up says so, whatever came of it; a refusal stays the one sentence.
+      return this.fail(name, who, checked.warming && stage !== "sandbox" ? `${report}\n${WARMING}` : report);
     };
+    // A sandbox that fails partway refuses this reload, and every later one but an unchanged seed mod's, with the same sentence as one that never worked.
+    const refused = () => {
+      const refusal = this.refusal;
+      return refusal && !this.unchangedSeed(name) ? reject("sandbox", refusal) : null;
+    };
+    const refusedNow = refused();
+    if (refusedNow) return refusedNow;
     // Which game a mod belongs to is read from its files, so a bad or unknown one fails before anything builds.
     const named = this.gameNamedBy(name);
     if ("error" in named) return reject("game", `${named.error} Nothing changed.`);
     if (named.game && !this.sims.hasGame(named.game))
       return reject("game", `${name} names the game ${named.game}, which doesn't exist. Create it with create_game first (list_games shows the games); nothing changed.`);
     // The typecheck runs alongside the build and the test run, and gates going live all the same.
-    const typecheck = this.typecheck(name).then((result) => ((ms.typecheck = Math.round(performance.now() - started)), result));
+    const typecheck = this.typecheck(name, checked).then((result) => {
+      Object.assign(ms, { typecheck: Math.round(performance.now() - started), checkWait: Math.round(checked.wait), checkRun: Math.round(checked.run), checkIpc: Math.round(checked.ipc) });
+      return result;
+    });
     const typeErrors = async () => {
-      const { own, dependents } = await typecheck;
+      const { own, dependents, error } = await typecheck;
+      if (error) return refused() ?? reject("typecheck", `The typecheck couldn't run, nothing changed:\n${error}`);
       if (own) return reject("typecheck", `Type errors, nothing changed:\n${own}`);
       if (dependents)
         return reject(
@@ -218,29 +333,31 @@ export class Mods {
         );
     };
     const source = scan(dir);
-    const build = await this.build(name);
-    if (typeof build === "string") return (await typeErrors()) ?? reject("build", `Build failed, nothing changed:\n${build}`);
+    const build = await this.build(name, built);
+    if (typeof build === "string") return refused() ?? (await typeErrors()) ?? reject("build", `Build failed, nothing changed:\n${build}`);
     const game = build.game ?? null;
     const moved = game !== (current?.build.game ?? null);
     // Players' games keep the client they have, and the simulation the server it runs, when this change leaves it byte for byte the same.
     if (build.client && current?.build.client && sameFile(join(this.buildDir, build.client.slice("/build/".length)), join(this.buildDir, current.build.client.slice("/build/".length)))) build.client = current.build.client;
     if (build.server && current?.build.server && sameFile(build.server, current.build.server)) build.server = current.build.server;
     lap("build");
+    Object.assign(ms, { buildBoot: Math.round(built.boot), buildBundle: Math.round(built.bundle), buildBox: Math.round(built.box) });
 
     const id = current?.id ?? this.nextId++;
     // A mod that moved to another game runs in other simulations, so it is tried and swapped even when its server is the same.
     const serverChanged = build.server !== current?.build.server || moved;
-    const trial = build.server && serverChanged ? this.sims.trial({ name, id, server: build.server, game }) : null;
+    const trialStarted = performance.now();
+    const trial = build.server && serverChanged ? this.sims.trial(this.runAs(name, id, build)).then((error) => ((ms.trialRun = Math.round(performance.now() - trialStarted)), error)) : null;
     const typeError = await typeErrors();
     if (typeError) return typeError;
     const error = await trial;
-    if (error) return reject("trial", `Test run against a copy of the live world failed, nothing changed:\n${error}`);
+    if (error) return refused() ?? reject("trial", `Test run against a copy of the live world failed, nothing changed:\n${error}`);
     lap("trial");
 
     const version = (current?.version ?? 0) + 1;
     this.running.set(name, { id, author: current?.author ?? author, version, build, previous: current ? [...current.previous, current.build].slice(-5) : [], keys: current?.keys, source, at: Date.now() });
     this.save();
-    const loadError = serverChanged ? await this.sims.apply({ name, id, server: build.server, game }) : null;
+    const loadError = serverChanged ? await this.sims.apply(this.runAs(name, id, build)) : null;
     lap("apply");
     // A mod that moved to another game leaves the old one's players even when its client stayed the same.
     if ((build.client !== current?.build.client || moved) && this.events.client(name, build.client, game) && build.client) await Promise.race([new Promise<void>((r) => this.awaitingKeys.set(name, r)), Bun.sleep(3000)]);
@@ -252,7 +369,10 @@ export class Mods {
     this.events.record("reload", who, { mod: name, ok: true, version, ms: { ...ms, total }, loadError: loadError?.slice(0, 500) });
     this.events.feed(`${who} reloaded ${name} v${version}`, "ok");
     const warning = loadError ? `\nBut its load hook threw on the live world:\n${loadError}` : "";
-    return { ok: true, report: `${name} v${version} is live ${game ? `in the game ${game}` : "for everyone"} (${total} ms).${warning}${this.overlaps(name)}\nWatch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.` };
+    return {
+      ok: true,
+      report: `${name} v${version} is live ${game ? `in the game ${game}` : "for everyone"} (${total} ms).${warning}${this.overlaps(name)}\nWatch \`logs\` for runtime errors: a mod that keeps throwing, is slow, or freezes the server gets reverted automatically.${checked.warming ? `\n${WARMING}` : ""}`,
+    };
   }
 
   /** A player's game (re)loaded these mods, which declared these keys. */
@@ -318,7 +438,7 @@ export class Mods {
     const build = this.running.get(name)?.build;
     // Rolled back, the mod holds the build it went back to, or the one it was unloaded from; either names the game it runs in.
     const game = mod.build.game ?? null;
-    void this.sims.apply({ name, id: mod.id, server: build?.server ?? null, game });
+    void this.sims.apply({ ...this.runAs(name, mod.id, build), game });
     this.events.client(name, build?.client ?? null, game);
   }
 
@@ -341,67 +461,65 @@ export class Mods {
     return mod;
   }
 
-  /** Type errors in the mod itself, and new ones its change causes in live mods that use it (a type import of its files or a use("<name>") call). */
-  private async typecheck(name: string) {
+  /** Type errors in the mod itself, and new ones its change causes in live mods that use it (a type import of its files or a use("<name>") call); error when the typecheck couldn't check them. Its time is added to spent. */
+  private async typecheck(name: string, spent: Spent): Promise<{ own: string; dependents: string; error?: string }> {
+    // Without the sandbox only the engine's seed mods run, which were checked with the engine.
+    if (this.refusal) return { own: "", dependents: "" };
     const users = this.users(name);
-    const errorsIn = (lines: string[], mods: string[]) => lines.filter((line) => mods.some((mod) => line.startsWith(`mods/${mod}/`)));
-    const lines = await tsc(this.root, [name, ...users]);
-    let dependents = errorsIn(lines, users);
-    // Errors those mods have without this change, like their own unfinished edits, are not this change's doing.
-    if (dependents.length) {
-      const before = await this.withoutChange(name);
-      try {
-        const old = new Set(errorsIn(await tsc(before, users), users));
-        dependents = dependents.filter((line) => !old.has(line));
-      } finally {
-        rmSync(before, { recursive: true, force: true });
+    const errorsIn = (diagnostics: string[], mods: string[]) => diagnostics.filter((d) => mods.some((mod) => d.startsWith(`mods/${mod}/`)));
+    try {
+      const diagnostics = await this.checker.check([name, ...users], undefined, spent);
+      let dependents = errorsIn(diagnostics, users);
+      // Errors those mods have without this change, like their own unfinished edits, are not this change's doing.
+      if (dependents.length) {
+        const old = new Set(errorsIn(await this.checker.check(users, await this.accepted(name), spent), users));
+        dependents = dependents.filter((d) => !old.has(d));
       }
+      return { own: errorsIn(diagnostics, [name]).join("\n"), dependents: dependents.join("\n") };
+    } catch (e) {
+      return { own: "", dependents: "", error: e instanceof Error ? e.message : String(e) };
     }
-    return { own: errorsIn(lines, [name]).join("\n"), dependents: dependents.join("\n") };
   }
 
-  /** A scratch copy of the tree's code with this mod as it was last accepted. */
-  private async withoutChange(name: string) {
-    const dir = mkdtempSync(join(tmpdir(), "sandbox-typecheck-"));
-    for (const file of ["api.ts", "tsconfig.json", "package.json"]) if (existsSync(join(this.root, file))) cpSync(join(this.root, file), join(dir, file));
-    // A junction, since a Windows symlink to a folder needs admin rights.
-    if (existsSync(join(this.root, "node_modules"))) symlinkSync(join(this.root, "node_modules"), join(dir, "node_modules"), "junction");
-    for (const file of new Bun.Glob("mods/**/*.ts").scanSync(this.root)) if (!join(file).startsWith(join("mods", name, "/"))) cpSync(join(this.root, file), join(dir, file));
-    if (hasGit) {
-      const git = (...args: string[]) => new Response(Bun.spawn(["git", ...args], { cwd: this.root, stdout: "pipe", stderr: "ignore" }).stdout).text();
-      const files = (await git("ls-tree", "-r", "-z", "--name-only", "HEAD", "--", `mods/${name}`)).split("\0").filter((f) => f.endsWith(".ts"));
-      for (const file of files) {
-        mkdirSync(dirname(join(dir, file)), { recursive: true });
-        writeFileSync(join(dir, file), await git("show", `HEAD:${file}`));
-      }
+  /** This mod's code as it was last accepted, which a typecheck sees in place of its folder: none without a history. */
+  private async accepted(name: string): Promise<Overlay> {
+    const files: Record<string, string> = {};
+    if (!hasGit) return { mod: name, files };
+    // History may be a stranger's, so only its plain .ts files come out.
+    const git = async (args: string[]) => {
+      const proc = Bun.spawn([...GIT, ...args], { cwd: this.root, env: GIT_ENV, stdout: "pipe", stderr: "ignore" });
+      const out = await new Response(proc.stdout).bytes();
+      await proc.exited;
+      return new TextDecoder().decode(out);
+    };
+    const listing = await git(["ls-tree", "-r", "-z", "HEAD", "--", `mods/${name}`]);
+    for (const row of listing.split("\0")) {
+      const [, mode, type, hash, path] = row.match(/^(\d+) (\w+) ([0-9a-f]+)\t(.+)$/s) ?? [];
+      if (type !== "blob" || (mode !== "100644" && mode !== "100755") || !path?.endsWith(".ts") || !path.startsWith(`mods/${name}/`) || path.split("/").includes("..")) continue;
+      files[path] = await git(["cat-file", "blob", hash!]);
     }
-    return dir;
+    return { mod: name, files };
   }
 
   users(name: string) {
     return [...this.running].filter(([other, m]) => other !== name && m.source?.uses.includes(name)).map(([other]) => other);
   }
 
-  private async build(name: string): Promise<Build | string> {
+  /**
+   * Bundles a mod in the sandbox, filling in spent. An unchanged seed mod builds here instead, from the engine's own copy, which is all its build reads: the world's files only count as equal to it.
+   * Without the sandbox only those build, and their server builds are the one kind this process trusts. Whether the sandbox works is read once, so a build is never trusted, nor a changed mod built as its seed, when it fails partway.
+   */
+  private async build(name: string, spent?: BuildSpent): Promise<Build | string> {
     const dir = join(this.root, "mods", name);
+    if (!existsSync(join(dir, "server.ts")) && !existsSync(join(dir, "client.ts"))) return `mods/${name}/ needs a server.ts or a client.ts`;
+    const refusal = this.refusal;
+    const seed = this.unchangedSeed(name);
+    if (refusal && !seed) return refusal;
     const out = join(this.buildDir, name, `${Date.now().toString(36)}`);
-    const result: Build = { server: null, client: null };
-    for (const side of ["server", "client"] as const) {
-      const entry = join(dir, `${side}.ts`);
-      if (!existsSync(entry)) continue;
-      const built = await Bun.build({
-        entrypoints: [entry],
-        outdir: join(out, side),
-        target: side === "server" ? "bun" : "browser",
-        format: "esm",
-        external: side === "client" ? ["three", "three/*"] : [],
-        throw: false,
-      });
-      if (!built.success) return built.logs.map((l) => String(l)).join("\n");
-      const file = built.outputs[0]!.path;
-      result[side] = side === "server" ? file : `/build/${relative(this.buildDir, file).split(sep).join("/")}`;
-    }
-    if (!result.server && !result.client) return `mods/${name}/ needs a server.ts or a client.ts`;
+    const built = seed ? await buildSeed(join(SEEDS, name), out) : await buildMod(this.root, dir, out, spent);
+    if (typeof built === "string") return built;
+    const result: Build = { server: built.server ?? null, client: built.client ? `/build/${relative(this.buildDir, built.client).split(sep).join("/")}` : null };
+    if (refusal && result.server) this.trusted.add(result.server);
     const named = this.gameNamedBy(name);
     if ("error" in named) return named.error;
     if (named.game) result.game = named.game;
@@ -425,7 +543,7 @@ export class Mods {
   /** One at a time: git holds one lock on the index. */
   private commit(name: string, message: string, who: string) {
     if (!hasGit) return;
-    const git = (...args: string[]) => Bun.spawn(["git", ...args], { cwd: this.root, stdout: "ignore", stderr: "ignore" }).exited;
+    const git = (...args: string[]) => Bun.spawn([...GIT, ...args], { cwd: this.root, env: GIT_ENV, stdout: "ignore", stderr: "ignore" }).exited;
     const done = this.commits.then(async () => {
       await git("add", "-A", `mods/${name}`);
       await git("commit", "-q", "-m", message, `--author=${who} <${who}@sandbox>`, "--", `mods/${name}`);

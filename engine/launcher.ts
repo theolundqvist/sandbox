@@ -4,7 +4,7 @@ import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { Server, ServerWebSocket, Subprocess } from "bun";
 import { frontFile } from "./front";
-import { hasGit } from "./mods";
+import { GIT, GIT_ENV, hasGit } from "./mods";
 import { ORIGIN, packMod } from "./modshare";
 import { latencies, openRecord, route, type Recorder } from "./record";
 import type { Config } from "./server";
@@ -592,7 +592,7 @@ function saveShared(id: string, next: Shared | null) {
 }
 const COMMUNITY_ID = /^[a-z0-9]{12}$/;
 const ENGINE_VERSION =
-  process.env.SANDBOX_VERSION ?? ((hasGit && Bun.spawnSync(["git", "rev-parse", "--short", "HEAD"], { cwd: ENGINE, stdout: "pipe", stderr: "ignore" }).stdout.toString().trim()) || "dev");
+  process.env.SANDBOX_VERSION ?? ((hasGit && Bun.spawnSync([...GIT, "rev-parse", "--short", "HEAD"], { cwd: ENGINE, env: GIT_ENV, stdout: "pipe", stderr: "ignore" }).stdout.toString().trim()) || "dev");
 
 async function community(path: string, init?: RequestInit) {
   const res = await fetch(`${COMMUNITY}${path}`, { ...init, signal: AbortSignal.timeout(init?.body ? 300_000 : 15_000) }).catch(() => null);
@@ -636,6 +636,13 @@ async function download(id: unknown, trust: boolean, hosting: boolean) {
   return local;
 }
 
+/** What this launcher holds that no shared world may carry: its menu and relay keys, Community owner tokens, the speech key, the free voice install token, and its environment's keys, tokens and passwords, which the archive worker can't see. The worker checks for them and never names what it found. */
+function launcherSecrets() {
+  const env = Object.entries(process.env).flatMap(([name, value]) => (/KEY|TOKEN|SECRET|PASS|AUTH|CREDENTIAL/i.test(name) && value && value.length >= 8 ? [value] : []));
+  const owners = Object.values(sharedWorlds()).map((s) => s.ownerToken);
+  return [state.hostKey, state.relayToken, secrets().voice?.key, secrets().install?.token, ...owners, ...env].filter((x): x is string => !!x);
+}
+
 /**
  * Publishing goes through the desktop app, which alone holds the account's session: this launcher packs a world and its pictures (stage), uploads them to the URLs Community signed (upload), then remembers where the world went (published).
  * The pack is the world's export without what its players did and said, with a cover and the timelapse's clip.
@@ -650,14 +657,10 @@ async function stagePublish(body: any) {
   const before = sharedWorlds()[body.id] ?? {};
   // An update without a new picture keeps the one Community has.
   if (!cover && !before.id) throw new Error("This world has no picture yet. Host it once, or share it from the game with Current view.");
-  const { zip } = await archive({ t: "pack", dir: join(WORLDS, body.id), community: true });
-  const files: Record<string, { bytes: Uint8Array<ArrayBuffer>; type: string }> = { zip: { bytes: zip, type: "application/zip" } };
-  if (cover) files.cover = { bytes: cover, type: "image/jpeg" };
   const timelapse = body.timelapse !== false;
-  if (body.clip && timelapse) files.clip = { bytes: Buffer.from(String(body.clip), "base64"), type: "video/webm" };
+  const clip = body.clip && timelapse ? Buffer.from(String(body.clip), "base64") : null;
   // A gallery sent, even an empty one, replaces the one Community has; none sent keeps it.
-  const gallery = Array.isArray(body.gallery) ? body.gallery.slice(0, 8).map((g: unknown) => new Uint8Array(Buffer.from(String(g), "base64"))) : null;
-  gallery?.forEach((bytes: Uint8Array<ArrayBuffer>, i: number) => (files[`gallery${i}`] = { bytes, type: "image/jpeg" }));
+  const gallery: Uint8Array<ArrayBuffer>[] | null = Array.isArray(body.gallery) ? body.gallery.slice(0, 8).map((g: unknown) => new Uint8Array(Buffer.from(String(g), "base64"))) : null;
   const own = config(body.id);
   const details = {
     title: String(body.title ?? "").trim() || own.name,
@@ -670,8 +673,13 @@ async function stagePublish(body: any) {
     mods: Object.keys(readJson(join(WORLDS, body.id, "mods.json"))).length,
     timelapse,
   };
+  const { zip } = await archive({ t: "pack", dir: join(WORLDS, body.id), community: true, secrets: launcherSecrets(), publicContent: [JSON.stringify(details), ...(cover ? [cover] : []), ...(clip ? [clip] : []), ...(gallery ?? [])] });
+  const files: Record<string, { bytes: Uint8Array<ArrayBuffer>; type: string }> = { zip: { bytes: zip, type: "application/zip" } };
+  if (cover) files.cover = { bytes: cover, type: "image/jpeg" };
+  if (clip) files.clip = { bytes: clip, type: "video/webm" };
+  gallery?.forEach((bytes, i) => (files[`gallery${i}`] = { bytes, type: "image/jpeg" }));
   const sizes: Record<string, number | number[]> = Object.fromEntries(Object.entries(files).filter(([k]) => !k.startsWith("gallery")).map(([k, f]) => [k, f.bytes.length]));
-  if (gallery) sizes.gallery = gallery.map((g: Uint8Array) => g.length);
+  if (gallery) sizes.gallery = gallery.map((g) => g.length);
   const stage = { details, sizes, community: before.id ?? null };
   staged.set(body.id, { files, stage, picked: !!body.cover, timelapse });
   return stage;

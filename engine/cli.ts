@@ -2,8 +2,9 @@ import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { install } from "./box/packages";
 import { download, EgressError } from "./egress";
-import { hasGit, type Mods } from "./mods";
+import { GIT, GIT_ENV, hasGit, type Mods } from "./mods";
 import { brief, type Recorder } from "./record";
 import type { GameCard } from "./games";
 import type { Sims } from "./sims";
@@ -416,7 +417,7 @@ export function createCli(ctx: CliContext) {
 
   async function git(...args: string[]) {
     if (!hasGit) throw new ToolError("Needs Git, which this computer doesn't have. On a Mac, xcode-select --install adds it; on Windows, the installer at git-scm.com. Then restart the world.");
-    const proc = Bun.spawn(["git", ...args], { cwd: ctx.root, stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawn([...GIT, ...args], { cwd: ctx.root, env: GIT_ENV, stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
     if (code) throw new ToolError(err.trim());
     return out;
@@ -630,18 +631,16 @@ export function createCli(ctx: CliContext) {
         };
       case "add_package": {
         const spec = String(args.name);
-        if (!/^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(@[\w.^~<>=*-]+)?$/.test(spec)) throw new ToolError("Give an npm package name, optionally with @version.");
-        const proc = Bun.spawn([process.execPath, "add", spec], { cwd: ctx.root, stdout: "pipe", stderr: "pipe", env: { ...process.env, BUN_BE_BUN: "1" } });
-        const timer = setTimeout(() => proc.kill(), 120_000);
-        const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-        clearTimeout(timer);
-        if (code) throw new ToolError(`bun add ${spec} failed:\n${(err || out).trim().slice(-2000)}`);
+        const out = await install(ctx.root, spec).catch((error: unknown) => {
+          throw new ToolError(error instanceof Error ? error.message : String(error));
+        });
         if (hasGit) {
           await git("add", "package.json", "bun.lock");
           await git("commit", "-qm", `add package ${spec}`, `--author=${who} <${who}@sandbox>`).catch(() => {});
         }
+        const typecheckError = await ctx.mods.warm().then(() => "", (error: unknown) => error instanceof Error ? error.message : String(error));
         ctx.feed(`${speaker(who)} added the ${spec} package`, "info");
-        return `${out.trim().split("\n").slice(-3).join("\n")}\nImport it from any mod, then reload that mod.`;
+        return `${out.trim().split("\n").slice(-3).join("\n")}\n${typecheckError ? `The package is installed, but the typecheck couldn't start:\n${typecheckError}` : "Import it from any mod, then reload that mod."}`;
       }
       case "search_mods":
         return await mods.search(String(args.q ?? ""), String(args.sort ?? "top")).catch(refuse);

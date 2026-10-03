@@ -1,9 +1,13 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+// First, so the sandbox's probe runs while the other modules load; the world awaits it only where it first asks whether mods can run: a needed install, then loading the mods.
+import { boxPrepared } from "./box/start";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { frontFile } from "./front";
 import { createCli, joinCodes, joinCommand, joinScript, type Task } from "./cli";
-import { ENGINE_KEYS, hasGit, Mods } from "./mods";
+import { boxRefusal } from "./box";
+import { install, sanitizeManifest } from "./box/packages";
+import { ENGINE_KEYS, GIT, GIT_ENV, hasGit, Mods } from "./mods";
 import { playtests } from "./playtest";
 import { latencies, openRecord, route } from "./record";
 import { Sims } from "./sims";
@@ -45,9 +49,9 @@ if (!existsSync(ROOT)) {
 }
 const newHistory = hasGit && !existsSync(join(ROOT, ".git"));
 if (newHistory) {
-  Bun.spawnSync(["git", "init", "-q"], { cwd: ROOT });
-  Bun.spawnSync(["git", "config", "user.name", "sandbox"], { cwd: ROOT });
-  Bun.spawnSync(["git", "config", "user.email", "sandbox@sandbox"], { cwd: ROOT });
+  Bun.spawnSync([...GIT, "init", "-q"], { cwd: ROOT, env: GIT_ENV });
+  Bun.spawnSync([...GIT, "config", "user.name", "sandbox"], { cwd: ROOT, env: GIT_ENV });
+  Bun.spawnSync([...GIT, "config", "user.email", "sandbox@sandbox"], { cwd: ROOT, env: GIT_ENV });
 }
 // Seed mods nobody has edited follow engine updates; edited ones are left alone.
 const seeded = readJson<Record<string, string>>("seeded.json", {});
@@ -66,11 +70,27 @@ for (const file of new Bun.Glob("mods/**/*").scanSync(join(ENGINE, "seed"))) {
 writeJson("seeded.json", seeded);
 cpSync(join(ENGINE, "api.ts"), join(ROOT, "api.ts"));
 writeFileSync(join(ROOT, ".gitignore"), "node_modules\n");
-if (!existsSync(join(ROOT, "package.json"))) writeFileSync(join(ROOT, "package.json"), JSON.stringify({ private: true }, null, 2));
+// package.json may be a stranger's: only npm registry packages by plain version stay in it, and they install in the mod sandbox, never with its scripts.
+const packageJson = (() => {
+  try {
+    return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+  } catch {
+    return null;
+  }
+})();
+const packages = sanitizeManifest(packageJson);
+const startNotices: string[] = [];
+if (packages.dropped.length) startNotices.push(`Left out packages that aren't plain npm registry versions: ${packages.dropped.join(", ")}.`);
+if (packages.dropped.length || !packageJson || Object.keys(packageJson).some((key) => key !== "private" && key !== "dependencies") || packageJson.private !== true)
+  writeFileSync(join(ROOT, "package.json"), JSON.stringify(packages.manifest, null, 2));
+// An imported world comes without the packages its mods added; its lockfile pins the same versions, so mods that use them reload. A start whose install failed left the folder empty, so the next start tries again.
+const modules = join(ROOT, "node_modules");
+if (packages.manifest.dependencies && !(existsSync(modules) && readdirSync(modules).length)) {
+  await boxPrepared;
+  if (!boxRefusal()) await install(ROOT).catch((e: Error) => startNotices.push(`This world's packages couldn't be installed, so mods that import them won't load: ${e.message}`));
+}
 // Bun's bundler remembers a folder without node_modules for the life of the process, so the first add_package would not build until a restart.
-mkdirSync(join(ROOT, "node_modules"), { recursive: true });
-// An imported world comes without the packages its mods added; its lockfile brings back the same ones, so mods that use them reload.
-if (existsSync(join(ROOT, "bun.lock")) && !existsSync(join(ROOT, "node_modules"))) Bun.spawnSync([process.execPath, "install"], { cwd: ROOT, env: { ...process.env, BUN_BE_BUN: "1" } });
+mkdirSync(modules, { recursive: true });
 cpSync(join(ENGINE, "GUIDE.md"), join(ROOT, "GUIDE.md"));
 writeFileSync(
   join(ROOT, "tsconfig.json"),
@@ -103,8 +123,8 @@ writeFileSync(
 // Mods are committed when they go live, so the history keeps each as it was last accepted; a start commits only the files the engine writes, and only when they changed.
 if (hasGit) {
   const engineFiles = newHistory ? ["."] : ["api.ts", "GUIDE.md", "tsconfig.json", ".gitignore", "package.json"];
-  Bun.spawnSync(["git", "add", "--", ...engineFiles], { cwd: ROOT });
-  Bun.spawnSync(["git", "commit", "-qm", newHistory ? "new world" : "engine update", "--", ...engineFiles], { cwd: ROOT, stdout: "ignore" });
+  Bun.spawnSync([...GIT, "add", "--", ...engineFiles], { cwd: ROOT, env: GIT_ENV });
+  Bun.spawnSync([...GIT, "commit", "-qm", newHistory ? "new world" : "engine update", "--", ...engineFiles], { cwd: ROOT, env: GIT_ENV, stdout: "ignore" });
 }
 
 const record = openRecord(join(DATA, "record.sqlite"));
@@ -229,7 +249,7 @@ function feed(text: string, kind = "info") {
 
 const mods = new Mods(ROOT, BUILD, join(DATA, "mods.json"), {
   // Players in other games get null, which unloads the mod where a move to another game left it behind and does nothing elsewhere.
-  client: (name, url, game) => {
+  client: (name, url, game): boolean => {
     let loaded = false;
     for (const [player, ws] of sockets) {
       const loads = !game || sims.gameOf(player) === game;
@@ -256,8 +276,13 @@ const sims = new Sims(DATA, DB, () => mods.list(), {
     log(mod, "error", error);
     mods.revert(mod, error);
   },
+  unavailable: (reason) => feed(reason, "error"),
   reloadedJustBefore: (game) => mods.reloadedJustBefore(game),
-  hubTick: (diff) => store.track(diff),
+  // The typecheck warms up at the hub's first tick, which goes out even when nothing changed: after the hub's first state, and in a world nobody joins too.
+  hubTick: (diff) => {
+    mods.startWarmUp();
+    store.track(diff);
+  },
   changed: () => broadcast(gamesMessage()),
 });
 mods.sims = sims;
@@ -272,6 +297,7 @@ function gamesMessage() {
 
 const store = openStore(join(DATA, "world.sqlite"));
 store.load(hub);
+await boxPrepared;
 await mods.loadAll(owners);
 // The launcher restarts a world that crashed right after a reload without that reload.
 const crashed = process.env.SANDBOX_REVERT;
@@ -282,7 +308,11 @@ if (crashed) {
 }
 hub.start();
 if (process.env.SANDBOX_NOTICE) feed(process.env.SANDBOX_NOTICE, "error");
-for (const mod of refreshed) await mods.reload(mod, "world", owners[mod] ?? "world");
+for (const notice of startNotices) feed(notice, "error");
+// Seed mods an engine update refreshed run their saved builds from the start, and their new files reload behind the typecheck's warm-up, so the world opens without waiting for it.
+void (async () => {
+  for (const mod of refreshed) await mods.reload(mod, "world", owners[mod] ?? "world");
+})().catch((e) => feed(`The engine's updated starter mods couldn't reload: ${e instanceof Error ? e.message : String(e)}`, "error"));
 setInterval(() => store.save(hub), 5000);
 store.snapshot(hub);
 setInterval(() => store.snapshot(hub), 60_000);
@@ -293,7 +323,7 @@ setInterval(() => {
 /** Reloads from the world's git history, for timelapse moments recorded before activity was stored. */
 function olderReloads(): Activity[] {
   if (!hasGit) return [];
-  const log = Bun.spawnSync(["git", "log", "--since=3 hours ago", "--format=%at %an|%s"], { cwd: ROOT }).stdout.toString();
+  const log = Bun.spawnSync([...GIT, "log", "--since=3 hours ago", "--format=%at %an|%s"], { cwd: ROOT, env: GIT_ENV }).stdout.toString();
   return log.split("\n").flatMap((row) => {
     const [, at, who, subject] = row.match(/^(\d+) (.+?)\|(\S+ v\d+)$/) ?? [];
     return at ? [{ at: Number(at) * 1000, t: "feed" as const, text: `${who} reloaded ${subject}`, kind: "ok" }] : [];
@@ -324,7 +354,11 @@ async function timelapseFor(who: string | null) {
   const seen = who ? await hub.visibleTo(who, await built.ticks) : await built.ticks;
   return (await inWorker<{ gz: Uint8Array<ArrayBuffer> }>({ t: "encode", ticks: seen })).gz;
 }
-function shutdown() {
+let stopping = false;
+async function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  await mods.close();
   playtest.stop();
   record.close();
   store.save(hub);
@@ -333,7 +367,9 @@ function shutdown() {
 }
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutdown);
 // Windows has no SIGTERM to send, so the launcher asks over IPC; a launcher that died without asking closes the channel.
-process.on("message", (msg: any) => msg?.t === "stop" && shutdown());
+process.on("message", (msg: unknown) => {
+  if (msg && typeof msg === "object" && "t" in msg && msg.t === "stop") shutdown();
+});
 process.on("disconnect", shutdown);
 
 const clientBuild = await Bun.build({ entrypoints: [join(ENGINE, "client/main.ts")], target: "browser", external: ["three", "three/*"] });

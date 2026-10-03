@@ -1,8 +1,8 @@
 // The community API against real Postgres and an S3 stand-in: share, upload, list, fetch, report and delete, as the launcher and the site use them.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { startStack } from "./stack";
+import { startStack, type CommunityStack } from "./stack";
 
-let stack: Awaited<ReturnType<typeof startStack>>;
+let stack: CommunityStack;
 let ana: string;
 beforeAll(async () => {
   stack = await startStack();

@@ -23,6 +23,10 @@ Worlds shared before accounts carry an owner token in `data/community.json`. Sig
 
 Deleting an account needs its password. Its sessions end at once and its worlds are taken down; other people's forks keep pointing at them, as removed worlds. Password reset needs an email provider and doesn't exist yet.
 
+Each mod's database goes into the zip from inside the mod sandbox, which can read only the world's `db/` folder: a mod that swaps its database for a link to a file elsewhere stops the export instead of putting that file in it, and nothing else in `db/` is ever read. Host and Remix unpack a zip as Import world does. Only a world's own parts come in, and of `world/` only the mods and the files the engine writes there. Its `package.json` keeps only npm registry packages by plain version and its `bun.lock` only plain registry entries, installed in the mod sandbox without their scripts. Its `.git` keeps only the history, under a config the engine writes, with none of the stranger's hooks, attributes or pointers to other repositories. Settings files Bun or git would obey, such as `bunfig.toml` or `.npmrc`, stay out.
+
+Sharing also refuses known host, player and service credentials, including Community install and owner tokens, and recognizable key formats, in the archive, Git history, details or media bytes. Private Export keeps its full-world behavior; unknown passwords and concealed secrets are not reliably recognizable.
+
 ## Service
 
 `community/server/` is a Bun API with Postgres for the rows; zips, covers and clips live in the R2 bucket `sandbox-worlds` and never pass through the server, which hands out presigned URLs signed for each file's exact size and type. `community/site/` is the site, built into `dist/` with the game's own styles by `build-site.sh`.
