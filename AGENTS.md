@@ -4,11 +4,11 @@
 
 1. `bun install` first. `bun start` launches the menu without it, but the world crashes on start with `Could not resolve: "html-to-image"`.
 2. `bun start` runs the launcher on port 7777 (`PORT` overrides; `SANDBOX_NO_OPEN=1` stops it opening a browser). Run it in the background; worlds live only while it runs.
-3. Drive the main menu over its API instead of the browser. Every call is a POST with `authorization: Bearer <hostKey>`, where `hostKey` is in `data/launcher.json` (also the `#key=` in the printed menu link):
+3. Drive the main menu over its API instead of the browser. It answers only at `127.0.0.1:7777`, never at `localhost:7777`, where worlds play. Every call is a POST with `authorization: Bearer <hostKey>`, where `hostKey` is in `data/launcher.json` (also the `#key=` in the printed menu link):
 
    ```sh
    K=$(jq -r .hostKey data/launcher.json)
-   menu() { curl -s -X POST "localhost:7777/api/menu/$1" -H "authorization: Bearer $K" -H 'content-type: application/json' -d "${2:-{\}}"; }
+   menu() { curl -s -X POST "127.0.0.1:7777/api/menu/$1" -H "authorization: Bearer $K" -H 'content-type: application/json' -d "${2:-{\}}"; }
    menu create '{"name":"Sandbox","rules":"open","start":"basics"}'  # create and host a new world
    menu host '{"id":"<world id>"}'                            # host an existing world (ids: menu state)
    menu stop                                                  # stop the running world
@@ -17,15 +17,15 @@
 
    `rules` is `open` or `additive`; `start` is `blank`, `basics` (3D field) or `hills` (3D hills). Anything else falls back to `open` and `basics`. `password` sets one players type once per device, and `"agents": false` turns agents off; `host` takes the same three for a saved world and restarts it when they change.
 4. **Use the hosted relay** (`https://sandbox-relay.lundqvistliss.com`, the default) for sharing over the internet. Don't set `SANDBOX_RELAY` or run `relay/relay.ts` unless asked. A hosted world is always shared through it.
-5. Invite link for friends: `running.link` from `menu state`. While the relay can't be reached, `running.wifiOnly` is true and the link works only on the host's network. `running.hostKey` is the host's own link; never share it or the menu key.
+5. Invite link for friends: `running.link` from `menu state`. While the relay can't be reached, `running.wifiOnly` is true and the link works only on the host's network. The host plays from the main menu, which joins them as the host; never share the menu key.
 
 ## Moving a world
 
 Export answers with the zip itself; import takes the raw zip as the body, adds the world under a new id and does not start it:
 
 ```sh
-curl -s -X POST localhost:7777/api/menu/export -H "authorization: Bearer $K" -H 'content-type: application/json' -d '{"id":"<world id>"}' -o world.zip
-curl -s -X POST localhost:7777/api/menu/import -H "authorization: Bearer $K" --data-binary @world.zip
+curl -s -X POST 127.0.0.1:7777/api/menu/export -H "authorization: Bearer $K" -H 'content-type: application/json' -d '{"id":"<world id>"}' -o world.zip
+curl -s -X POST 127.0.0.1:7777/api/menu/import -H "authorization: Bearer $K" --data-binary @world.zip
 ```
 
 The zip holds every mod and its history, the entities, each mod's database and the record. It never holds the invite, the host key or players' keys, so after a move every player pastes the new prompt from the game's Agent page into their agent; a name they played under gets its mods back. Imports through the relay are capped at 25 MB.

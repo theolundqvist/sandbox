@@ -8,6 +8,12 @@ ipcRenderer.on("update", (_, v) => {
   version = v;
   for (const fn of listeners) fn(v);
 });
+const leaveListeners = [];
+// The app's Leave asks the game first, so the host's last view goes through their controls; a page that never asked to be told, like a world on an older version, leaves at once.
+ipcRenderer.on("request-leave", () => {
+  if (!leaveListeners.length) return ipcRenderer.send("leave");
+  for (const fn of leaveListeners) fn();
+});
 
 contextBridge.exposeInMainWorld("sandboxDesktop", {
   name: ipcRenderer.sendSync("player-name"),
@@ -15,6 +21,7 @@ contextBridge.exposeInMainWorld("sandboxDesktop", {
   agents: ipcRenderer.sendSync("agents"),
   build: (id, key) => ipcRenderer.invoke("build", id, key),
   leave: () => ipcRenderer.send("leave"),
+  onLeave: (fn) => leaveListeners.push(fn),
   onUpdate: (fn) => {
     listeners.push(fn);
     fn(version);

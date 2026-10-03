@@ -74,7 +74,7 @@ Only changed components are sent to players, 20 times a second. Reach entities t
 
 Every player sees every entity unless you say otherwise: `only: ["theo", "anna"]` limits an entity to those player ids, and a `see(world, player, id, entity)` server hook returning `false` hides it from that player (re-checked every quarter second). Someone holding an invite watches the world behind the join screen as a player who never joined (an id starting with `~`, never passed to `join` or in `world.players`): a `see` hook that throws on them hides the entity, and their game runs your client code with `ctx.playerId` empty, HUD and layers hidden, and nothing sent.
 
-Every mod also has its own SQLite database, `world.db`, for data that should outlive the world snapshot or be queried: scores, inventories, history, leaderboards. Create tables idempotently (`create table if not exists` in `load`); writes are durable immediately. `world.dbOf("other-mod")` reads another mod's database but cannot write to it. Use `world.db.transaction(fn)` rather than raw `BEGIN`. During the reload test run your mod gets a throwaway copy of its database, so migrations are tried before they touch real data. The `query_db` tool shows any mod's schema and rows.
+Every mod also has its own SQLite database, `world.db`, for data that should outlive the world snapshot or be queried: scores, inventories, history, leaderboards. Create tables idempotently (`create table if not exists` in `load`); writes are durable immediately. `world.dbOf("other-mod")` reads another mod's database but cannot write to it. Use `world.db.transaction(fn)` rather than raw `BEGIN`. During the reload test run your mod gets a throwaway copy of its database, so migrations are tried before they touch real data. The `query_db` tool reads a mod's schema and rows in isolation; it cannot attach or copy databases.
 
 ```ts
 load(world) { world.db.run("create table if not exists notes (author text, text text, at integer)"); },
@@ -228,14 +228,15 @@ Client mods do the same with `exports` receiving `(ctx, ...args)` and `ctx.use("
 
 ## Packages
 
-`add_package` installs any npm package for every mod to import, server or client: physics (`@dimforge/rapier3d-compat`), noise, pathfinding, audio, whatever the idea needs. Packages are shared and cannot be removed.
+`add_package` installs npm registry packages for every mod to import, server or client: physics (`@dimforge/rapier3d-compat`), noise, pathfinding or audio. Packages are shared and cannot be removed. Install scripts never run; packages requiring those scripts or raw sockets may not work. Local paths, Git dependencies and bundled dependencies are refused. Versions and ranges must be registry semver.
 
 ## Time and the internet
 
-Hooks must return quickly. `world.later(ms, (world) => ...)` runs something later. For slow work, `world.async(async (run) => { ... })` runs outside the tick: `fetch` any HTTP API, an MCP server, a model API, then touch the world only inside `run((world) => ...)`. If the mod is reloaded meanwhile, the stale `run` does nothing. During the reload test run, `later` and `async` do not run. Every file in this tree is readable by every player, so never put an API key in one; ask your player how they want to provide it.
+Hooks must return quickly. `world.later(ms, (world) => ...)` runs something later. For slow work, `world.async(async (run) => { ... })` runs outside the tick: use `fetch` or `WebSocket` for public HTTP(S) and WS(S) services, then touch the world only inside `run((world) => ...)`. The host checks every destination and redirect; local, private and link-local addresses are refused. Mod fetch is refused when the host has a network proxy configured, because destination addresses cannot be pinned safely; WebSockets remain available. Mods have no raw sockets, so packages using their own socket clients do not work. If the mod is reloaded meanwhile, the stale `run` does nothing. During the reload test run, `later` and `async` do not run. Every file in this tree is readable by every player, so never put an API key in one.
 
 ## Guard rails
 
+- Server mods run in isolated processes. They can read their builds and packages and use this world's mod databases and private scratch space, not the host's files, keys, environment or other processes. When the computer cannot enforce isolation, only unchanged engine seed mods may run; other mods and their reloads are refused.
 - A server mod that throws 10 times, spends over 50 ms on every tick for 5 seconds, or freezes the server is reverted to its previous version automatically. The whole world sees that happen in the feed.
 - A client mod that keeps throwing is switched off in that player's game, and the error shows up in `logs`.
 - A reload test-runs your mod together with every live mod, so a mod that depends on another's exports is tested for real. Only errors in your mod fail the test.
@@ -244,3 +245,5 @@ Hooks must return quickly. `world.later(ms, (world) => ...)` runs something late
 ## Sharing this world
 
 When your player wants to share the world, the host does it in the game: Tab, World, Share. It uploads the world's export with its picture and a clip of its timelapse to Community, as a link for friends or listed for everyone, and sharing again updates it. Anyone hosts or remixes it from Worlds, Community. Mod code and banners go as builders wrote them, so take players' names out of them first if they should stay private.
+
+Community sharing refuses files, databases or Git history containing known host, player or service keys, or recognizable key formats. Private Export still keeps the full world. Remove the key from the world's files and history before sharing; unknown passwords and players' names are not automatically removed.

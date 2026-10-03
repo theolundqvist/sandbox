@@ -175,10 +175,8 @@
   .field input[type=number] { width: 64px; background: none; border: 0; border-bottom: 1px solid rgba(255,255,255,.28); color: var(--text); font: 700 18px/1.2 var(--display); text-align: right; padding: 6px 0; outline: none; -moz-appearance: textfield; }
   .field input[type=number]::-webkit-inner-spin-button { display: none; }
   .field input[type=number]:focus { border-color: var(--accent); }
-  .field input[type=password] { width: 220px; background: none; border: 0; border-bottom: 1px solid rgba(255,255,255,.28); color: var(--text); font: 15px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 6px 0; outline: none; }
-  .field input[type=password]:focus { border-color: var(--accent); }
   .field input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
-  #menu #voice-where { margin: 12px 0 16px; }
+  /* The host's World page, Share page and voice key are frames from the main menu (host.html), styled there like these. */
   .item.agent { align-items: center; gap: 18px; padding-top: 7px; padding-bottom: 7px; font-size: 24px; }
   .item.agent img { width: 32px; height: 32px; flex: none; object-fit: contain; opacity: .7; transition: opacity .12s ease-out; }
   .item.agent:is(:focus, :hover, .active) img, #agent-picked img { opacity: 1; }
@@ -196,7 +194,6 @@
   .steps a.quiet { display: inline-block; margin-top: 8px; color: var(--text); text-decoration: none; border-bottom: 1px solid var(--accent); padding: 6px 0; }
   #agent-guide [data-copy=claude-prompt] { background: var(--text); color: #0b0b0c; padding: 12px 18px; min-width: 170px; text-align: center; }
   #agent-guide [data-copy=claude-prompt]:hover, #agent-guide [data-copy=claude-prompt]:focus { background: var(--accent); color: #0b0b0c; }
-  #voice-where a { color: var(--text); }
   .field em { font-style: normal; color: var(--dim); font-weight: 700; }
   @media (max-width: 760px) {
     #rail { width: 100%; padding: 40px 16px 24px; }
@@ -247,9 +244,6 @@
   /* Over the live game, every entry reads at a glance. */
   #join .item { color: rgba(243,241,236,.8); text-shadow: 0 1px 2px rgba(0,0,0,.85), 0 0 1px rgba(0,0,0,.9); }
   #join .item:focus, #join .item:focus-within { color: var(--text); }
-  #share-picture { display: block; width: 320px; aspect-ratio: 16 / 9; object-fit: cover; margin: 20px 0 0; background: #1b1c1f; }
-  #share-picture:not([src]) { visibility: hidden; }
-  #share-go { width: auto; }
   :is(#join, #menu) .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
   #menu .note code { white-space: nowrap; }
   code { display: block; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d9d6cf; word-break: break-all; }
@@ -401,28 +395,9 @@
       <details id="talk"><summary class="caps">Between agents <span id="talk-count">0</span></summary><ul id="menu-talk"></ul></details>
     </section>
     <section data-tab="mods" hidden><ul id="menu-mods"></ul></section>
-    <section data-tab="world" hidden>
-      <div class="copy-row"><button id="world-share">Share</button><button id="world-export">Export</button></div>
-      <div class="copy-row"><button id="world-stop" class="danger">Stop hosting</button></div>
-      <div class="gap"></div>
-      <div id="world-snapshots"></div>
-      <p class="note" id="world-voice" hidden></p>
-    </section>
-    <section data-tab="share" hidden>
-      <label class="field"><span>Title</span><input type="text" id="share-title" maxlength="60" autocomplete="off" spellcheck="false"></label>
-      <label class="field"><span>About</span><input type="text" id="share-description" maxlength="200" placeholder="One line" autocomplete="off"></label>
-      <div class="field"><span>Who sees it</span><div class="pick" id="share-visibility" data-options="link:Link only,public:Everyone"></div></div>
-      <p class="note" id="share-names" hidden>Player names in scores and items are shared with the world.</p>
-      <div class="field"><span>Picture</span><div class="pick" id="share-cover" data-options="world:World picture,view:Current view"></div></div>
-      <img id="share-picture" alt="">
-      <div class="copy-row" id="share-shared" hidden><span>Link</span><code id="share-link"></code><button data-copy="share-link">Copy</button><button id="share-stop" class="danger">Stop sharing</button></div>
-      <div class="gap"></div>
-      <button id="share-go" class="item">Share</button>
-      <p class="note" id="share-status"></p>
-    </section>
+    <section data-tab="world" hidden></section>
+    <section data-tab="share" hidden></section>
     <section data-tab="settings" hidden>
-      <label class="field" id="voice-field" hidden><span>Voice key</span><input type="password" id="voice-key" autocomplete="off" spellcheck="false"></label>
-      <p class="note" id="voice-where" hidden></p>
       <label class="field" id="open-mic-field" hidden><span>Always-on mic</span><input type="checkbox" id="open-mic"></label>
       <label class="field"><span>Volume</span><span class="range"><input type="range" id="volume" min="0" max="100" step="5"><input type="number" id="volume-exact" min="0" max="100"><em>%</em></span></label>
       <div id="help-keys"></div>

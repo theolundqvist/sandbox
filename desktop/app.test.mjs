@@ -1,5 +1,6 @@
 // The real Electron app on a throwaway relay and launcher and a stand-in GitHub; run with `xvfb-run -a node --test desktop/app.test.mjs`.
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -33,6 +34,12 @@ function bun(script, env) {
   return proc;
 }
 
+async function stopLauncher(proc) {
+  const exited = once(proc, "exit", { signal: AbortSignal.timeout(20000) });
+  proc.kill();
+  assert.deepEqual(await exited, [0, null]);
+}
+
 /** Each server leads its own process group, so killing the group also takes the worlds it started, even when the run itself is killed. */
 function cleanUp() {
   for (const c of children) {
@@ -56,7 +63,6 @@ const closePage = (page) => {
 };
 
 /** This machine's own service keys never reach the app under test. */
-// Nothing here signs up for free voice with the real Community server.
 const ownEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY"))), SANDBOX_COMMUNITY: "http://127.0.0.1:1" };
 const VOICE_KEY = "sk_test_voice_key";
 
@@ -126,7 +132,7 @@ before(async () => {
     const { running } = await menu(base, key, "state");
     return running?.link.startsWith(relayUrl) && running;
   });
-  other = { base, key, url: running.link.split("/#")[0], invite: running.invite };
+  other = { base, key, url: running.link.split("/#")[0], invite: running.invite, game: `http://localhost:${OTHER}` };
 });
 
 after(() => {
@@ -174,6 +180,18 @@ const answer = (app, response) =>
     dialog.showMessageBox = async (_win, options) => (globalThis.asked.push(options), { response });
   }, response);
 const asked = (app) => app.evaluate(() => globalThis.asked);
+/**
+ * Clicks a control in the host's frames (World, Share, Voice key), main menu pages the game shows inside itself. Chromium sends a click into a frame
+ * from another process by where the game last drew that frame, which trails the game showing or sizing it by a frame or more; a click in between lands
+ * on the game around it. So the pointer first goes over the control, until the control itself is under it.
+ */
+async function press(control) {
+  await until("the pointer over the control", async () => {
+    await control.hover();
+    return control.evaluate((el) => el.matches(":hover"));
+  });
+  await control.click();
+}
 
 /** In the game: the app joins as its player's name without asking. */
 /** In the game: the HUD shows and the server has welcomed this player. */
@@ -274,7 +292,12 @@ describe("hosting and joining", () => {
     const game = await gamePage(app);
     await game.locator("#create").waitFor();
     assert.equal(await shown(game, "#waiting"), false);
-    assert.match(game.url(), /^http:\/\/localhost:\d+\/menu/);
+    assert.match(game.url(), /^http:\/\/127\.0\.0\.1:\d+\/menu/);
+    // Leaving a menu page needs no frame-mediated picture: the app returns at once, rather than waiting for the world's cover timeout.
+    await shell.click("#leave");
+    await until("the title after leaving the host menu", () => menuShown(shell), 3000);
+    await shell.click("text=Host world");
+    await (await gamePage(app)).locator("#create").waitFor();
   });
 
   test("the app's Host screen has no second title menu: Esc goes back to the app's own", async () => {
@@ -311,7 +334,7 @@ describe("hosting and joining", () => {
   test("a friend online: quitting asks first, and Keep hosting keeps the game", async () => {
     const own = state().port;
     const s = await menu(`http://127.0.0.1:${own}`, JSON.parse(readFileSync(join(dir, "host", "Sandbox", "data", "launcher.json"), "utf8")).hostKey, "state");
-    const friend = await guest(`http://127.0.0.1:${own}`, s.running.invite, "friend");
+    const friend = await guest(`http://localhost:${own}`, s.running.invite, "friend");
     await answer(app, 1);
     await app.evaluate(({ app }) => app.quit());
     await until("the question", async () => (await asked(app))?.length);
@@ -327,21 +350,27 @@ describe("hosting and joining", () => {
     const game = await gamePage(app);
     assert.equal(await game.textContent("#mic"), "Turn on voice");
     await game.locator("#mic").dispatchEvent("click");
-    await game.locator("#voice-key").waitFor();
-    assert.equal(await game.locator("#voice-key").evaluate((el) => el.getRootNode().activeElement === el), true);
+    // The speech key is entered in the host's controls, a frame from the main menu that the game's page can't read.
+    const field = game.frameLocator('iframe[title="Voice key"]').locator("#voice-key");
+    const where = game.frameLocator('iframe[title="Voice key"]').locator("#voice-where");
+    await until("the key field focused", () => field.evaluate((el) => el.ownerDocument.activeElement === el));
     assert.equal(await shown(game, "#howto"), false);
-    await game.fill("#voice-key", "sk_wrong");
-    await game.press("#voice-key", "Enter");
+    await field.fill("sk_wrong");
+    await field.press("Enter");
     await until("the refusal", async () => (await game.textContent("#toasts")).includes("ElevenLabs didn't accept that key. Copy it again from elevenlabs.io."));
-    assert.equal(await game.textContent("#voice-where"), "Paste a speech key from Groq (free), OpenAI, Gemini, ElevenLabs or Deepgram.");
+    assert.equal(await where.textContent(), "Paste a speech key from Groq (free), OpenAI, Gemini, ElevenLabs or Deepgram.");
     await app.evaluate(({ shell }) => (shell.openExternal = async (url) => void (globalThis.opened ??= []).push(url)));
-    for (const link of await game.locator("#voice-where a").all()) await link.click();
+    assert.equal(await where.locator("a").first().getAttribute("target"), "_top");
+    const gameUrl = game.url();
+    for (const link of await where.locator("a").all()) await press(link);
     assert.deepEqual(await until("the key pages", () => app.evaluate(() => globalThis.opened?.length === 5 && globalThis.opened)), ["https://console.groq.com/keys", "https://platform.openai.com/api-keys", "https://aistudio.google.com/apikey", "https://elevenlabs.io/app/settings/api-keys", "https://console.deepgram.com/"]);
-    await game.fill("#voice-key", VOICE_KEY);
-    await game.press("#voice-key", "Enter");
+    assert.equal(game.url(), gameUrl);
+    assert.match(await field.evaluate((el) => el.ownerDocument.location.origin), /^http:\/\/127\.0\.0\.1:\d+$/);
+    await field.fill(VOICE_KEY);
+    await field.press("Enter");
     await until("voice on", async () => (await game.textContent("#mic")) === "Hold T to talk");
-    assert.equal(await game.getAttribute("#voice-key", "placeholder"), "ElevenLabs ••••_key");
-    assert.equal(await game.inputValue("#voice-key"), "");
+    await until("masked voice key", async () => (await field.getAttribute("placeholder")) === "ElevenLabs ••••_key");
+    assert.equal(await field.inputValue(), "");
     assert.equal(readFileSync(join(dir, "host", "Sandbox", "data", "secrets.json"), "utf8").includes(VOICE_KEY), true);
     await game.keyboard.press("Escape");
     await game.keyboard.press("Escape");
@@ -420,11 +449,13 @@ describe("hosting and joining", () => {
     await shell.keyboard.press("Escape");
   });
 
-  test("an invite link opens the game; a /r/ link without its scheme becomes https", async () => {
+  test("a direct invite cannot reclaim a name from another origin, and a new name joins; bare relay links become https", async () => {
     await shell.click("text=Join world");
-    await shell.fill("#join-link", `${other.base}/#invite=${other.invite}`);
+    await shell.fill("#join-link", `${other.game}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
-    await playing(await gamePage(app));
+    const invited = await gamePage(app);
+    await joinAs(invited, "localguest");
+    await playing(invited);
     await shell.click("#leave");
     const bare = await shell.evaluate(async () => (await import("/front.js")).joinLink("sandbox-relay.example.com/r/ab12cd/"));
     assert.equal(bare, "https://sandbox-relay.example.com/r/ab12cd/");
@@ -452,16 +483,24 @@ describe("hosting and joining", () => {
     await new Promise((resolve) => setTimeout(resolve, 5000));
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#rail [data-tab=world]");
-    await game.click("#world-share");
-    await until("the share page", async () => (await game.inputValue("#share-title")) === "Tiny Isle");
-    await game.fill("#share-description", "One small island, remixed.");
-    await game.click("#share-go");
-    await until("the shared link", async () => (await game.textContent("#share-link")) === "https://site.example/w/shared000001", 60_000);
+    // Share's controls are frames from the main menu: the game's page opens them, hands over its view and clip when they ask, and can't reach inside.
+    await press(game.frameLocator('iframe[title="World"]').locator("#world-share"));
+    const share = game.frameLocator('iframe[title="Share"]');
+    await until("the share page", async () => (await share.locator("#share-title").inputValue()) === "Tiny Isle");
+    assert.equal(await game.locator('iframe[title="Share"]').evaluate((el) => el.contentDocument), null);
+    // Current view is the game's own picture of itself, 960×540; the world's saved picture goes up.
+    await press(share.locator("#share-cover i").last());
+    await until("the game's view in the share page", async () => (await share.locator("#share-picture").evaluate((img) => img.naturalWidth)) === 960);
+    await press(share.locator("#share-cover i").first());
+    await until("the world's picture in the share page", async () => (await share.locator("#share-picture").evaluate((img) => img.naturalWidth)) === 16);
+    await share.locator("#share-description").fill("One small island, remixed.");
+    await press(share.locator("#share-go"));
+    await until("the shared link", async () => (await share.locator("#share-link").textContent()) === "https://site.example/w/shared000001", 60_000);
     assert.deepEqual([community.shared.title, community.shared.visibility, community.shared.remixOf], ["Tiny Isle", "link", "tinyisle0001"]);
     assert.deepEqual(community.files.cover, COVER, "the world's picture");
     assert.deepEqual([...community.files.clip.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3]);
     assert.equal(community.files.zip.subarray(0, 2).toString(), "PK");
-    assert.equal(await game.textContent("#share-go"), "Update");
+    assert.equal(await share.locator("#share-go").textContent(), "Update");
     await shell.click("#leave");
     await until("the host's view of Tiny Isle", async () => readFileSync(join(worlds, isleId, "cover.jpg")).length > COVER.length);
   });
@@ -473,9 +512,10 @@ describe("hosting and joining", () => {
     await playing(game);
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#rail [data-tab=world]");
-    await game.click("#world-stop");
-    assert.equal(await game.textContent("#world-stop"), "Stop for everyone?");
-    await game.click("#world-stop");
+    const stop = game.frameLocator('iframe[title="World"]').locator("#world-stop");
+    await press(stop);
+    assert.equal(await stop.textContent(), "Stop for everyone?");
+    await press(stop);
     await until("the app's title", () => menuShown(shell));
     await shell.click("text=Worlds");
     await until("Tiny Isle stopped", async () => (await rows(shell)).some((r) => /^Tiny Isle \| .+ ago \| Hosted$|^Tiny Isle \| just now \| Hosted$/.test(r)));
@@ -575,6 +615,8 @@ describe("a friend in a browser", () => {
     await rehost(() => game.locator("#create-agents i").nth(1).click());
     const base = page.url().replace(/\/(#.*)?$/, "");
     await until("agents off", async () => (await (await fetch(`${base}/api/info`)).json()).agents === false);
+    // The friend's page comes back to the game by itself; closed while that navigation commits, Chromium never finishes closing it.
+    await playing(page);
     const back = await page.context().newPage();
     await closePage(page);
     page = back;
@@ -607,7 +649,7 @@ describe("the relay down", () => {
     await shell.click("text=Host world");
     const game = await gamePage(app);
     await game.locator("#create").waitFor();
-    assert.match(game.url(), /^http:\/\/localhost:\d+\/menu/);
+    assert.match(game.url(), /^http:\/\/127\.0\.0\.1:\d+\/menu/);
   });
 
   test("the host's invite is a Wi-Fi link, and Invite says why", async () => {
@@ -741,7 +783,7 @@ describe("updates", () => {
     const s = await menu(`http://127.0.0.1:${own}`, key, "state");
     link = s.running.link;
     assert.ok(link.startsWith(`${relayUrl}/r/`));
-    await guest(`http://127.0.0.1:${own}`, s.running.invite, "friend");
+    await guest(`http://localhost:${own}`, s.running.invite, "friend");
     const pid = app.process().pid;
     await answer(app, 0);
     releases.latest = "9.9.9";
@@ -1229,7 +1271,7 @@ describe("the host closes the game", () => {
     await game.locator("#join").waitFor({ state: "hidden" });
     await sleep(3500);
     assert.doesNotMatch(await game.textContent("#feed"), /peek|stayer left/);
-    otherLauncher.kill();
+    await stopLauncher(otherLauncher);
     await until("the message", async () => (await game.textContent("#status")) === "The host closed the world. You're back in when they open it.");
     const status = await game.locator("#status").boundingBox();
     for (const button of await game.locator("#top button:visible").all()) {
@@ -1251,7 +1293,7 @@ describe("the host closes the game", () => {
       await until("the reload", async () => !(await game.evaluate(() => window.before).catch(() => true)), 30000);
       await playing(game);
     } finally {
-      launcher.kill();
+      await stopLauncher(launcher);
       await until("the world gone", async () => !(await fetch(`${other.url}/api/info`)).ok);
     }
   });
@@ -1273,7 +1315,7 @@ describe("the host closes the game", () => {
 
   test("Back stops waiting", async () => {
     await shell.click("#leave");
-    otherLauncher.kill();
+    await stopLauncher(otherLauncher);
     await until("the world gone", async () => !(await fetch(`${other.url}/api/info`)).ok);
     await shell.click("text=Worlds");
     await shell.click("#games .item >> text=Snow Race");

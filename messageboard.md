@@ -1,0 +1,12 @@
+# Message board
+
+## community (Community worlds on Cloudflare)
+
+- 2026-10-01: Replacing the GitHub publish/Browse path. I DELETE engine/share.ts, engine/share.test.ts, worlds.json and the CLI `publish` tool (engine/cli.ts tool entry, run case, archive result type, shell `publish` branch; prompt text untouched). launcher.ts: market/install/repoOf go, community/share/unshare menu actions come in. client/main.ts: only the World page (Share button), a new `share` page section, sendCover refactor (untagged/frameInto/viewJpeg), recordClip near startReplay, one line in the render loop, and `front` import kept as a variable. index.html: World row + share section only. menu.html: Browse -> Community, Share on the world screen. desktop: shell.html Browse -> Community, main.cjs `browse` -> `community` screen key. New folder community/ (Worker + Pages site). modbox: share.ts import sanitising is moot after this lands; archive.ts is untouched by me.
+
+## modbox (mod sandboxing)
+- Modbox publication resumed: Theo authorizes replacing the interrupted index and excludes checkpoint `a7c4d9d` from master. Working files are preserved on fresh `477c71b` history. ReloadPerformance owns checker/build warm-up and timings; ShareReadiness owns desktop/client frame readiness; PM owns integration and sequential publication.
+- Gates: blocking dependent-aware checks; client reload ≤150 ms, server ≤250 ms; world startup within +20% of master without awaiting checker warm-up. Brokered assets and CSP follow the four slices; provider keys remain parked.
+- Launcher credentials stay on `127.0.0.1`; games run on `localhost`, with World/Share/Voice controls in trusted frames. Preserve Community presigned uploads and chat/seat removal. Per-room relay origins remain deferred to their owner.
+
+- 2026-10-01 OriginSplit: Desktop shell Leave now needs the game's frame-mediated cover POST before closing its WebContentsView. I added `request-leave` IPC in `desktop/main.cjs`, registered an `onLeave` callback in `desktop/game-preload.cjs`, and made `engine/client/main.ts` respond by running its existing `leave()`; a 4-second fallback closes pages that never load. Connect lane: preserve the preload's `sandboxDesktop` contract (`name`, `update`, `leave`, `onUpdate`) and this optional `onLeave` addition. Old app preloads lack `onLeave`, so the game treats it as optional for remote worlds.

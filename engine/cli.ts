@@ -1,7 +1,8 @@
-import { Database } from "bun:sqlite";
+import { box } from "./box";
+import { install } from "./box/packages";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { hasGit, type Mods } from "./mods";
+import { GIT, GIT_ENV, hasGit, type Mods } from "./mods";
 import { brief, type Recorder } from "./record";
 import type { GameCard } from "./games";
 import type { Sims } from "./sims";
@@ -364,7 +365,7 @@ export function createCli(ctx: CliContext) {
 
   async function git(...args: string[]) {
     if (!hasGit) throw new ToolError("Needs Git, which this computer doesn't have. On a Mac, xcode-select --install adds it; on Windows, the installer at git-scm.com. Then restart the world.");
-    const proc = Bun.spawn(["git", ...args], { cwd: ctx.root, stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawn([...GIT, ...args], { cwd: ctx.root, env: GIT_ENV, stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
     if (code) throw new ToolError(err.trim());
     return out;
@@ -545,15 +546,16 @@ export function createCli(ctx: CliContext) {
         if (!/^[a-z][a-z0-9-]{0,31}$/.test(args.mod)) throw new ToolError("Unknown mod.");
         const path = join(ctx.dbDir, `${args.mod}.sqlite`);
         if (!existsSync(path)) throw new ToolError(`${args.mod} has no database yet; it gets one the first time it uses world.db.`);
-        const db = new Database(path, { readonly: true });
-        db.run("pragma busy_timeout = 2000");
+        const sql = String(args.sql ?? "select sql from sqlite_master where sql is not null");
+        const runner = join(import.meta.dir, "box", "query.ts");
+        const proc = box({ cmd: [process.execPath, runner, path, sql], read: [runner, ctx.dbDir] });
+        const timer = setTimeout(() => proc.kill("SIGKILL"), 5000);
         try {
-          const rows = db.query(args.sql ?? "select sql from sqlite_master where sql is not null").all();
-          return JSON.stringify(rows.slice(0, 100), null, 1) + (rows.length > 100 ? `\n(${rows.length} rows, first 100 shown)` : "");
-        } catch (e: any) {
-          throw new ToolError(e.message);
+          const [out, err, code] = await Promise.all([new Response(proc.stdout as ReadableStream<Uint8Array>).text(), new Response(proc.stderr as ReadableStream<Uint8Array>).text(), proc.exited]);
+          if (code) throw new ToolError(err.trim() || "The database query did not finish.");
+          return out;
         } finally {
-          db.close();
+          clearTimeout(timer);
         }
       }
       case "history":
@@ -574,18 +576,16 @@ export function createCli(ctx: CliContext) {
         };
       case "add_package": {
         const spec = String(args.name);
-        if (!/^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(@[\w.^~<>=*-]+)?$/.test(spec)) throw new ToolError("Give an npm package name, optionally with @version.");
-        const proc = Bun.spawn([process.execPath, "add", spec], { cwd: ctx.root, stdout: "pipe", stderr: "pipe", env: { ...process.env, BUN_BE_BUN: "1" } });
-        const timer = setTimeout(() => proc.kill(), 120_000);
-        const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-        clearTimeout(timer);
-        if (code) throw new ToolError(`bun add ${spec} failed:\n${(err || out).trim().slice(-2000)}`);
+        const out = await install(ctx.root, spec).catch((error: unknown) => {
+          throw new ToolError(error instanceof Error ? error.message : String(error));
+        });
         if (hasGit) {
           await git("add", "package.json", "bun.lock");
           await git("commit", "-qm", `add package ${spec}`, `--author=${who} <${who}@sandbox>`).catch(() => {});
         }
+        const typecheckError = await ctx.mods.warm().then(() => "", (error: unknown) => error instanceof Error ? error.message : String(error));
         ctx.feed(`${speaker(who)} added the ${spec} package`, "info");
-        return `${out.trim().split("\n").slice(-3).join("\n")}\nImport it from any mod, then reload that mod.`;
+        return `${out.trim().split("\n").slice(-3).join("\n")}\n${typecheckError ? `The package is installed, but the typecheck couldn't start:\n${typecheckError}` : "Import it from any mod, then reload that mod."}`;
       }
       case "wait_for_chat": {
         const until = Date.now() + Math.min(Number(args.seconds) || 60, 240) * 1000;

@@ -1,11 +1,13 @@
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Entity, Player } from "./api";
+import { box, boxRefusal } from "./box";
+import { createBroker } from "./box/broker";
 import type { Diff, Tick } from "./world";
 
 /** `game` is the game the mod belongs to, or null for a mod every game shares. */
-export type RunningMod = { name: string; id: number; server: string | null; game: string | null };
+export type RunningMod = { name: string; id: number; server: string | null; game: string | null; trusted?: true };
 /** The server put a player somewhere other than where their own game or another mod had just moved them. */
 export type Correction = { at: number; mod: string; hook: string; player: string; entity: number; overruled: string; from: number[]; to: number[]; wanted: number[] | null; repeats: number };
 /** engine is the p50 of each tick's time outside mod hooks. */
@@ -16,50 +18,62 @@ const HANG_MS = 2000;
 const TRIAL_START_MS = 15_000;
 /** A game whose process keeps dying at start waits this long before the next try, so it can't spin. */
 const CRASH_BACKOFF_MS = 1000;
-const SIM = new URL("./sim.ts", import.meta.url);
-const SIM_FILE = join(import.meta.dir, "sim.ts");
+const simDir = mkdtempSync(join(tmpdir(), "sandbox-sim-"));
+const bundled = await Bun.build({ entrypoints: [join(import.meta.dir, "sim.ts")], outdir: simDir, target: "bun" });
+if (!bundled.success) throw new AggregateError(bundled.logs, "Could not build the simulation.");
+const SIM = bundled.outputs[0]!.path;
+// The heartbeat thread a simulation starts on Windows (shareBeat in sim.ts) loads from beside the bundle.
+cpSync(join(import.meta.dir, "beat.ts"), join(simDir, "beat.ts"));
+process.on("exit", () => rmSync(simDir, { recursive: true, force: true }));
 
-/** How a host reaches its simulation: a worker in this process for the hub, a child process for a game. */
+/** Every simulation has the same isolated child-process lifetime. */
 type Channel = { send(msg: object): void; retire(now?: boolean): Promise<void>; pid: number | null };
 
-/**
- * Closes a worker's databases before terminating it, since Bun never frees what a terminated worker left open and
- * terminating it while it closes them crashes the process. Resolves once it is gone; one too stuck to answer is terminated after 2 s.
- */
-function retire(worker: Worker) {
-  return new Promise<void>((resolve) => {
-    const gone = () => {
-      clearTimeout(timer);
-      worker.terminate();
-      resolve();
-    };
-    const timer = setTimeout(gone, 2000);
-    worker.addEventListener("message", ({ data }) => data.t === "closed" && gone());
-    try {
-      worker.postMessage({ t: "close" });
-    } catch {
-      gone();
+function spawnSimulation(dbDir: string, mods: RunningMod[], scratch: string, trial: boolean, ipc: (msg: unknown) => void) {
+  mkdirSync(join(dirname(dbDir), "build"), { recursive: true });
+  const reason = boxRefusal();
+  if (reason) {
+    if (mods.some((mod) => mod.server !== null && !mod.trusted)) throw new Error(reason);
+    return Bun.spawn([process.execPath, "--no-env-file", SIM], {
+      cwd: scratch,
+      env: { HOME: scratch, TMPDIR: scratch, PATH: dirname(process.execPath), ...(process.env.SYSTEMROOT && { SYSTEMROOT: process.env.SYSTEMROOT }) },
+      stdin: "ignore", stdout: "pipe", stderr: "pipe", ipc,
+    });
+  }
+  return box({
+    cmd: [process.execPath, SIM], scratch,
+    read: [simDir, join(dirname(dbDir), "build"), ...[join(dirname(dbDir), "world", "node_modules")].filter(existsSync), ...(trial ? [dbDir] : [])],
+    write: trial ? [] : [dbDir],
+    ipc,
+  });
+}
+
+async function drain(stream: ReadableStream<Uint8Array>, log?: (text: string) => void) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    if (log) log(decoder.decode(value, { stream: true }).slice(0, 4096));
+  }
+}
+
+function processChannel(dbDir: string, mods: RunningMod[], scratch: string, receive: (msg: object) => void, exited: (code: number | string) => void, log: (text: string) => void): Channel {
+  let retiring = false;
+  const broker = createBroker((msg) => proc.send(msg));
+  const proc = spawnSimulation(dbDir, mods, scratch, false, (msg) => {
+    if (broker.receive(msg)) return;
+    if (msg && typeof msg === "object") {
+      if ("t" in msg && msg.t === "closed") proc.kill("SIGKILL");
+      else receive(msg);
     }
   });
-}
-
-function workerChannel(receive: (msg: any) => void, log: (text: string) => void): Channel {
-  const worker = new Worker(SIM);
-  worker.onerror = (e) => log(`simulation worker: ${e.message}`);
-  worker.onmessage = ({ data }) => receive(data);
-  return { send: (msg) => worker.postMessage(msg), retire: () => retire(worker), pid: null };
-}
-
-/** A game's own process: a busy or crashing mod stops only that game, and its exit frees everything it loaded. */
-function processChannel(receive: (msg: any) => void, exited: (code: number | string) => void): Channel {
-  let retiring = false;
-  const proc = Bun.spawn([process.execPath, SIM_FILE], {
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "inherit",
-    ipc: (msg) => (msg.t === "closed" ? proc.kill("SIGKILL") : receive(msg)),
+  void drain(proc.stderr as ReadableStream<Uint8Array>, log);
+  void drain(proc.stdout as ReadableStream<Uint8Array>, log);
+  proc.exited.then((code) => {
+    broker.close();
+    if (!retiring) exited(proc.signalCode ?? code);
   });
-  proc.exited.then((code) => retiring || exited(proc.signalCode ?? code));
   return {
     send: (msg) => {
       try {
@@ -91,9 +105,14 @@ export class SimHost {
   creators = new Map<number, string>();
   corrections: Correction[] = [];
   private channel: Channel | null = null;
-  /** The heartbeat a worker shares, or the file a game's process writes it to. */
-  private beat = new Int32Array(new SharedArrayBuffer(8));
-  private beatFile: string | null = null;
+  private scratch = mkdtempSync(join(tmpdir(), "sandbox-beat-"));
+  /**
+   * The file the simulation's process writes its heartbeat to: ticks so far, and the mod running right now.
+   * It lies in the sandbox's writable folder, where a mod could put a link to another file in its place, so this process opens it once, here, and never by name again.
+   */
+  private beatFile = join(this.scratch, "heartbeat");
+  private beat = openSync(this.beatFile, "w+");
+  private beatBytes = Buffer.alloc(8);
   /** Until the simulation has loaded its mods, only a much longer silence counts as hanging. */
   private ready = false;
   private startedAt = 0;
@@ -114,6 +133,7 @@ export class SimHost {
       tick(outs: Record<string, string>, diff: Diff): void;
       log(mod: string, level: string, text: string): void;
       fault(mod: string, error: string): void;
+      unavailable?(reason: string): void;
       /** A mod asked with world.enter to move a player. */
       enter?(player: string, game: string | null): void;
       /** A mod to blame when the process dies with none running, like one reloaded just before. */
@@ -123,12 +143,10 @@ export class SimHost {
     readonly game: string | null = null,
     private games: () => string[] = () => [],
   ) {
-    if (game !== null) {
-      // Processes share no memory, so the game's process writes its heartbeat to a file this one reads.
-      const file = (this.beatFile = join(tmpdir(), `sandbox-beat-${process.pid}-${game}`));
-      writeFileSync(file, new Uint8Array(8));
-      process.on("exit", () => rmSync(file, { force: true }));
-    }
+    process.on("exit", () => {
+      closeSync(this.beat);
+      rmSync(this.scratch, { recursive: true, force: true });
+    });
     let lastBeat = -1;
     let lastChange = Date.now();
     setInterval(() => {
@@ -155,11 +173,11 @@ export class SimHost {
     return this.channel?.pid ?? null;
   }
 
-  /** Ticks so far, and the mod running right now. */
+  /** Read, not mapped, since Bun can't map a file on Windows; whatever a mod cut off the file reads as zero. */
   private heartbeat() {
-    if (!this.beatFile) return [Atomics.load(this.beat, 0), Atomics.load(this.beat, 1)];
-    const bytes = readFileSync(this.beatFile);
-    return [bytes.readInt32LE(0), bytes.readInt32LE(4)];
+    this.beatBytes.fill(0);
+    readSync(this.beat, this.beatBytes, 0, 8, 0);
+    return [this.beatBytes.readInt32LE(0), this.beatBytes.readInt32LE(4)];
   }
 
   private culprit() {
@@ -190,17 +208,15 @@ export class SimHost {
       this.waiting = wait;
       return;
     }
-    if (this.beatFile) writeFileSync(this.beatFile, new Uint8Array(8));
-    else Atomics.store(this.beat, 1, 0);
+    ftruncateSync(this.beat);
+    writeSync(this.beat, new Uint8Array(8), 0, 8, 0);
     this.ready = false;
     this.startedAt = Date.now();
     const receive = (msg: any) => channel === this.channel && this.receive(msg);
-    const channel: Channel =
-      this.game === null ? workerChannel(receive, (text) => this.on.log("engine", "error", text)) : processChannel(receive, (code) => channel === this.channel && this.crashed(code));
+    const channel = processChannel(this.dbDir, this.mods(), this.scratch, receive, (code) => channel === this.channel && this.crashed(code), (text) => this.on.log("engine", "error", text));
     this.channel = channel;
     channel.send({
       t: "init",
-      beat: this.game === null ? this.beat.buffer : undefined,
       beatFile: this.beatFile,
       game: this.game,
       games: this.games(),
@@ -220,6 +236,15 @@ export class SimHost {
 
   /** The mod running when the process died is blamed, as for a freeze, else one reloaded within the last minute; the game restarts from the last state it sent. */
   private crashed(code: number | string) {
+    if (code === 125) {
+      const reason = boxRefusal()!;
+      this.channel = null;
+      this.ready = false;
+      this.on.log("engine", "error", reason);
+      this.on.unavailable?.(reason);
+      for (const finish of this.applying.values()) finish(reason);
+      return;
+    }
     const culprit = this.culprit()?.name;
     const suspect = culprit ? undefined : this.on.crashSuspect?.();
     this.on.log("engine", "error", `game ${this.game}'s process stopped (${code})${culprit ? ` in ${culprit}` : ""}; restarting it${suspect ? ` without the last change to ${suspect}` : ""}`);
@@ -320,6 +345,8 @@ export class SimHost {
 
   /** Swaps a mod into the live simulation; resolves once its load hook ran, with that hook's error if any. */
   apply(mod: RunningMod): Promise<string | null> {
+    const reason = boxRefusal();
+    if (reason && mod.server !== null && !mod.trusted) return Promise.resolve(reason);
     if (!this.channel) return Promise.resolve(null);
     return new Promise((resolve) => {
       const timer = setTimeout(() => done(null), HANG_MS);
@@ -335,8 +362,11 @@ export class SimHost {
 
   /** Runs every live mod, with the candidate swapped in, against a copy of the world; resolves to the candidate's error or null. */
   trial(mod: RunningMod): Promise<string | null> {
+    const mods = [...this.mods().filter((m) => m.name !== mod.name), mod];
+    const reason = boxRefusal();
+    if (reason && mods.some((candidate) => candidate.server !== null && !candidate.trusted)) return Promise.resolve(reason);
     return new Promise((resolve) => {
-      let timer = setTimeout(() => done(`did not load within ${TRIAL_START_MS / 1000} s (infinite loop at import?)`), TRIAL_START_MS);
+      let timer: Timer;
       let finished = false;
       const done = (error: string | null) => {
         if (finished) return;
@@ -345,20 +375,24 @@ export class SimHost {
         proc.kill("SIGKILL");
         resolve(error);
       };
-      // A child process rather than a worker: its exit frees everything the test run loaded, which a terminated worker never does.
-      const proc = Bun.spawn([process.execPath, SIM_FILE], {
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-        ipc: (msg) => {
-          if (msg.t === "trial") done(msg.error);
-          else if (msg.t === "ticking") {
-            clearTimeout(timer);
-            timer = setTimeout(() => done(`did not finish 20 test ticks within ${HANG_MS / 1000} s (infinite loop?)`), HANG_MS);
-          }
-        },
+      const broker = createBroker((msg) => proc.send(msg));
+      const scratch = mkdtempSync(join(tmpdir(), "sandbox-trial-"));
+      const proc = spawnSimulation(this.dbDir, mods, scratch, true, (msg) => {
+        if (broker.receive(msg) || !msg || typeof msg !== "object" || !("t" in msg)) return;
+        if (msg.t === "trial" && "error" in msg) done(typeof msg.error === "string" ? msg.error : null);
+        else if (msg.t === "ticking") {
+          clearTimeout(timer);
+          timer = setTimeout(() => done(`did not finish 20 test ticks within ${HANG_MS / 1000} s (infinite loop?)`), HANG_MS);
+        }
       });
-      proc.exited.then((code) => done(`the test run crashed (exit ${proc.signalCode ?? code})`));
+      timer = setTimeout(() => done(`did not load within ${TRIAL_START_MS / 1000} s (infinite loop at import?)`), TRIAL_START_MS);
+      proc.exited.then((code) => {
+        broker.close();
+        rmSync(scratch, { recursive: true, force: true });
+        done(code === 125 ? boxRefusal()! : `the test run crashed (exit ${proc.signalCode ?? code})`);
+      });
+      void drain(proc.stderr as ReadableStream<Uint8Array>);
+      void drain(proc.stdout as ReadableStream<Uint8Array>);
       proc.send({
         t: "init",
         game: this.game,
@@ -367,7 +401,7 @@ export class SimHost {
         nextId: this.nextId,
         players: [],
         watchers: [],
-        mods: [...this.mods().filter((m) => m.name !== mod.name), mod],
+        mods,
         trial: mod.name,
         dbDir: this.dbDir,
       });

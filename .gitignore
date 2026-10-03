@@ -4,4 +4,6 @@ data
 .env
 .claude/
 .playwright-mcp/
+.scratch/
+.omp/
 .wrangler

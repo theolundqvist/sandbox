@@ -3,7 +3,9 @@ import { basename, join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { frontFile } from "./front";
 import { connectPrompt, createCli, type Task } from "./cli";
-import { ENGINE_KEYS, hasGit, Mods } from "./mods";
+import { boxRefusal } from "./box";
+import { install, sanitizeManifest } from "./box/packages";
+import { ENGINE_KEYS, GIT, GIT_ENV, hasGit, Mods } from "./mods";
 import { latencies, openRecord, route } from "./record";
 import { Sims } from "./sims";
 import type { Perf } from "./simhost";
@@ -44,9 +46,9 @@ if (!existsSync(ROOT)) {
 }
 const newHistory = hasGit && !existsSync(join(ROOT, ".git"));
 if (newHistory) {
-  Bun.spawnSync(["git", "init", "-q"], { cwd: ROOT });
-  Bun.spawnSync(["git", "config", "user.name", "sandbox"], { cwd: ROOT });
-  Bun.spawnSync(["git", "config", "user.email", "sandbox@sandbox"], { cwd: ROOT });
+  Bun.spawnSync([...GIT, "init", "-q"], { cwd: ROOT, env: GIT_ENV });
+  Bun.spawnSync([...GIT, "config", "user.name", "sandbox"], { cwd: ROOT, env: GIT_ENV });
+  Bun.spawnSync([...GIT, "config", "user.email", "sandbox@sandbox"], { cwd: ROOT, env: GIT_ENV });
 }
 // Seed mods nobody has edited follow engine updates; edited ones are left alone.
 const seeded = readJson<Record<string, string>>("seeded.json", {});
@@ -65,9 +67,22 @@ for (const file of new Bun.Glob("mods/**/*").scanSync(join(ENGINE, "seed"))) {
 writeJson("seeded.json", seeded);
 cpSync(join(ENGINE, "api.ts"), join(ROOT, "api.ts"));
 writeFileSync(join(ROOT, ".gitignore"), "node_modules\n");
-if (!existsSync(join(ROOT, "package.json"))) writeFileSync(join(ROOT, "package.json"), JSON.stringify({ private: true }, null, 2));
-// An imported world comes without the packages its mods added; its lockfile brings back the same ones, so mods that use them reload.
-if (existsSync(join(ROOT, "bun.lock")) && !existsSync(join(ROOT, "node_modules"))) Bun.spawnSync([process.execPath, "install"], { cwd: ROOT, env: { ...process.env, BUN_BE_BUN: "1" } });
+// package.json may be a stranger's: only npm registry packages by plain version stay in it, and they install in the mod sandbox, never with its scripts.
+const packageJson = (() => {
+  try {
+    return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+  } catch {
+    return null;
+  }
+})();
+const packages = sanitizeManifest(packageJson);
+const startNotices: string[] = [];
+if (packages.dropped.length) startNotices.push(`Left out packages that aren't plain npm registry versions: ${packages.dropped.join(", ")}.`);
+if (packages.dropped.length || !packageJson || Object.keys(packageJson).some((key) => key !== "private" && key !== "dependencies") || packageJson.private !== true)
+  writeFileSync(join(ROOT, "package.json"), JSON.stringify(packages.manifest, null, 2));
+// An imported world comes without the packages its mods added; its lockfile pins the same versions, so mods that use them reload.
+if (packages.manifest.dependencies && !existsSync(join(ROOT, "node_modules")) && !boxRefusal())
+  await install(ROOT).catch((e: Error) => startNotices.push(`This world's packages couldn't be installed, so mods that import them won't load: ${e.message}`));
 cpSync(join(ENGINE, "GUIDE.md"), join(ROOT, "GUIDE.md"));
 writeFileSync(
   join(ROOT, "tsconfig.json"),
@@ -100,8 +115,8 @@ writeFileSync(
 // Mods are committed when they go live, so the history keeps each as it was last accepted; a start commits only the files the engine writes, and only when they changed.
 if (hasGit) {
   const engineFiles = newHistory ? ["."] : ["api.ts", "GUIDE.md", "tsconfig.json", ".gitignore", "package.json"];
-  Bun.spawnSync(["git", "add", "--", ...engineFiles], { cwd: ROOT });
-  Bun.spawnSync(["git", "commit", "-qm", newHistory ? "new world" : "engine update", "--", ...engineFiles], { cwd: ROOT, stdout: "ignore" });
+  Bun.spawnSync([...GIT, "add", "--", ...engineFiles], { cwd: ROOT, env: GIT_ENV });
+  Bun.spawnSync([...GIT, "commit", "-qm", newHistory ? "new world" : "engine update", "--", ...engineFiles], { cwd: ROOT, env: GIT_ENV, stdout: "ignore" });
 }
 
 const record = openRecord(join(DATA, "record.sqlite"));
@@ -225,7 +240,7 @@ function feed(text: string, kind = "info") {
 
 const mods = new Mods(ROOT, BUILD, join(DATA, "mods.json"), {
   // Players in other games get null, which unloads the mod where a move to another game left it behind and does nothing elsewhere.
-  client: (name, url, game) => {
+  client: (name, url, game): boolean => {
     let loaded = false;
     for (const [player, ws] of sockets) {
       const loads = !game || sims.gameOf(player) === game;
@@ -252,6 +267,7 @@ const sims = new Sims(DATA, DB, () => mods.list(), {
     log(mod, "error", error);
     mods.revert(mod, error);
   },
+  unavailable: (reason) => feed(reason, "error"),
   reloadedJustBefore: (game) => mods.reloadedJustBefore(game),
   hubTick: (diff) => store.track(diff),
   changed: () => broadcast(gamesMessage()),
@@ -278,7 +294,11 @@ if (crashed) {
 }
 hub.start();
 if (process.env.SANDBOX_NOTICE) feed(process.env.SANDBOX_NOTICE, "error");
-for (const mod of refreshed) await mods.reload(mod, "world", owners[mod] ?? "world");
+for (const notice of startNotices) feed(notice, "error");
+// Seed mods an engine update refreshed run their saved builds from the start, and their new files reload behind the typecheck's warm-up, so the world opens without waiting for it.
+void (async () => {
+  for (const mod of refreshed) await mods.reload(mod, "world", owners[mod] ?? "world");
+})().catch((e) => feed(`The engine's updated starter mods couldn't reload: ${e instanceof Error ? e.message : String(e)}`, "error"));
 setInterval(() => store.save(hub), 5000);
 store.snapshot(hub);
 setInterval(() => store.snapshot(hub), 60_000);
@@ -289,7 +309,7 @@ setInterval(() => {
 /** Reloads from the world's git history, for timelapse moments recorded before activity was stored. */
 function olderReloads(): Activity[] {
   if (!hasGit) return [];
-  const log = Bun.spawnSync(["git", "log", "--since=3 hours ago", "--format=%at %an|%s"], { cwd: ROOT }).stdout.toString();
+  const log = Bun.spawnSync([...GIT, "log", "--since=3 hours ago", "--format=%at %an|%s"], { cwd: ROOT, env: GIT_ENV }).stdout.toString();
   return log.split("\n").flatMap((row) => {
     const [, at, who, subject] = row.match(/^(\d+) (.+?)\|(\S+ v\d+)$/) ?? [];
     return at ? [{ at: Number(at) * 1000, t: "feed" as const, text: `${who} reloaded ${subject}`, kind: "ok" }] : [];
@@ -320,7 +340,11 @@ async function timelapseFor(who: string | null) {
   const seen = who ? await hub.visibleTo(who, await built.ticks) : await built.ticks;
   return (await inWorker<{ gz: Uint8Array<ArrayBuffer> }>({ t: "encode", ticks: seen })).gz;
 }
-function shutdown() {
+let stopping = false;
+async function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  await mods.close();
   record.close();
   store.save(hub);
   sims.saveAll();
@@ -328,7 +352,9 @@ function shutdown() {
 }
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutdown);
 // Windows has no SIGTERM to send, so the launcher asks over IPC; a launcher that died without asking closes the channel.
-process.on("message", (msg: any) => msg?.t === "stop" && shutdown());
+process.on("message", (msg: unknown) => {
+  if (msg && typeof msg === "object" && "t" in msg && msg.t === "stop") shutdown();
+});
 process.on("disconnect", shutdown);
 
 const clientBuild = await Bun.build({ entrypoints: [join(ENGINE, "client/main.ts")], target: "browser", external: ["three", "three/*"] });
@@ -500,6 +526,8 @@ async function speech(text: string, speaker: string | undefined) {
 
 /** Joins waiting for the host to answer whether a new computer may play as a name that's already someone's. */
 const asking = new Map<string, (allow: boolean) => void>();
+/** What the main menu opens the timelapse with, so the host watches without joining and no admin key rides in the game's link: each plays the host's view once, within two minutes. */
+const watchers = new Map<string, number>();
 
 /** The player playing on the host's computer, named when players are told who can turn voice on. */
 function hostIs(body: { host?: string }, name: string) {
@@ -566,6 +594,12 @@ const server = Bun.serve<Conn>({
         case "voice":
           broadcast({ t: "voice", on: !!voiceKey() });
           return Response.json({});
+        case "watch": {
+          for (const [old, until] of watchers) if (until < Date.now()) watchers.delete(old);
+          const watch = token() + token();
+          watchers.set(watch, Date.now() + 120_000);
+          return Response.json({ token: watch });
+        }
         case "activity":
           return Response.json(
             record.activity({
@@ -588,7 +622,10 @@ const server = Bun.serve<Conn>({
     }
     if (path === "/api/timelapse") {
       // The host watches from the main menu without joining, and sees everything.
-      const host = bearer(req) === config.hostKey;
+      const given = bearer(req) ?? "";
+      const watcher = (watchers.get(given) ?? 0) > Date.now();
+      watchers.delete(given);
+      const host = watcher || given === config.hostKey;
       const who = host ? null : (nameByKey(bearer(req)) ?? null);
       if (!host && !who) return new Response(null, { status: 401 });
       try {
@@ -651,15 +688,17 @@ const server = Bun.serve<Conn>({
         hostIs(body, known);
         return Response.json({ key: body.key, name: known, invite: config.invite });
       }
-      if (body.invite !== config.invite && body.invite !== config.hostKey) return Response.json({ error: "You need an invite link from the host." }, { status: 403 });
-      if (config.password && body.invite !== config.hostKey && body.password !== config.password)
+      // The host's launcher joins them as the host with the world's host key, from its own process: no link carries that key, so it never reaches a game's page.
+      const asHost = body.host === config.hostKey;
+      if (!asHost && body.invite !== config.invite) return Response.json({ error: "You need an invite link from the host." }, { status: 403 });
+      if (config.password && !asHost && body.password !== config.password)
         return Response.json({ error: body.password ? "That password isn't right." : "This world has a password. Ask the host for it.", password: true }, { status: 403 });
       const name = String(body.name ?? "").trim().toLowerCase();
       if (!/^[a-z0-9][a-z0-9_-]{1,15}$/.test(name)) return Response.json({ error: "Names are 2–16 letters, digits, - or _." }, { status: 400 });
       if (sockets.has(name) || (claudes.get(name)?.state ?? "offline") !== "offline")
         return Response.json({ error: "Someone is playing as that name right now. If it's you, close the game there first." }, { status: 409 });
       // An offline player's name goes to a new computer only when the host lets it in; the old key then stops working.
-      if (Object.values(keys).includes(name) && body.host !== config.hostKey) {
+      if (Object.values(keys).includes(name) && !asHost) {
         const host = config.host ? sockets.get(config.host) : undefined;
         if (!host) return Response.json({ error: `The host isn't in the game to let you in as ${name}. Pick another name.` }, { status: 409 });
         const id = token();
@@ -684,7 +723,7 @@ const server = Bun.serve<Conn>({
 
     if (path === "/ws") {
       const invite = url.searchParams.get("invite");
-      if (invite === config.invite || invite === config.hostKey) {
+      if (invite === config.invite) {
         if (spectators.size >= 8) return new Response("too many spectators", { status: 503 });
         return server.upgrade(req, { data: { name: `~${token()}`, ua: "", at: Date.now(), spectator: true } }) ? undefined : new Response("upgrade failed", { status: 400 });
       }
@@ -843,6 +882,6 @@ function samplePlayer(name: string, report: any) {
 }
 
 const base = `http://localhost:${server.port}`;
-// The host link carries the host key, so it goes only to a terminal, never into a log file.
-console.log(process.stdout.isTTY ? `\n  ${config.name} is running.\n  Host link (keep private): ${base}/#invite=${config.hostKey}\n` : `${config.name} is running on ${base}`);
+// The invite lets anyone in, so it goes only to a terminal, never into a log file. The host plays by it too: the world's host key never rides in a link, where a page's mods could read it.
+console.log(process.stdout.isTTY ? `\n  ${config.name} is running.\n  Invite link (for your players and you): ${base}/#invite=${config.invite}\n` : `${config.name} is running on ${base}`);
 process.send?.({ port: server.port });

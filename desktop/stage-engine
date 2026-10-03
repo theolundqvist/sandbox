@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Puts the engine, its packages for this platform and this machine's bun into server/engine, which the app ships as its game server.
 # One folder down, because electron-builder leaves out a node_modules at the top of an extraResources folder.
+# The bun must be the version in ../.bun-version: mod package installs fill its cache by that version's folder names.
 set -euo pipefail
 cd "$(dirname "$0")"
+want="$(tr -d '[:space:]' <../.bun-version)"
+have="$(bun --version)"
+[ "$have" = "$want" ] || { echo "stage-engine needs bun $want (from .bun-version), but bun is $have." >&2; exit 1; }
 (cd .. && bun install --frozen-lockfile)
 rm -rf server
 mkdir -p server/engine

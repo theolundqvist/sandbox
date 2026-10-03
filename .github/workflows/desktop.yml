@@ -30,6 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - run: ./stage-engine
       - run: |
@@ -68,8 +70,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
-      - run: bun test engine/world.test.ts engine/games.test.ts engine/launcher.test.ts
+      - name: Verify trusted seeds and unsupported-platform refusal
+        run: bun test engine/box/seed.test.ts
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

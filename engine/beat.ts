@@ -1,4 +1,4 @@
-// Copies a game process's heartbeat into the file its world process reads, on Windows, from a thread of its own so a mod that freezes the game can't stop it.
+// Copies a simulation process's heartbeat into the file its world process reads, on Windows, from a thread of its own so a mod that freezes the simulation can't stop it.
 import { openSync, writeSync } from "node:fs";
 
 self.onmessage = ({ data }: MessageEvent<{ file: string; beat: SharedArrayBuffer }>) => {

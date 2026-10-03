@@ -1,0 +1,1 @@
+# No ambient preload or package hooks in boxed Bun processes.

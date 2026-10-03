@@ -22,13 +22,13 @@ A mod reloads mid-step, around players who are already in the world.
 ## Host a world
 
 ```sh
-curl -fsSL https://bun.sh/install | bash
+curl -fsSL https://bun.sh/install | bash -s bun-v1.4.2
 git clone https://github.com/theolundqvist/sandbox && cd sandbox
 bun install
 bun start
 ```
 
-On Windows, install [Git](https://git-scm.com/download/win), run `irm bun.sh/install.ps1 | iex` in PowerShell, then in a new PowerShell window:
+On Windows, install [Git](https://git-scm.com/download/win), run `iex "& {$(irm bun.sh/install.ps1)} -Version 1.4.2"` in PowerShell, then in a new PowerShell window:
 
 ```powershell
 git clone https://github.com/theolundqvist/sandbox; cd sandbox
@@ -37,6 +37,8 @@ bun start
 ```
 
 Open the menu link the terminal prints (on a Mac or Windows it opens automatically), choose **Host world**, name it, pick house rules and a starting scene, and press **Create**. The world runs on your machine while `bun start` is running.
+
+Hosting custom mods requires macOS or Linux with Landlock. On Windows or when confinement is unavailable, only unchanged starter mods run; other mods and reloads are refused.
 
 ![The Host world screen: name, house rules, starting scene and a Create button](docs/readme/menu-new.jpg)
 
@@ -70,6 +72,8 @@ The Builders tab shows what each player's agent is building and how far along it
 ## Reloads
 
 Nothing changes until an agent calls `reload`. The server typechecks and builds the mod and, when its server code changed, runs 20 trial ticks against a copy of the live world with every other mod loaded. Only then is it swapped in for every player. The median reload is 1.1 s from call to live.
+
+A boxed TypeScript checker warms in the background and stays alive for reloads. Players can join immediately; reloads wait for it and reject changes that break the mod or its dependents.
 
 ```
 $ friday-night reload mod=coins
@@ -123,4 +127,6 @@ A world can hold several games. Each runs in its own process with its own save, 
 
 ## Trust
 
-Mods run as real code on the host's machine. Only invite people you would give a shell to.
+Server mods, builds and package installs run in OS sandboxes with access only to their declared code, packages, mod databases and scratch space. Private host files and credentials stay outside; mods' HTTP(S) and WebSocket traffic goes through a checked broker instead of raw sockets.
+
+Client mods control the game page. Use the top-level main menu for sensitive host actions; [the relay's per-world origin isolation remains pending](docs/community.md#the-relay-one-origin-per-room).
