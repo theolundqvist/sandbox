@@ -1422,6 +1422,7 @@ describe("usage stats", () => {
     await shell.click("text=Worlds");
     await shell.keyboard.press("Escape");
     await shell.click("text=Join world");
+    await shell.keyboard.press("Escape");
     await quit(app, shell);
     await sleep(1000);
     const after = batches.slice(before).flatMap((b) => JSON.parse(b.raw).events);
