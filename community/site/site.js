@@ -70,6 +70,8 @@ async function showUsage(w) {
 }
 const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n)) + " tokens";
 const day = (ms) => new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(new Date(ms).getFullYear() !== new Date().getFullYear() && { year: "numeric" }) }).replaceAll(" ", "\u00a0");
+/** How many worlds added a mod. */
+const usedBy = (n = 0) => `${counted(n, "world")} use${n === 1 ? "s" : ""} it`;
 const ago = (ms) => {
   const m = Math.round((Date.now() - ms) / 60000);
   return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : Math.round(m / 1440) === 1 ? "yesterday" : `${Math.round(m / 1440)} days ago`;
@@ -78,7 +80,7 @@ const ago = (ms) => {
 const pageOf = (w) => `/${w.kind === "mod" ? "m" : "w"}/${w.id}`;
 /** A world as a row: its clip, its name, who made it, and the link to play or fork it in the app. A mod's row says how many worlds use it instead. */
 function worldRow(w) {
-  if (w.kind === "mod") return el("a", { className: "world", href: pageOf(w) }, el("span", { className: "cover" }, media(w)), el("span", { className: "what" }, el("b", { textContent: w.title }), el("small", { textContent: `by ${w.author} · ${counted(w.uses, "world")} use it · ${counted(w.votes, "vote")}` }), el("small", { textContent: w.description })));
+  if (w.kind === "mod") return el("a", { className: "world", href: pageOf(w) }, el("span", { className: "cover" }, media(w)), el("span", { className: "what" }, el("b", { textContent: w.title }), el("small", { textContent: `by ${w.author} · ${usedBy(w.uses)} · ${counted(w.votes, "vote")}` }), el("small", { textContent: w.description })));
   const get = el("button", { className: "quiet", textContent: "Play or fork it in the app" });
   get.dataset.event = "world-get";
   const about = w.visibility === "link" ? "link only" : `${counted(w.players, "player")} · ${counted(w.plays, "play")} · ${counted(w.votes, "vote")}`;
@@ -160,7 +162,7 @@ async function showWorld(id, kind = "world") {
   $("world-stage").replaceChildren(media(w));
   $("world-title").textContent = w.title;
   const names = w.builders ?? [w.author];
-  const counts = mod ? ["", `${counted(w.uses, "world")} use it`] : ["", counted(w.players, "player"), counted(w.plays, "play"), w.mods ? `${w.mods} mods` : ""];
+  const counts = mod ? ["", usedBy(w.uses)] : ["", counted(w.players, "player"), counted(w.plays, "play"), w.mods ? `${w.mods} mods` : ""];
   if (w.version > 1) counts.push(`Updated ${day(w.updatedAt)}`);
   $("world-by").replaceChildren("by ", ...names.flatMap((n, i) => [i ? ", " : "", el("a", { href: `/u/${n}`, textContent: n })]), counts.filter((x, i) => !i || x).join(" · "));
   $("world-get").hidden = mod;

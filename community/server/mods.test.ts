@@ -33,6 +33,9 @@ test("a mod is published by an account, found by words in its README, read with 
   expect(found[0].cover).toStartWith("http");
   expect(found[0]).not.toHaveProperty("readme");
   expect(await search("no such words")).toEqual([]);
+  // Every word counts, wherever it is: "day night" finds "Day and night".
+  expect((await search("night DAY")).map((m: any) => m.id)).toEqual([mod.id]);
+  expect(await search("day submarine")).toEqual([]);
   // Wildcards in a search are only letters.
   expect(await search("%")).toEqual([]);
 

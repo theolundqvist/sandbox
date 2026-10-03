@@ -75,12 +75,12 @@ async function shownMod(row: any, account: Awaited<ReturnType<typeof sessionOf>>
   return { ...rest, name: row.mod?.name ?? "", uses: row.uses ?? 0 };
 }
 
-/** Listed mods, most used first or newest first with ?sort=new; ?q= finds words in a mod's title, name, description or README. 50 at a time from ?after=<id>. */
+/** Listed mods, most used first or newest first with ?sort=new; ?q= finds mods with every one of its words somewhere in their title, name, description or README. 50 at a time from ?after=<id>. */
 async function search(req: Request) {
   const url = new URL(req.url);
   const account = await sessionOf(req);
   const q = text(url.searchParams.get("q"), 100);
-  const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  const words = q.split(/\s+/).filter(Boolean).slice(0, 8);
   const top = url.searchParams.get("sort") !== "new";
   const after = url.searchParams.get("after") ?? "";
   const cursor = !ID.test(after)
@@ -88,9 +88,8 @@ async function search(req: Request) {
     : top
       ? sql`and (w.uses, w.created_at, w.id) < (select uses, created_at, id from worlds where id = ${after})`
       : sql`and (w.created_at, w.id) < (select created_at, id from worlds where id = ${after})`;
-  const matching = q
-    ? sql`and (w.title ilike ${like} or w.description ilike ${like} or w.mod->>'name' ilike ${like} or w.mod->>'readme' ilike ${like})`
-    : sql``;
+  const like = (word: string) => `%${word.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  const matching = words.reduce((all, word) => sql`${all} and concat_ws(' ', w.title, w.description, w.mod->>'name', w.mod->>'readme') ilike ${like(word)}`, sql``);
   const rows = await sql`${worldRows(account)} where ${listed()} and w.kind = 'mod' ${matching} ${cursor}
     order by ${top ? sql`w.uses desc,` : sql``} w.created_at desc, w.id desc limit ${PAGE}`;
   return json(await Promise.all(rows.map((row: any) => shownMod(row, account))));
