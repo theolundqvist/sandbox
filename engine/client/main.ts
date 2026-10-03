@@ -2649,6 +2649,7 @@ const buildRows = (desktop?.agents ?? []).map(({ id, name }) => {
   };
   return row;
 });
+$("agent-app-only").hidden = !!desktop;
 if (buildRows.length) $("agent-list").append(...buildRows, Object.assign(document.createElement("div"), { className: "gap" }));
 $("agent-list").append(
   ...AGENT_GUIDES.map((guide) => {

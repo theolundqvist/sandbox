@@ -649,7 +649,7 @@ async function playtime(req: Request) {
   return json({ credited });
 }
 
-/** What an agent used in a world, added to today's row for its provider and model. Nothing sends it yet. */
+/** What an agent used in a world, added to today's row for its provider and model: the desktop app's built-in agent sends it after each turn. */
 async function agentUsage(req: Request) {
   const install = await installOf(req);
   await limit(install.id, "agent-usage", "Too much usage sent from this computer.");

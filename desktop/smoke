@@ -34,6 +34,9 @@ status=$(curl -fsS "$game/api/status" -H "authorization: Bearer $player")
 echo "$status" | head -c 600
 echo
 grep -q '"Smoke Test"' <<<"$status" || fail "/api/status doesn't name the world."
+if [ -f "$engine/engine/agent/runner.js" ]; then
+  "$engine/bun" --no-env-file "$engine/engine/agent/runner.js" models | grep -q '"anthropic"' || fail "The built-in agent's runner doesn't start."
+fi
 out=$(menu stop) || fail "Stop failed: $out"
 # Stopped, not killed: the world saved before it exited.
 grep -q "exited with code 0" "$data/launcher.log" || fail "The world didn't stop by itself."

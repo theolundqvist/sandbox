@@ -12,6 +12,18 @@ rm -rf server
 mkdir -p server/engine
 cp -R ../engine ../package.json server/engine/
 cp -R ../node_modules server/engine/node_modules
-rm -rf server/engine/node_modules/.bin server/engine/engine/launcher.test.ts
+rm -rf server/engine/node_modules/.bin server/engine/engine/launcher.test.ts server/engine/engine/agent/node_modules
+# The built-in agent's runner (Mac and Linux): OMP bundled into one file beside the engine's box, plus the native addon it loads, in its baseline build.
+case "$(uname -s)" in
+  Linux | Darwin)
+    (cd ../engine/agent && bun install --frozen-lockfile)
+    bun build ../engine/agent/runner.ts --target=bun --outdir server/engine/engine/agent -e @oh-my-pi/pi-natives -e @huggingface/transformers -e fastembed -e onnxruntime-node -e puppeteer-core -e omp-legacy-pi-modules
+    natives=server/engine/engine/agent/node_modules/@oh-my-pi
+    platform="pi-natives-$(bun -e 'process.stdout.write(`${process.platform}-${process.arch}`)')"
+    mkdir -p "$natives"
+    cp -RL ../engine/agent/node_modules/@oh-my-pi/pi-natives "../engine/agent/node_modules/@oh-my-pi/$platform" "$natives/"
+    rm -f "$natives/$platform"/*-modern.node
+    ;;
+esac
 # bun on a Mac or Linux, bun.exe on Windows.
 cp "$(bun -e 'process.stdout.write(process.execPath)')" server/engine/

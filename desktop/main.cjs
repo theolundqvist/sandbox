@@ -57,7 +57,7 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
 const STATE = join(app.getPath("userData"), "state.json");
-/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], labels: Record<string, string>, hosts: Record<string, string>, mic: string[], last?: string, port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string, worldKeys: Record<string, string>, creditTokens: string[] }} The name this player joins every world as; joined worlds by shareable address, and the names the player gave them; main menus opened, by host key; the world last played, as its address in Worlds; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed; the random id each joined world's playtime goes under; a token per world played in, to accept credit for building it. */
+/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], labels: Record<string, string>, hosts: Record<string, string>, mic: string[], last?: string, port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string, worldKeys: Record<string, string>, creditTokens: string[], agentModel?: { provider: string, id: string } }} The name this player joins every world as; joined worlds by shareable address, and the names the player gave them; main menus opened, by host key; the world last played, as its address in Worlds; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed; the random id each joined world's playtime goes under; a token per world played in, to accept credit for building it; the built-in agent's model. */
 const state = { recents: [], labels: {}, hosts: {}, mic: [], worldKeys: {}, creditTokens: [] };
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
@@ -83,10 +83,13 @@ let quitting = false;
 function layout() {
   const { width, height } = win.contentView.getBounds();
   const top = game && !win.isFullScreen() ? BAR : 0;
-  const pane = agent ? Math.round(Math.min(Math.max(width * 0.4, 420), 640)) : 0;
-  shell.setBounds({ x: 0, y: 0, width, height: game ? top : height });
+  const panel = !!(game && builtin);
+  const pane = agent || panel ? Math.round(Math.min(Math.max(width * 0.4, 420), 640)) : 0;
+  // The built-in agent's panel is the shell's own page, showing beside the game, which sits above it.
+  shell.setBounds({ x: 0, y: 0, width, height: game && !panel ? top : height });
   game?.view.setBounds({ x: 0, y: top, width: width - pane, height: height - top });
   agent?.view.setBounds({ x: width - pane, y: top, width: pane, height: height - top });
+  shell.webContents.send("agent-panel", panel ? { top, width: pane, world: builtin.name, supported: !windows } : null);
 }
 
 const toggleFullscreen = () => win.setFullScreen(!win.isFullScreen());
@@ -318,11 +321,12 @@ function sessionToken() {
   }
   return accountToken;
 }
+/** Linux without a keyring only obfuscates, so nothing secret is written there. */
+const canEncrypt = () => safeStorage.isEncryptionAvailable() && !(process.platform === "linux" && safeStorage.getSelectedStorageBackend?.() === "basic_text");
 function keepSession(token) {
   accountToken = token;
   rmSync(ACCOUNT, { force: true });
-  const plain = process.platform === "linux" && safeStorage.getSelectedStorageBackend?.() === "basic_text";
-  if (token && safeStorage.isEncryptionAvailable() && !plain) writeFileSync(ACCOUNT, safeStorage.encryptString(token), { mode: 0o600 });
+  if (token && canEncrypt()) writeFileSync(ACCOUNT, safeStorage.encryptString(token), { mode: 0o600 });
 }
 /** Community's API as the signed-in account; a session it no longer knows signs this app out. */
 async function community(path, { method = "GET", body } = {}) {
@@ -773,6 +777,7 @@ async function buildWith(id, key) {
     detail: `${installed ? "" : `Sandbox installs ${kind.name} with ${kind.maker}'s installer first. `}Sandbox sets up ${folder} for ${game.name} and starts ${kind.name} there, beside the game. When it asks whether you trust that folder, say yes. It builds as you. Stop closes it.`,
   });
   if (response !== 0 || !game || agent) return false;
+  closeBuiltin();
   const view = new WebContentsView({ webPreferences: { preload: join(__dirname, "agent-preload.cjs"), sandbox: true, contextIsolation: true } });
   view.setBackgroundColor("#0b0b0c");
   view.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -804,6 +809,7 @@ async function buildWith(id, key) {
 
 /** Stop ends the agent and everything it started: its terminal leads its own process group. */
 function stopAgent() {
+  closeBuiltin();
   if (!agent) return;
   const { view, pty } = agent;
   agent = null;
@@ -819,6 +825,112 @@ function stopAgent() {
   }
   win.contentView.removeChildView(view);
   view.webContents.close();
+  layout();
+  game?.view.webContents.focus();
+}
+
+/** The built-in agent: a runner process (engine/agent/runner.ts) that alone holds the player's API key and builds through tools boxed over a private copy of the world. Its panel is in the shell, never in a page a world serves. */
+const RUNNER = join(ENGINE, "engine/agent", app.isPackaged ? "runner.js" : "runner.ts");
+const AGENT_KEYS = join(app.getPath("userData"), "agent-keys.bin");
+const AGENT_RUNS = join(app.getPath("userData"), "agent-runs");
+/** @type {{ base: string, key: string, name: string, runner: { proc: import("node:child_process").ChildProcess, model: string } | null } | null} */ let builtin = null;
+/** @type {Record<string, string> | undefined} API keys by provider, encrypted at rest where the system can, else only until the app quits. */ let agentKeys;
+/** @type {Promise<{ providers: Record<string, string>, models: Record<string, string[]> }> | null} */ let agentModels = null;
+
+function savedAgentKeys() {
+  if (agentKeys === undefined) {
+    try {
+      agentKeys = JSON.parse(safeStorage.decryptString(readFileSync(AGENT_KEYS)));
+    } catch {
+      agentKeys = {};
+    }
+  }
+  return agentKeys;
+}
+function keepAgentKey(provider, key) {
+  const keys = { ...savedAgentKeys() };
+  if (key) keys[provider] = key;
+  else delete keys[provider];
+  agentKeys = keys;
+  rmSync(AGENT_KEYS, { force: true });
+  if (canEncrypt() && Object.keys(keys).length) writeFileSync(AGENT_KEYS, safeStorage.encryptString(JSON.stringify(keys)), { mode: 0o600 });
+}
+// Subscription logins (Claude, ChatGPT) are not offered: this lane takes API keys only. Their sign-in would go here, beside keepAgentKey.
+
+/** Runs the runner with nothing of this app's environment but PATH; its key and the world's arrive on its stdin. */
+function runnerProcess(args = []) {
+  mkdirSync(AGENT_RUNS, { recursive: true, mode: 0o700 });
+  const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: AGENT_RUNS, TMPDIR: AGENT_RUNS, SANDBOX_AGENT_DIR: AGENT_RUNS };
+  if (process.env.SANDBOX_AGENT_TEST_BASE_URL) env.SANDBOX_AGENT_TEST_BASE_URL = process.env.SANDBOX_AGENT_TEST_BASE_URL;
+  return spawn(BUN, ["--no-env-file", RUNNER, ...args], { cwd: AGENT_RUNS, env, stdio: ["pipe", "pipe", "inherit"] });
+}
+const lines = (stream, fn) => {
+  let rest = "";
+  stream.on("data", (chunk) => {
+    const parts = (rest + chunk).split("\n");
+    rest = parts.pop();
+    for (const part of parts) {
+      try {
+        fn(JSON.parse(part));
+      } catch {}
+    }
+  });
+};
+function models() {
+  agentModels ??= new Promise((resolve) => {
+    const proc = runnerProcess(["models"]);
+    lines(proc.stdout, (m) => m.t === "models" && resolve({ providers: m.providers, models: m.models }));
+    proc.once("close", () => resolve({ providers: {}, models: {} }));
+  });
+  return agentModels;
+}
+const toPanel = (event) => !shell.webContents.isDestroyed() && shell.webContents.send("agent", event);
+
+/** Opens the panel for the world the game is in, as the player the game joined as. */
+function openBuiltin(key) {
+  if (!game || typeof key !== "string") return false;
+  if (builtin) return true;
+  stopAgent();
+  builtin = { base: worldBase(new URL(game.view.webContents.getURL())), key, name: game.name, runner: null };
+  layout();
+  shell.webContents.focus();
+  return true;
+}
+async function startRunner(choice) {
+  const apiKey = savedAgentKeys()[choice.provider];
+  if (!builtin || !apiKey) return "Add a key for this provider first.";
+  const model = `${choice.provider}/${choice.id}`;
+  if (builtin.runner?.model === model) return null;
+  const s = usage.sharing() ? await hostState().catch(() => null) : null;
+  const world = s && game && worldKey(s, s.running?.id ?? null);
+  const to = world && (await usage.install().catch(() => null));
+  const session = to?.host === COMMUNITY ? sessionToken() : null;
+  if (!builtin) return "Join a world first.";
+  stopRunner();
+  const proc = runnerProcess();
+  const runner = (builtin.runner = { proc, model });
+  lines(proc.stdout, toPanel);
+  proc.once("exit", () => {
+    if (builtin?.runner === runner) {
+      builtin.runner = null;
+      toPanel({ t: "status", text: "Stopped" });
+    }
+  });
+  const { base, key, name } = builtin;
+  proc.stdin.write(`${JSON.stringify({ t: "start", world: { base, key, name }, model: choice, apiKey, usage: to ? { host: to.host, token: to.token, world, ...(session && { session }) } : undefined })}\n`);
+  return null;
+}
+function stopRunner() {
+  const runner = builtin?.runner;
+  if (!runner) return;
+  builtin.runner = null;
+  runner.proc.stdin.end(`${JSON.stringify({ t: "close" })}\n`);
+  setTimeout(() => runner.proc.exitCode === null && runner.proc.kill("SIGKILL"), 3000).unref();
+}
+function closeBuiltin() {
+  if (!builtin) return;
+  stopRunner();
+  builtin = null;
   layout();
   game?.view.webContents.focus();
 }
@@ -974,9 +1086,10 @@ app.whenReady().then(() => {
   const fromGame = (event) => event.sender === game?.view.webContents;
   const fromAgent = (event) => event.sender === agent?.view.webContents;
   ipcMain.on("cover", (event, jpeg) => (fromGame(event) || left.has(event.sender)) && keepJoinedCover(event.sender, jpeg));
-  ipcMain.on("agents", (event) => (event.returnValue = fromGame(event) ? Object.entries(AGENTS).map(([id, a]) => ({ id, name: a.name })) : []));
+  ipcMain.on("agents", (event) => (event.returnValue = fromGame(event) ? [{ id: "builtin", name: "the built-in agent" }, ...Object.entries(AGENTS).map(([id, a]) => ({ id, name: a.name }))] : []));
   ipcMain.handle("build", async (event, id, key) => {
     if (!fromGame(event)) return false;
+    if (id === "builtin") return openBuiltin(key);
     const started = await buildWith(String(id), key);
     usage.step("agent", "build-with", { agent: Object.hasOwn(AGENTS, id) ? id : null, outcome: started === true ? "started" : started === false ? "declined" : "failed" });
     return started;
@@ -991,7 +1104,30 @@ app.whenReady().then(() => {
     if (agent.pty) agent.pty.resize(cols, rows);
     else agent.start(cols, rows);
   });
-  ipcMain.on("agent-close", (event) => fromAgent(event) && stopAgent());
+  ipcMain.handle("agent-setup", async (event) => {
+    if (!fromShell(event) || !builtin) return null;
+    const { providers, models: list } = await models();
+    return { providers, models: list, saved: Object.keys(savedAgentKeys()), choice: state.agentModel ?? null, keychain: canEncrypt() };
+  });
+  ipcMain.handle("agent-key", async (event, provider, key) => {
+    if (!fromShell(event) || !Object.hasOwn((await models()).providers, provider) || (key !== null && (typeof key !== "string" || !/^\S{8,400}$/.test(key)))) return false;
+    keepAgentKey(provider, key);
+    if (builtin?.runner?.model.startsWith(`${provider}/`)) stopRunner();
+    return true;
+  });
+  ipcMain.handle("agent-prompt", async (event, choice, text) => {
+    if (!fromShell(event) || !builtin || windows || typeof text !== "string" || !text.trim()) return "Nothing to send.";
+    const { models: list } = await models();
+    if (!list[choice?.provider]?.includes(choice?.id)) return "Pick a model.";
+    state.agentModel = { provider: choice.provider, id: choice.id };
+    save();
+    const why = await startRunner(state.agentModel);
+    if (why) return why;
+    builtin?.runner?.proc.stdin.write(`${JSON.stringify({ t: "prompt", text })}\n`);
+    return null;
+  });
+  ipcMain.on("agent-stop", (event) => fromShell(event) && builtin?.runner?.proc.stdin.write(`${JSON.stringify({ t: "stop" })}\n`));
+  ipcMain.on("agent-close", (event) => (fromShell(event) ? closeBuiltin() : fromAgent(event) && stopAgent()));
 
   protocol.handle("sandbox", (req) => {
     const path = decodeURIComponent(new URL(req.url).pathname);

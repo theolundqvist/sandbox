@@ -10,3 +10,4 @@ Each product's own mark, shown on the Agent page to name the agent a player pick
 - `omp.svg`: https://omp.sh/favicon.svg
 - `pi.svg`: https://pi.dev/logo-auto.svg
 - `opencode.svg`: https://github.com/anomalyco/opencode (packages/ui/src/assets/favicon/favicon-v3.svg)
+- `builtin.svg`: Sandbox's own blocks, for the agent built into the desktop app

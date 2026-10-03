@@ -1,0 +1,8 @@
+{
+  "name": "sandbox-agent",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@oh-my-pi/pi-coding-agent": "18.5.1"
+  }
+}

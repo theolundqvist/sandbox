@@ -79,6 +79,31 @@
   body.playing #version { display: none; }
   body.playing :is(.backdrop, .front, .hints) { display: none; }
   body.starting :is(#title .items, .hints) { visibility: hidden; }
+  /* The built-in agent beside the game: the shell shows under the game's view, so this right-hand strip is the shell's own page. */
+  #builtin { position: fixed; right: 0; bottom: 0; display: flex; flex-direction: column; background: #0b0b0c; border-left: 1px solid var(--line); user-select: text; }
+  #builtin-bar { flex: none; height: 44px; display: flex; align-items: center; gap: 12px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--line); font: 700 12px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; }
+  #builtin-world { flex: 1; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #builtin button { height: 32px; padding: 0 12px; background: none; border: 0; color: var(--text); font: 700 12px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; cursor: pointer; outline: none; }
+  #builtin button:is(:hover, :focus-visible) { background: var(--accent); color: #0b0b0c; }
+  #builtin button:disabled { color: var(--dim); background: none; cursor: default; }
+  #builtin-windows { margin: 24px 16px; color: var(--dim); }
+  #builtin-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #builtin-setup { flex: none; display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  #builtin-setup label { color: var(--dim); font: 700 11px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; }
+  #builtin :is(select, input, textarea) { min-width: 0; padding: 7px 8px; background: #161618; border: 1px solid var(--line); border-radius: 0; color: var(--text); font: 13px/1.4 system-ui, sans-serif; outline: none; }
+  #builtin :is(select, input, textarea):focus { border-color: var(--accent); }
+  #builtin-keyrow { display: flex; gap: 8px; align-items: center; min-width: 0; }
+  #builtin-keyrow input { flex: 1; }
+  #builtin-saved { flex: 1; color: var(--ok); }
+  #builtin-keynote { grid-column: 1 / -1; margin: 0; color: var(--dim); font-size: 12px; }
+  #builtin-log { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 16px; font-size: 14px; }
+  #builtin-log p { margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #builtin-log .you { color: var(--accent); }
+  #builtin-log .tool { margin: 4px 0; color: var(--dim); font: 12px/1.4 ui-monospace, monospace; }
+  #builtin-log .err { color: var(--err); }
+  #builtin-status { flex: none; padding: 6px 16px; color: var(--dim); font: 700 11px/1.4 var(--display); letter-spacing: .14em; text-transform: uppercase; border-top: 1px solid var(--line); }
+  #builtin-send { flex: none; display: flex; gap: 8px; align-items: flex-end; padding: 0 8px 10px 16px; }
+  #builtin-send textarea { flex: 1; height: 64px; resize: none; }
 </style>
 </head>
 <body>
@@ -330,6 +355,22 @@
   <div id="progress" hidden><i></i></div>
   <div id="error" class="error"></div>
 </main>
+<aside id="builtin" hidden>
+  <div id="builtin-bar"><span>Agent</span><span id="builtin-world"></span><button id="builtin-close">Close</button></div>
+  <p id="builtin-windows" hidden>Use an outside agent for now.</p>
+  <div id="builtin-body">
+    <div id="builtin-setup">
+      <label for="builtin-provider">Provider</label><select id="builtin-provider"></select>
+      <label for="builtin-model">Model</label><select id="builtin-model"></select>
+      <label for="builtin-key">Key</label>
+      <div id="builtin-keyrow"><input id="builtin-key" type="password" placeholder="API key" autocomplete="off" spellcheck="false"><span id="builtin-saved" hidden>Saved</span><button id="builtin-key-go">Save</button></div>
+      <p id="builtin-keynote" hidden>This computer has no keychain, so the key lasts until Sandbox quits.</p>
+    </div>
+    <div id="builtin-log"></div>
+    <div id="builtin-status">Ready</div>
+    <div id="builtin-send"><textarea id="builtin-prompt" placeholder="What should we build?"></textarea><button id="builtin-go">Send</button><button id="builtin-stop" hidden>Stop</button></div>
+  </div>
+</aside>
 <div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span id="rename-hint"><kbd>F2</kbd>Rename</span><span id="forget-hint"><kbd>Del</kbd>Remove</span><span id="fullscreen-hint"><kbd>F11</kbd>Full screen</span><span id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span></div>
 
 <script type="module">
@@ -379,6 +420,7 @@
     target?.focus();
   }
   addEventListener("keydown", (e) => {
+    if (e.target.closest?.("#builtin")) return;
     const typing = document.activeElement?.matches("input");
     if (e.key === "Escape" || (e.key === "Backspace" && !typing)) {
       e.preventDefault();
@@ -1239,6 +1281,100 @@ const usedBy = (n = 0) => `${counted(n, "world")} use${n === 1 ? "s" : ""} it`;
   shell.on("starting", (text) => {
     $("busy").textContent = text ?? "";
     $("busy").hidden = !text;
+  });
+  /** The built-in agent's panel: a provider and model, the player's key for it, what the agent did, and Stop. */
+  const agent = { setup: null, open: false };
+  const option = (value, text) => Object.assign(document.createElement("option"), { value, textContent: text });
+  const logLine = (className, text) => {
+    const log = $("builtin-log");
+    const end = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+    log.append(Object.assign(document.createElement("p"), { className, textContent: text }));
+    if (end) log.scrollTop = log.scrollHeight;
+  };
+  const working = (on) => {
+    $("builtin-go").hidden = on;
+    $("builtin-stop").hidden = !on;
+  };
+  function showKey() {
+    const provider = $("builtin-provider").value;
+    const saved = agent.setup.saved.includes(provider);
+    $("builtin-key").hidden = saved;
+    $("builtin-saved").hidden = !saved;
+    $("builtin-key-go").textContent = saved ? "Remove" : "Save";
+    $("builtin-keynote").hidden = agent.setup.keychain;
+  }
+  function showModels(pick) {
+    const list = agent.setup.models[$("builtin-provider").value] ?? [];
+    $("builtin-model").replaceChildren(...list.map((id) => option(id, id)));
+    if (pick && list.includes(pick)) $("builtin-model").value = pick;
+    showKey();
+  }
+  shell.on("agent-panel", async (p) => {
+    $("builtin").hidden = !p;
+    if (!p) {
+      agent.open = false;
+      agent.setup = null;
+      $("builtin-log").replaceChildren();
+      return;
+    }
+    Object.assign($("builtin").style, { top: `${p.top}px`, width: `${p.width}px` });
+    $("builtin-world").textContent = p.world;
+    $("builtin-windows").hidden = p.supported;
+    $("builtin-body").hidden = !p.supported;
+    if (agent.open || !p.supported) return;
+    agent.open = true;
+    $("builtin-status").textContent = "Ready";
+    working(false);
+    agent.setup = await shell.agentSetup();
+    if (!agent.setup) return;
+    const ids = Object.keys(agent.setup.providers);
+    $("builtin-provider").replaceChildren(...ids.map((id) => option(id, agent.setup.providers[id])));
+    const choice = agent.setup.choice ?? { provider: ids.find((id) => agent.setup.saved.includes(id)) ?? ids[0] };
+    $("builtin-provider").value = choice.provider;
+    showModels(choice.id);
+    $("builtin-prompt").focus();
+  });
+  $("builtin-provider").onchange = () => showModels();
+  $("builtin-close").onclick = () => shell.agentClose();
+  $("builtin-key-go").onclick = async () => {
+    const provider = $("builtin-provider").value;
+    const saved = agent.setup.saved.includes(provider);
+    const key = $("builtin-key").value.trim();
+    if (!saved && !key) return $("builtin-key").focus();
+    if (!(await shell.agentKey(provider, saved ? null : key))) return logLine("err", "That doesn't look like an API key.");
+    $("builtin-key").value = "";
+    agent.setup.saved = saved ? agent.setup.saved.filter((p) => p !== provider) : [...agent.setup.saved, provider];
+    showKey();
+  };
+  $("builtin-key").addEventListener("keydown", (e) => e.key === "Enter" && $("builtin-key-go").click());
+  async function sendPrompt() {
+    const text = $("builtin-prompt").value.trim();
+    if (!text) return;
+    const why = await shell.agentPrompt({ provider: $("builtin-provider").value, id: $("builtin-model").value }, text);
+    if (why) return logLine("err", why);
+    $("builtin-prompt").value = "";
+    logLine("you", text);
+    working(true);
+  }
+  $("builtin-go").onclick = sendPrompt;
+  $("builtin-prompt").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendPrompt();
+    }
+  });
+  $("builtin-stop").onclick = () => shell.agentStop();
+  const toolLine = ({ name, args }) => `${name.replace(/^box_/, "")}  ${String(args?.command ?? args?.path ?? args?.pattern ?? "").split("\n")[0].slice(0, 160)}`;
+  shell.on("agent", (e) => {
+    if (e.t === "status") {
+      $("builtin-status").textContent = e.text;
+      working(e.text === "Working" || e.text === "Copying the world's code");
+    } else if (e.t === "ready") $("builtin-status").textContent = `Ready · ${e.files} files copied`;
+    else if (e.t === "assistant") logLine("", e.text);
+    else if (e.t === "tool") logLine("tool", toolLine(e));
+    else if (e.t === "tool_error") logLine("tool err", e.text);
+    else if (e.t === "error") logLine("err", e.text);
+    else if (e.t === "usage") logLine("tool", `${e.inputTokens + e.cacheRead + e.cacheWrite} tokens in · ${e.outputTokens} out · $${e.costUsd.toFixed(3)}`);
   });
   document.body.classList.add("starting");
   show("title");

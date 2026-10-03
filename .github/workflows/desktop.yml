@@ -42,6 +42,11 @@ jobs:
           env -i PATH="$PATH" HOME="$RUNNER_TEMP/box-home" TMPDIR="$RUNNER_TEMP/box-tmp" \
             nice -n 19 timeout --signal=KILL 60s bun --no-env-file test engine/box/box.test.ts
       - run: bun install --frozen-lockfile
+        working-directory: engine/agent
+      - name: Built-in agent against a scripted model
+        working-directory: .
+        run: env -i PATH="$PATH" HOME="$RUNNER_TEMP/box-home" TMPDIR="$RUNNER_TEMP/box-tmp" nice -n 19 timeout --signal=KILL 120s bun --no-env-file test engine/agent
+      - run: bun install --frozen-lockfile
       - run: bunx playwright-core install --with-deps chromium
       - run: nice -n 19 xvfb-run -a node --test --test-name-pattern="$TEST_PATTERN" app.test.mjs
         timeout-minutes: ${{ inputs.tests && 3 || 25 }}
@@ -53,6 +58,22 @@ jobs:
         with:
           name: desktop-captures
           path: ${{ runner.temp }}/captures
+
+  agent-mac:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: engine/agent
+      - name: Built-in agent against a scripted model, in the Mac's sandbox
+        run: |
+          mkdir -p "$RUNNER_TEMP/box-home" "$RUNNER_TEMP/box-tmp"
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/box-home" TMPDIR="$RUNNER_TEMP/box-tmp" bun --no-env-file test engine/agent
 
   build:
     # Builds only what ships: tags, or a run by hand.

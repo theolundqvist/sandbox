@@ -1513,7 +1513,7 @@ describe("building with an agent", () => {
   test("Build with asks first in the app's own dialog, then sets up the world's folder and runs the agent there beside the game with the prompt, and Stop ends it", async () => {
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#rail [data-tab=claude]");
-    assert.deepEqual(await game.locator(".item.agent.build").allTextContents(), ["Build with Claude Code", "Build with Codex"]);
+    assert.deepEqual(await game.locator(".item.agent.build").allTextContents(), ["Build with the built-in agent", "Build with Claude Code", "Build with Codex"]);
     await answer(app, 1);
     await game.click("text=Build with Claude Code");
     const [question] = await until("the question", () => asked(app).then((a) => a.length && a));
@@ -1540,6 +1540,113 @@ describe("building with an agent", () => {
         return true;
       }
     });
+  });
+});
+
+describe("the built-in agent", () => {
+  // The model is a script on this computer speaking Anthropic's streaming API, and the same server stands in for Community's usage endpoint.
+  const KEY = "sk-ant-synthetic-0123456789";
+  const FAKE = port();
+  const usagePosts = [];
+  const sse = (answer) => {
+    const events = [["message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: "claude-sonnet-4-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 900, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }]];
+    const block = answer.call ? { type: "tool_use", id: `toolu_${Math.random().toString(16).slice(2)}`, name: answer.call.name, input: {} } : { type: "text", text: "" };
+    const delta = answer.call ? { type: "input_json_delta", partial_json: JSON.stringify(answer.call.input) } : { type: "text_delta", text: answer.text };
+    events.push(["content_block_start", { type: "content_block_start", index: 0, content_block: block }], ["content_block_delta", { type: "content_block_delta", index: 0, delta }], ["content_block_stop", { type: "content_block_stop", index: 0 }]);
+    events.push(["message_delta", { type: "message_delta", delta: { stop_reason: answer.call ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 40 } }], ["message_stop", { type: "message_stop" }]);
+    return events.map(([e, d]) => `event: ${e}\ndata: ${JSON.stringify(d)}\n\n`).join("");
+  };
+  /** The model's part: the newest message decides the next step. */
+  const next = (messages) => {
+    const last = messages.at(-1);
+    const said = typeof last.content === "string" ? last.content : last.content.map((b) => b.text ?? "").join("");
+    const results = Array.isArray(last.content) ? last.content.filter((b) => b.type === "tool_result") : [];
+    if (/Look around/.test(said)) return { call: { name: "box_bash", input: { command: "world status | head -n 2; ls" } } };
+    if (/Wait/.test(said)) return { call: { name: "box_bash", input: { command: "sleep 300.5" } } };
+    if (results.length) return { text: "The world answered, and your copy has GUIDE.md. What should we build first?" };
+    return { text: "OK." };
+  };
+  const fake = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    if (req.url === "/v1/messages") {
+      res.setHeader("content-type", "text/event-stream");
+      return res.end(sse(next(JSON.parse(body).messages)));
+    }
+    if (req.method === "POST" && req.url === "/installs") return res.end(JSON.stringify({ id: "install00002", token: "install-token-2" }));
+    if (req.method === "POST" && req.url === "/agent-usage") {
+      usagePosts.push({ auth: req.headers.authorization, body: JSON.parse(body) });
+      res.statusCode = 204;
+      return res.end();
+    }
+    res.statusCode = 404;
+    res.end("{}");
+  }).listen(FAKE);
+  let app, shell, game;
+  before(async () => {
+    ({ app, shell } = await launch("maker", { SANDBOX_AGENT_TEST_BASE_URL: `http://127.0.0.1:${FAKE}`, SANDBOX_COMMUNITY: `http://127.0.0.1:${FAKE}` }, "maker"));
+    await shell.click("text=Join world");
+    await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
+    await shell.press("#join-link", "Enter");
+    game = await gamePage(app);
+    await playing(game);
+  });
+  after(async () => {
+    await close(app);
+    fake.close();
+  });
+
+  test("its panel opens in the app's own view beside the game, takes a key, shows the turn and what it cost, and Stop ends a running command at once", async () => {
+    await game.locator("#menu-button").dispatchEvent("click");
+    await game.click("#rail [data-tab=claude]");
+    assert.equal(await shown(game, "#agent-app-only"), false);
+    await game.click("text=Build with the built-in agent");
+    await until("the panel", () => shown(shell, "#builtin"));
+    const [panel, view] = await Promise.all([shell.locator("#builtin").boundingBox(), game.evaluate(() => innerWidth)]);
+    assert.ok(Math.abs(panel.x - view) <= 1, `panel at ${panel.x}, game ${view} wide`);
+    await until("the providers", async () => (await shell.locator("#builtin-provider option").count()) > 1);
+    await shell.selectOption("#builtin-provider", "anthropic");
+    await shell.selectOption("#builtin-model", "claude-sonnet-4-5");
+    await capture(shell, "builtin-agent-setup");
+    await shell.fill("#builtin-key", KEY);
+    await shell.click("#builtin-key-go");
+    await until("the key saved", () => shown(shell, "#builtin-saved"));
+
+    await shell.fill("#builtin-prompt", "Look around");
+    await shell.press("#builtin-prompt", "Enter");
+    await until("the agent's answer", async () => /What should we build first\?/.test(await shell.textContent("#builtin-log")), 60000);
+    const log = await shell.locator("#builtin-log p").allTextContents();
+    assert.equal(log[0], "Look around");
+    assert.ok(log.some((l) => l === "bash  world status | head -n 2; ls"), log.join("\n"));
+    await until("the usage sent", async () => usagePosts.length > 0);
+    assert.equal(usagePosts[0].auth, "Bearer install-token-2");
+    assert.deepEqual({ ...usagePosts[0].body, world: /^[a-z0-9-]{12,36}$/.test(usagePosts[0].body.world) }, { world: true, provider: "anthropic", model: "claude-sonnet-4-5", subscription: false, inputTokens: 1800, outputTokens: 80, cacheRead: 0, cacheWrite: 0, costUsd: usagePosts[0].body.costUsd, requests: 2 });
+    await until("Ready", async () => (await shell.textContent("#builtin-status")) === "Ready");
+    await capture(shell, "builtin-agent-turn");
+
+    await shell.fill("#builtin-prompt", "Wait");
+    await shell.press("#builtin-prompt", "Enter");
+    const sleeping = () => new Promise((resolve) => execFile("pgrep", ["-f", "sleep 300.5"], (_e, out) => resolve(out.trim())));
+    await until("the command running", sleeping, 30000);
+    assert.equal(await shown(shell, "#builtin-stop"), true);
+    const t0 = Date.now();
+    await shell.click("#builtin-stop");
+    await until("the command stopped", async () => !(await sleeping()), 1000);
+    assert.ok(Date.now() - t0 < 1000);
+    await until("Stopped", async () => (await shell.textContent("#builtin-status")) === "Stopped");
+    await capture(shell, "builtin-agent-stopped");
+
+    const files = readdirSync(join(dir, "maker"), { recursive: true }).filter((f) => !/Cache|blob_storage|GPUCache/.test(f));
+    const leaked = files.filter((f) => {
+      try {
+        return readFileSync(join(dir, "maker", f)).includes(KEY);
+      } catch {
+        return false;
+      }
+    });
+    assert.deepEqual(leaked, []);
+    await shell.click("#builtin-close");
+    await until("the panel closed", async () => !(await shown(shell, "#builtin")));
   });
 });
 

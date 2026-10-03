@@ -18,5 +18,10 @@ contextBridge.exposeInMainWorld("shell", {
   ready: () => ipcRenderer.invoke("ready"),
   events: (list) => ipcRenderer.send("events", list),
   shareUsage: (on) => ipcRenderer.invoke("share-usage", on),
-  on: (channel, fn) => ["mode", "down", "update", "starting", "updating"].includes(channel) && ipcRenderer.on(channel, (_, value) => fn(value)),
+  agentSetup: () => ipcRenderer.invoke("agent-setup"),
+  agentKey: (provider, key) => ipcRenderer.invoke("agent-key", provider, key),
+  agentPrompt: (choice, text) => ipcRenderer.invoke("agent-prompt", choice, text),
+  agentStop: () => ipcRenderer.send("agent-stop"),
+  agentClose: () => ipcRenderer.send("agent-close"),
+  on: (channel, fn) => ["mode", "down", "update", "starting", "updating", "agent-panel", "agent"].includes(channel) && ipcRenderer.on(channel, (_, value) => fn(value)),
 });
