@@ -113,6 +113,41 @@ function hover(e) {
 }
 addEventListener("pointermove", hover);
 
+/** A world's row names it in place: its name becomes a field, Enter keeps what is typed and Esc, or leaving the field, the old name. Empty or over 40 characters can't be entered. The row shows the new name at once, and keeps the focus when save rebuilds the list. */
+export function renameInPlace(row, save) {
+  const list = row.parentElement;
+  const input = Object.assign(document.createElement("input"), { type: "text", value: row.querySelector(".what").textContent, maxLength: 40, spellcheck: false, autocomplete: "off" });
+  const field = Object.assign(document.createElement("label"), { className: "item pictured entry renaming" });
+  field.append(row.querySelector(".cover").cloneNode(true), input);
+  row.hidden = true;
+  row.after(field);
+  let done = false;
+  const end = async (name) => {
+    if (done) return;
+    done = true;
+    field.remove();
+    if (name) row.querySelector(".what").textContent = name;
+    row.hidden = false;
+    row.focus();
+    if (!name) return;
+    await save(name);
+    if (!row.isConnected && document.activeElement === document.body) list.querySelector(`[data-key="${CSS.escape(row.dataset.key)}"]`)?.focus();
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (input.value.trim()) end(input.value.trim());
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      end(null);
+    }
+  });
+  input.addEventListener("blur", () => end(null));
+  input.focus();
+  input.select();
+}
+
 /** Where a pasted invite leads: the link as is, with https:// added to a relay link copied without it. Throws what to tell the player. */
 export function joinLink(text) {
   const t = text.trim();

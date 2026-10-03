@@ -427,16 +427,30 @@ async function menuState() {
   };
 }
 
-/** A world's picture: its host's game sends a frame of their own view, and Worlds shows it. */
+/** A world's picture: its host's game sends a frame of their own view every few minutes, and Worlds shows it. A picture the host picked when sharing stays, marked by cover.picked. */
 async function cover(req: Request, id: string) {
   const path = join(WORLDS, id, "cover.jpg");
-  if (!/^[a-z0-9-]+$/.test(id) || !existsSync(join(WORLDS, id, "config.json"))) return Response.json({ error: "That world doesn't exist." }, { status: 404 });
+  if (!exists(id)) return Response.json({ error: "That world doesn't exist." }, { status: 404 });
   if (req.method !== "POST") return existsSync(path) ? new Response(Bun.file(path), { headers: { "content-type": "image/jpeg", "cache-control": "no-cache" } }) : new Response(null, { status: 404 });
+  if (existsSync(join(WORLDS, id, "cover.picked"))) return Response.json({ error: "The host picked this world's picture." }, { status: 409 });
   const jpeg = new Uint8Array(await req.arrayBuffer());
   if (jpeg.length > 2 << 20 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return Response.json({ error: "A cover is a JPEG under 2 MB." }, { status: 400 });
+  saveCover(id, jpeg);
+  return new Response(null, { status: 204 });
+}
+function saveCover(id: string, jpeg: Uint8Array) {
+  const path = join(WORLDS, id, "cover.jpg");
   writeFileSync(`${path}.tmp`, jpeg);
   renameSync(`${path}.tmp`, path);
-  return new Response(null, { status: 204 });
+}
+
+/** A new name for a world; its id, folder and invite stay. A running world keeps its config in memory, so it renames itself. */
+async function rename(id: unknown, raw: unknown) {
+  if (!exists(id)) throw new Error("That world doesn't exist.");
+  const name = String(raw ?? "").trim();
+  if (!name || name.length > 40) throw new Error("A name is 1 to 40 characters.");
+  if (running?.id === id) await world("rename", { name });
+  else writeFileSync(join(WORLDS, id, "config.json"), JSON.stringify({ ...config(id), name }, null, 2));
 }
 
 async function menuApi(req: Request, action: string) {
@@ -478,7 +492,8 @@ async function menuApi(req: Request, action: string) {
       if (running?.id === body.id) throw new Error("Stop the world before deleting it.");
       if (!/^[a-z0-9-]+$/.test(body.id ?? "")) throw new Error("That world doesn't exist.");
       rmSync(join(WORLDS, body.id), { recursive: true, force: true });
-    } else if (action === "configure") {
+    } else if (action === "rename") await rename(body.id, body.name);
+    else if (action === "configure") {
       if (running?.id === body.id) throw new Error("Stop the world before changing it.");
       if (!exists(body.id)) throw new Error("That world doesn't exist.");
       configure(body.id, body);
@@ -556,7 +571,7 @@ async function download(id: unknown, trust: boolean, hosting: boolean) {
  * The pack is the world's export without what its players did and said, with a cover and the timelapse's clip.
  */
 type Stage = { details: object; sizes: Record<string, number>; community: string | null };
-const staged = new Map<string, { files: Record<string, { bytes: Uint8Array<ArrayBuffer>; type: string }>; stage: Stage }>();
+const staged = new Map<string, { files: Record<string, { bytes: Uint8Array<ArrayBuffer>; type: string }>; stage: Stage; picked: boolean }>();
 async function stagePublish(body: any) {
   if (!exists(body.id)) throw new Error("That world doesn't exist.");
   const visibility = body.visibility === "public" ? "public" : "link";
@@ -580,12 +595,12 @@ async function stagePublish(body: any) {
     mods: Object.keys(readJson(join(WORLDS, body.id, "mods.json"))).length,
   };
   const stage = { details, sizes: Object.fromEntries(Object.entries(files).map(([k, f]) => [k, f.bytes.length])), community: before.id ?? null };
-  staged.set(body.id, { files, stage });
+  staged.set(body.id, { files, stage, picked: !!body.cover });
   return stage;
 }
 
 async function uploadStaged(body: any) {
-  const { files } = staged.get(body.id) ?? {};
+  const { files, picked } = staged.get(body.id) ?? {};
   if (!files) throw new Error("Share it again.");
   await Promise.all(
     Object.entries(files).map(async ([kind, f]) => {
@@ -594,6 +609,11 @@ async function uploadStaged(body: any) {
     }),
   );
   staged.delete(body.id);
+  // The view picked for Community is the world's picture here too, and the game's own pictures no longer replace it.
+  if (picked && files.cover && exists(body.id)) {
+    saveCover(body.id, files.cover.bytes);
+    writeFileSync(join(WORLDS, body.id, "cover.picked"), "");
+  }
   return {};
 }
 

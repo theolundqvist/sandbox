@@ -45,7 +45,7 @@
   @media (max-width: 600px) { #rules { display: none; } #top { left: 16px; right: 16px; gap: 10px; } }
   #status { position: fixed; top: 72px; left: 50%; transform: translateX(-50%); padding: 10px 16px; background: var(--veil); }
 
-  #feed { position: fixed; left: 24px; bottom: 64px; width: min(440px, calc(100vw - 48px)); max-height: 34vh; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; pointer-events: none; }
+  #feed { position: fixed; left: 24px; bottom: 64px; width: min(440px, calc(100vw - 48px)); max-height: 34vh; overflow-y: auto; scrollbar-width: none; display: flex; flex-direction: column; gap: 3px; pointer-events: none; }
   #feed .line.old { opacity: 0; transition: opacity 1.2s ease; }
   #feed:has(~ #chat:not([hidden])) .line.old { opacity: 1; transition: none; }
   .line { padding: 4px 10px; background: var(--glass); width: fit-content; max-width: 100%; border-left: 2px solid transparent; }

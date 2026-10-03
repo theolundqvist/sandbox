@@ -564,6 +564,10 @@ const server = Bun.serve<Conn>({
           invite = { link: body.link ?? null, wifiOnly: !!body.wifiOnly };
           broadcast({ t: "public", ...invite });
           return Response.json({});
+        case "rename":
+          config.name = String(body.name);
+          writeJson("config.json", config);
+          return Response.json({});
         case "snapshots":
           return Response.json(store.snapshots());
         case "voice":

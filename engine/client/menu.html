@@ -27,6 +27,7 @@
   .item.choice button:is(:focus, :hover) { color: var(--accent); }
   .cover video { display: block; width: 100%; height: 100%; object-fit: cover; }
   :is(#app, #invite, #settings) .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
+  #create-cover { width: 96px; margin-left: 12px; opacity: 1; }
 </style>
 </head>
 <body>
@@ -97,7 +98,7 @@
 
   <section id="create" class="screen" data-nav data-enter="Host" hidden>
     <h1>Host world</h1>
-    <div class="field"><span>World</span><div class="pick" id="create-world"></div></div>
+    <div class="field"><span>World</span><div class="pick" id="create-world"></div><span class="cover" id="create-cover"></span></div>
     <label class="field new-only"><span>Name</span><input type="text" id="create-name" placeholder="Random" maxlength="40" autocomplete="off" spellcheck="false"></label>
     <div class="field new-only"><span>Start with</span><div class="pick" id="create-start" data-options="basics:3D field,hills:3D hills,blank:Blank"></div></div>
     <label class="field"><span>Password</span><input type="text" id="create-password" placeholder="None" maxlength="40" autocomplete="off" spellcheck="false"></label>
@@ -146,9 +147,9 @@
 
   <div id="error" class="error"></div>
 </main>
-<div class="hints"><span><kbd>↑↓</kbd>Select</span><span id="enter-hint"><kbd>Enter</kbd>Open</span></div>
+<div class="hints"><span><kbd>↑↓</kbd>Select</span><span id="enter-hint"><kbd>Enter</kbd>Open</span><span id="rename-hint" hidden><kbd>F2</kbd>Rename</span></div>
 <script type="module">
-  import { COMPUTERS, backdrop, computerPick, joinLink, joinable, logo, pick, usage } from "/front.js";
+  import { COMPUTERS, backdrop, computerPick, joinLink, joinable, logo, pick, renameInPlace, usage } from "/front.js";
   const $ = (id) => document.getElementById(id);
   backdrop($("backdrop"));
   logo($("logo"));
@@ -203,6 +204,7 @@
     $("error").textContent = "";
     $("back").hidden = stack.length < 2 && !inApp;
     $("enter-hint").lastChild.textContent = $(id).dataset.enter ?? "Open";
+    $("rename-hint").hidden = id !== "worlds";
     const target = focus?.isConnected && !focus.disabled && focus.getClientRects().length ? focus : $(id).querySelector("[autofocus]") ?? $(id).querySelector(".item:not([hidden]):not(:disabled), .field input, .pick, .copy-row button");
     target?.focus();
   }
@@ -281,7 +283,8 @@
     offerApp(`${r?.link.split("/#")[0] ?? location.origin}/menu#key=${key}`);
     $("share-usage").set(s.shareUsage ? "on" : "off");
     $("no-worlds").hidden = !!s.worlds.length;
-    rebuild($("world-list"), s.worlds.map((w) => {
+    // A name being typed stays while the state refreshes.
+    if (!$("world-list").querySelector(".renaming")) rebuild($("world-list"), s.worlds.map((w) => {
       const b = el("button", { className: "item pictured" }, coverTile(localCover(w)), el("span", { className: "what", textContent: w.name }), el("span", { className: r?.id === w.id ? "value live" : "value", textContent: r?.id === w.id ? "Live" : ago(w.played) }));
       b.dataset.key = w.id;
       b.dataset.event = "world";
@@ -375,6 +378,21 @@
     if (copied && !$("join-link").value && joinable(copied)) $("join-link").value = copied;
   });
   $("go-create").addEventListener("click", () => pickWorld("new"));
+  /** F2 on a world renames it; its id and invite link stay. */
+  $("world-list").addEventListener("keydown", (e) => {
+    const row = document.activeElement;
+    if (e.key !== "F2" || !row?.dataset.key || row.parentElement !== $("world-list")) return;
+    e.preventDefault();
+    renameInPlace(row, (name) =>
+      api("rename", { id: row.dataset.key, name }).then(
+        () => stats.step("renamed", { kind: "hosted" }),
+        (e) => {
+          $("error").textContent = e.message;
+          render(state);
+        },
+      ),
+    );
+  });
   $("world-play").onclick = () => hostWorld(selected);
 
   /** Community and pasted links answer with data, not the menu's state. */
@@ -505,6 +523,7 @@
   function pickWorld(id) {
     const w = state?.worlds.find((x) => x.id === id);
     $("create-world").set(w ? id : "new");
+    $("create-cover").replaceWith(Object.assign(coverTile(w && localCover(w)), { id: "create-cover" }));
     for (const f of document.querySelectorAll("#create .new-only")) f.hidden = !!w;
     $("create-password").value = w?.password ?? "";
     $("create-agents").set(w?.agents === false ? "off" : "on");
