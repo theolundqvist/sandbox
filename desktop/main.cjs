@@ -529,6 +529,8 @@ const COMMUNITY_ACTIONS = {
   unread: () => community("/account/unread"),
   thread: ({ name, before }) => community(`/messages/${userName(name)}${before ? `?before=${commentId(before)}` : ""}`),
   send: ({ to, body }) => community("/messages", { method: "POST", body: { to: userName(to), body: String(body ?? "") } }),
+  friends: () => community("/friends"),
+  friend: ({ name, on }) => community(`/friends/${userName(name)}`, { method: on === true ? "PUT" : "DELETE" }),
   block: ({ name, on }) => community(`/blocks/${userName(name)}`, { method: on === true ? "PUT" : "DELETE" }),
   "report-message": ({ id }) => community(`/messages/${commentId(id)}/report`, { method: "POST" }),
 };

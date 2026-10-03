@@ -52,11 +52,13 @@ Deleting an account needs its password. Its sessions end at once and its worlds 
 | `PUT /worlds/:id/credits` | Its account, `{ builders: [{ name, checks }] }`, up to 20: asks each builder, by in-world name, to be credited. Replaces the waiting ones; accepted credits stay. |
 | `DELETE /worlds/:id/credits` | Signed in: drops the account's own credit on that world. |
 | `POST /credits/waiting`, `POST /credits/accept` | Signed in, `{ tokens }`: the credits those tokens prove, not yet accepted. `{ token }`: accepts one, which then shows on the world. |
-| `GET /users/:username` | A profile: `joined`, `players` and `votes` over its listed worlds, those `worlds`, its own and credited, and whether the asker `blocked` it. `404` for a banned account. |
+| `GET /users/:username` | A profile: `joined`, `players` and `votes` over its listed worlds, those `worlds`, its own and credited, and whether the asker `blocked` it, and `friend`. `404` for a banned account. |
 | `POST /messages` | Signed in, `{ to, body }`, 1 to 2,000 characters of plain text. One every 3 s, and 10 new conversations a day. `403` when the recipient blocked the sender. |
 | `GET /messages`, `GET /messages/:username` | The conversations, newest first, each with its last message and unread count. One conversation, 50 at a time going back with `?before=<id>`; reading it marks its messages read. |
 | `GET /account/unread` | `{ unread }` messages. |
-| `PUT /blocks/:username`, `DELETE /blocks/:username` | Block or unblock: a blocked account can't message the blocker, and earlier messages stay. |
+| `PUT /friends/:username` | Signed in: asks to be friends, or accepts when they asked first. 20 new requests a day. Answers `{ friend }`: `sent`, `received`, `friends` or `null`, as profiles show it. |
+| `DELETE /friends/:username`, `GET /friends` | Unfriends, takes back or declines a request. `{ friends, received, sent }` by username. |
+| `PUT /blocks/:username`, `DELETE /blocks/:username` | Block or unblock: a blocked account can't message the blocker or ask to be friends either way, a block ends a friendship, and earlier messages stay. |
 | `POST /messages/:id/report` | Its recipient only: shares that message with the moderators. |
 
 The app authenticates with `Authorization: Bearer <session>`. Rate limits are counter rows, each bumped in one statement, so requests at the same moment can't slip past them. Shares never finished are swept after a day.

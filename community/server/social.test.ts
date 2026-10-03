@@ -113,3 +113,61 @@ test("messages reach only their two parties, wait 3 s apart, stop at a block, co
   expect((await kit.db`select count(*)::int as n from messages where sender = ${ana.account.id} or recipient = ${ana.account.id}`)[0].n).toBe(0);
   expect(await (await call("/messages", { token: ben.token })).json()).toEqual([]);
 }, 30_000);
+
+test("friends: a request waits for a yes, asking back accepts it, either side ends it, and a block ends it and stops new requests", async () => {
+  const ana = await signUp("fr_ana");
+  const ben = await signUp("fr_ben");
+  const add = (token: string, name: string) => call(`/friends/${name}`, { method: "PUT", token });
+  const drop = (token: string, name: string) => call(`/friends/${name}`, { method: "DELETE", token });
+  const list = async (token: string) => (await call("/friends", { token })).json();
+  const state = async (token: string, name: string) => (await (await call(`/users/${name}`, { token })).json()).friend;
+
+  expect((await add(ana.token, "fr_ana")).status).toBe(400);
+  expect((await add(ana.token, "nobody_here")).status).toBe(404);
+  expect(await (await add(ana.token, "FR_BEN")).json()).toEqual({ friend: "sent" });
+  expect(await (await add(ana.token, "fr_ben")).json()).toEqual({ friend: "sent" });
+  expect(await state(ben.token, "fr_ana")).toBe("received");
+  expect(await list(ben.token)).toEqual({ friends: [], received: ["fr_ana"], sent: [] });
+  expect(await list(ana.token)).toEqual({ friends: [], received: [], sent: ["fr_ben"] });
+
+  // Declining is the same as taking a request back: nothing is left.
+  expect((await drop(ben.token, "fr_ana")).status).toBe(200);
+  expect(await state(ana.token, "fr_ben")).toBeNull();
+
+  await add(ana.token, "fr_ben");
+  expect(await (await add(ben.token, "fr_ana")).json()).toEqual({ friend: "friends" });
+  expect(await state(ana.token, "fr_ben")).toBe("friends");
+  expect(await list(ana.token)).toEqual({ friends: ["fr_ben"], received: [], sent: [] });
+  expect(await (await drop(ana.token, "fr_ben")).json()).toEqual({ friend: null });
+  expect((await list(ben.token)).friends).toEqual([]);
+
+  await add(ana.token, "fr_ben");
+  await add(ben.token, "fr_ana");
+  expect((await call("/blocks/fr_ana", { method: "PUT", token: ben.token })).status).toBe(200);
+  expect((await list(ana.token)).friends).toEqual([]);
+  expect((await add(ana.token, "fr_ben")).status).toBe(403);
+  expect((await add(ben.token, "fr_ana")).status).toBe(403);
+  expect((await call("/friends")).status).toBe(401);
+}, 30_000);
+
+test("20 friend requests a day, counted only for new ones", async () => {
+  const many = await signUp("fr_many");
+  await kit.db`insert into limits (who, action, since, n) values (${many.account.id}, 'friend', now(), 20) on conflict (who, action) do update set n = 20, since = now()`;
+  const other = await signUp("fr_other");
+  expect((await call("/friends/fr_other", { method: "PUT", token: many.token })).status).toBe(429);
+  // Saying yes to someone who asked first is never limited.
+  await call("/friends/fr_many", { method: "PUT", token: other.token });
+  expect(await (await call("/friends/fr_other", { method: "PUT", token: many.token })).json()).toEqual({ friend: "friends" });
+}, 30_000);
+
+test("comments and forks of a world that doesn't exist or was taken down are a 404", async () => {
+  const ana = await signUp("gone_ana");
+  const world = await publish(ana.token);
+  expect((await call(`/worlds/${world.id}/comments`)).status).toBe(200);
+  expect((await call(`/worlds/${world.id}/forks`)).status).toBe(200);
+  await call(`/worlds/${world.id}`, { method: "DELETE", token: ana.token });
+  for (const id of [world.id, "zzzzzzzzzzzz"]) {
+    expect((await call(`/worlds/${id}/comments`)).status).toBe(404);
+    expect((await call(`/worlds/${id}/forks`)).status).toBe(404);
+  }
+}, 30_000);

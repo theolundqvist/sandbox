@@ -62,6 +62,8 @@
   #threads .world { padding: 14px 0; }
   #threads .world b { font-size: 22px; }
   #threads .value { color: var(--dim); font: 700 13px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; }
+  /* A username is one word: it shrinks to fit on one line rather than breaking. */
+  h1.name { white-space: nowrap; overflow-wrap: normal; font-size: min(64px, calc(min(100vw - 32px, 960px) / (var(--len, 8) * .9))); }
   #me { position: fixed; top: 24px; right: 32px; z-index: 1; text-decoration: none; }
   form.entries { display: flex; flex-direction: column; }
 
@@ -164,19 +166,25 @@
   </section>
 
   <section id="account" class="screen" data-nav hidden>
-    <h1 id="account-name"></h1>
+    <h1 class="name" id="account-name"></h1>
     <div class="worlds" id="my-worlds"></div>
     <p class="note" id="my-none" hidden>Worlds you publish from the app show up here.</p>
-    <div class="items"><a class="item" id="go-profile">Your profile</a><a class="item" href="/messages">Messages<span class="value" id="unread"></span></a><button class="item" id="sign-out">Sign out</button><a class="item" href="/account/delete">Delete account</a></div>
+    <div class="items"><a class="item" id="go-profile">Your profile</a><a class="item" href="/friends">Friends<span class="value" id="friend-requests"></span></a><a class="item" href="/messages">Messages<span class="value" id="unread"></span></a><button class="item" id="sign-out">Sign out</button><a class="item" href="/account/delete">Delete account</a></div>
   </section>
 
   <section id="profile" class="screen" data-nav hidden>
-    <h1 id="profile-name"></h1>
+    <h1 class="name" id="profile-name"></h1>
     <p id="profile-about"></p>
-    <div class="items"><a class="item" id="profile-message" hidden>Message</a></div>
+    <div class="items"><button class="item" id="profile-friend" hidden>Add friend<span class="value"></span></button><a class="item" id="profile-message" hidden>Message</a></div>
     <div class="worlds" id="profile-worlds"></div>
     <p class="note" id="profile-none" hidden>No worlds yet</p>
-    <div class="actions"><button class="quiet" id="profile-block" hidden>Block</button></div>
+    <div class="actions"><button class="quiet" id="profile-decline" hidden>Decline</button><button class="quiet" id="profile-block" hidden>Block</button></div>
+  </section>
+
+  <section id="friends" class="screen" data-nav hidden>
+    <h1>Friends</h1>
+    <div class="items" id="friend-list"></div>
+    <p class="note" id="friends-none" hidden>No friends yet. Add one from their profile.</p>
   </section>
 
   <section id="messages" class="screen" data-nav hidden>
@@ -186,7 +194,7 @@
   </section>
 
   <section id="thread" class="screen" data-nav hidden>
-    <h1 id="thread-name"></h1>
+    <h1 class="name" id="thread-name"></h1>
     <div id="message-list"></div>
     <form id="message-form"><label class="item entry"><input type="text" id="message-text" maxlength="2000" placeholder="Write a message" autocomplete="off"></label></form>
     <p class="note" id="thread-blocked" hidden>You blocked them. Unblock them on their profile to hear from them again.</p>

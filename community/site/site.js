@@ -260,7 +260,8 @@ $("delete-form").onsubmit = async (e) => {
 };
 async function showAccount() {
   if (!(await whoAmI())) return go("/signin");
-  $("account-name").textContent = account.username;
+  nameTitle($("account-name"), account.username);
+  api("/friends").then(({ received }) => ($("friend-requests").textContent = received.length ? `${received.length} new` : ""), () => {});
   $("go-profile").href = `/u/${account.username}`;
   api("/account/unread").then(({ unread }) => ($("unread").textContent = unread ? String(unread) : ""), () => {});
   const mine = await api("/account/worlds");
@@ -272,7 +273,7 @@ async function showAccount() {
 async function showProfile(name) {
   const p = await api(`/users/${name}`);
   document.title = `${p.username} · Sandbox`;
-  $("profile-name").textContent = p.username;
+  nameTitle($("profile-name"), p.username);
   $("profile-about").textContent = `Joined ${new Date(p.joined).toLocaleDateString(undefined, { month: "long", year: "numeric" })} · ${counted(p.players, "player")} · ${counted(p.votes, "vote")}`;
   $("profile-worlds").replaceChildren(...p.worlds.map(worldRow));
   $("profile-none").hidden = p.worlds.length > 0;
@@ -280,6 +281,26 @@ async function showProfile(name) {
   $("profile-message").hidden = p.me;
   $("profile-message").href = signedIn ? `/messages/${p.username}` : `/signin?then=/messages/${p.username}`;
   $("profile-block").hidden = p.me || !signedIn;
+  $("profile-friend").hidden = p.me;
+  const showFriend = () => {
+    $("profile-friend").firstChild.textContent = { friends: "Friends", sent: "Request sent", received: "Accept friend request" }[p.friend] ?? "Add friend";
+    $("profile-friend").lastChild.textContent = { friends: "Unfriend", sent: "Take back" }[p.friend] ?? "";
+    $("profile-decline").hidden = p.friend !== "received";
+  };
+  showFriend();
+  const setFriend = async (on) => {
+    try {
+      p.friend = (await api(`/friends/${p.username}`, { method: on ? "PUT" : "DELETE" })).friend;
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    showFriend();
+  };
+  $("profile-friend").onclick = async () => {
+    if (!signedIn) return go(`/signin?then=/u/${p.username}`);
+    setFriend(!p.friend || p.friend === "received");
+  };
+  $("profile-decline").onclick = () => setFriend(false);
   const showBlock = () => ($("profile-block").textContent = p.blocked ? "Unblock" : "Block");
   showBlock();
   $("profile-block").onclick = async () => {
@@ -289,6 +310,7 @@ async function showProfile(name) {
       return void ($("error").textContent = e.message);
     }
     showBlock();
+    if (p.blocked) (p.friend = null), showFriend();
   };
 }
 
@@ -305,11 +327,11 @@ async function showMessages() {
 }
 async function showThread(name) {
   if (!(await whoAmI())) return go(`/signin?then=/messages/${name}`);
-  $("thread-name").textContent = name;
+  nameTitle($("thread-name"), name);
   $("thread-profile").href = `/u/${name}`;
   $("message-list").replaceChildren();
   const t = await api(`/messages/${name}`);
-  $("thread-name").textContent = t.with;
+  nameTitle($("thread-name"), t.with);
   $("thread-blocked").hidden = !t.blocked;
   const row = (m) => {
     const head = el("small", { textContent: `${m.mine ? "You" : t.with} · ${ago(m.at)}` });
@@ -342,8 +364,23 @@ async function showThread(name) {
   $("message-text").focus();
 }
 
-const SCREENS = { "/": "home", "/join": "join", "/worlds": "worlds", "/host": "host", "/signin": "signin", "/signup": "signup", "/account": "account", "/account/delete": "delete", "/messages": "messages" };
-const BACK = { world: "/worlds", signup: "/signin", delete: "/account", messages: "/account", thread: "/messages" };
+/** A username heading: one word, sized by its length so it fits on one line. */
+function nameTitle(h1, name) {
+  h1.textContent = name;
+  h1.style.setProperty("--len", String(Math.max(8, name.length)));
+}
+
+/** Friends, and the requests waiting each way. */
+async function showFriends() {
+  if (!(await whoAmI())) return go("/signin?then=/friends");
+  const f = await api("/friends");
+  const row = (name, value) => el("a", { className: "item", href: `/u/${name}` }, name, el("span", { className: "value", textContent: value }));
+  $("friend-list").replaceChildren(...f.received.map((n) => row(n, "Wants to be friends")), ...f.friends.map((n) => row(n, "")), ...f.sent.map((n) => row(n, "Request sent")));
+  $("friends-none").hidden = f.received.length + f.friends.length + f.sent.length > 0;
+}
+
+const SCREENS = { "/": "home", "/join": "join", "/worlds": "worlds", "/host": "host", "/signin": "signin", "/signup": "signup", "/account": "account", "/account/delete": "delete", "/messages": "messages", "/friends": "friends" };
+const BACK = { world: "/worlds", signup: "/signin", delete: "/account", messages: "/account", friends: "/account", thread: "/messages" };
 async function route() {
   const path = location.pathname.replace(/\/+$/, "") || "/";
   const id = path.match(/^\/w\/([a-z0-9]{12})$/)?.[1];
@@ -363,6 +400,7 @@ async function route() {
     if (screen === "account") await showAccount();
     if (screen === "profile") await showProfile(user);
     if (screen === "messages") await showMessages();
+    if (screen === "friends") await showFriends();
     if (screen === "thread") await showThread(talking);
     if (screen === "delete" && !(await whoAmI())) return go("/signin");
   } catch (e) {

@@ -102,7 +102,7 @@
   <section id="community" class="screen" data-nav hidden>
     <h1>Community</h1>
     <div class="field"><span>Show</span><div class="pick" id="community-tab" data-options="top:Most played,new:Newest,mine:My worlds"></div></div>
-    <div class="items"><button class="item" id="go-publish">Publish a world</button><button class="item" id="go-inbox">Messages<span class="value" id="unread"></span></button><button class="item" id="go-me">Your profile</button></div>
+    <div class="items"><button class="item" id="go-publish">Publish a world</button><button class="item" id="go-inbox">Messages<span class="value" id="unread"></span></button><button class="item" id="go-friends">Friends<span class="value" id="friend-requests"></span></button><button class="item" id="go-me">Your profile</button></div>
     <div class="items" id="community-list"></div>
     <p id="community-status" class="status" hidden></p>
     <div class="items"><button class="item" id="community-more" hidden>More</button></div>
@@ -130,12 +130,20 @@
     <h1 id="profile-name"></h1>
     <p class="status" id="profile-about"></p>
     <div class="items">
+      <button class="item" id="profile-friend" hidden>Add friend<span class="value"></span></button>
+      <button class="item" id="profile-decline" hidden>Decline</button>
       <button class="item" id="profile-message" hidden>Message</button>
       <button class="item" id="profile-block" hidden>Block</button>
     </div>
     <div id="credits-part" hidden><h2 class="status">Credits waiting</h2><div class="items" id="credit-list"></div></div>
     <div class="items" id="profile-worlds"></div>
     <p class="status" id="profile-none" hidden>No worlds yet</p>
+  </section>
+
+  <section id="friends" class="screen" data-nav hidden>
+    <h1>Friends</h1>
+    <div class="items" id="friend-list"></div>
+    <p class="status" id="friends-none" hidden>No friends yet. Add one from their profile.</p>
   </section>
 
   <section id="inbox" class="screen" data-nav hidden>
@@ -443,6 +451,7 @@
   const showAccount = () => {
     $("account-value").textContent = account?.username ?? "Sign in";
     showUnread();
+    showRequests();
   };
   async function refreshAccount() {
     account = await accountCall("account").catch(() => account);
@@ -729,7 +738,7 @@
     show("profile");
     $("profile-name").textContent = name;
     $("profile-about").textContent = "";
-    for (const id of ["profile-message", "profile-block", "credits-part"]) $(id).hidden = true;
+    for (const id of ["profile-friend", "profile-decline", "profile-message", "profile-block", "credits-part"]) $(id).hidden = true;
     $("profile-worlds").replaceChildren();
     $("profile-none").hidden = true;
     let p;
@@ -741,7 +750,8 @@
     profiled = p;
     $("profile-name").textContent = p.username;
     $("profile-about").textContent = `Joined ${new Date(p.joined).toLocaleDateString(undefined, { month: "long", year: "numeric" })} · ${counted(p.players, "player")} · ${counted(p.votes, "vote")}`;
-    $("profile-message").hidden = $("profile-block").hidden = p.me;
+    $("profile-message").hidden = $("profile-block").hidden = $("profile-friend").hidden = p.me;
+    showFriend();
     $("profile-block").textContent = p.blocked ? "Unblock" : "Block";
     $("profile-worlds").replaceChildren(...p.worlds.map(worldRow));
     $("profile-none").hidden = p.worlds.length > 0;
@@ -765,6 +775,43 @@
       }),
     );
   }
+  /** The friend button says where the two stand: Add friend, Request sent (takes it back), Accept (with Decline beside it), or Friends (unfriends). */
+  function showFriend() {
+    const f = profiled.friend;
+    $("profile-friend").firstChild.textContent = { friends: "Friends", sent: "Request sent", received: "Accept friend request" }[f] ?? "Add friend";
+    $("profile-friend").querySelector(".value").textContent = { friends: "Unfriend", sent: "Take back" }[f] ?? "";
+    $("profile-decline").hidden = f !== "received";
+  }
+  async function setFriend(on) {
+    try {
+      profiled.friend = (await communityCall("friend", { name: profiled.username, on })).friend;
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    showFriend();
+    showRequests();
+  }
+  $("profile-friend").onclick = () => needAccount(() => setFriend(!profiled.friend || profiled.friend === "received"));
+  $("profile-decline").onclick = () => setFriend(false);
+  async function showRequests() {
+    if (!account) return void ($("friend-requests").textContent = "");
+    const { received } = await communityCall("friends").catch(() => ({ received: [] }));
+    $("friend-requests").textContent = received.length ? `${received.length} new` : "";
+  }
+  $("go-friends").onclick = () =>
+    needAccount(async () => {
+      show("friends");
+      let f = { friends: [], received: [], sent: [] };
+      try {
+        f = await communityCall("friends");
+      } catch (e) {
+        $("error").textContent = e.message;
+      }
+      const row = (name, value) => el("button", { className: "item", onclick: () => openProfile(name) }, name, el("span", { className: "value", textContent: value }));
+      $("friend-list").replaceChildren(...f.received.map((n) => row(n, "Wants to be friends")), ...f.friends.map((n) => row(n, "")), ...f.sent.map((n) => row(n, "Request sent")));
+      $("friends-none").hidden = f.received.length + f.friends.length + f.sent.length > 0;
+      enter();
+    });
   $("go-me").onclick = () => needAccount(() => openProfile(account.username));
   $("profile-message").onclick = () => needAccount(() => openThread(profiled.username));
   $("profile-block").onclick = () =>
@@ -775,6 +822,8 @@
         return void ($("error").textContent = e.message);
       }
       $("profile-block").textContent = profiled.blocked ? "Unblock" : "Block";
+      if (profiled.blocked) profiled.friend = null;
+      showFriend();
     });
 
   /** Messages: plain text, read only by the two people in a conversation. */

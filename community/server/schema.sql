@@ -197,3 +197,14 @@ create index if not exists messages_sender on messages (sender, recipient, id);
 create index if not exists messages_recipient on messages (recipient, sender, id);
 create index if not exists messages_unread on messages (recipient) where read_at is null;
 create table if not exists blocks (account uuid not null references accounts (id) on delete cascade, blocked uuid not null references accounts (id) on delete cascade, at timestamptz not null default now(), primary key (account, blocked));
+
+-- A friend request, from requester to addressee; accepted once the addressee says yes. Either can end it, and a block ends it.
+create table if not exists friends (
+  requester uuid not null references accounts (id) on delete cascade,
+  addressee uuid not null references accounts (id) on delete cascade,
+  at timestamptz not null default now(),
+  accepted_at timestamptz,
+  primary key (requester, addressee),
+  check (requester <> addressee)
+);
+create index if not exists friends_addressee on friends (addressee);

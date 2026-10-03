@@ -33,6 +33,7 @@ const RATE = {
   conversation: [10, "1 day"],
   credits: [30, "1 minute"],
   "agent-usage": [30, "1 minute"],
+  friend: [20, "1 day"],
 } as const;
 const ID = /^[a-z0-9]{12}$/;
 
@@ -731,7 +732,48 @@ async function profile(req: Request, name: string) {
     worlds,
     me: viewer?.id === who.id,
     blocked: viewer ? (await sql`select 1 from blocks where account = ${viewer.id} and blocked = ${who.id}`).length > 0 : false,
+    friend: viewer ? await friendship(viewer.id, who.id) : null,
   });
+}
+
+// ---------- friends ----------
+
+/** "friends", "sent" (a request from me waits), "received" (theirs waits), or null. */
+async function friendship(me: string, other: string) {
+  const [f] = await sql`select requester, accepted_at from friends where (requester = ${me} and addressee = ${other}) or (requester = ${other} and addressee = ${me})`;
+  return !f ? null : f.accepted_at ? "friends" : f.requester === me ? "sent" : "received";
+}
+
+/** Asks to be friends, or says yes when they asked first. Never past a block either way. */
+async function befriend(req: Request, name: string) {
+  const me = allowed(await signedIn(req));
+  const other = await accountNamed(name);
+  if (other.id === me.id) throw new Refusal("That's you.");
+  const [blocked] = await sql`select 1 from blocks where (account = ${other.id} and blocked = ${me.id}) or (account = ${me.id} and blocked = ${other.id})`;
+  if (blocked) throw new Refusal(`You can't add ${other.username}.`, 403);
+  const [accepted] = await sql`update friends set accepted_at = coalesce(accepted_at, now()) where requester = ${other.id} and addressee = ${me.id} returning 1`;
+  if (!accepted) {
+    if (!(await friendship(me.id, other.id))) await limit(me.id, "friend", "That's 20 friend requests today. Try again tomorrow.");
+    await sql`insert into friends (requester, addressee) values (${me.id}, ${other.id}) on conflict do nothing`;
+  }
+  return json({ friend: await friendship(me.id, other.id) });
+}
+
+/** Unfriends, takes back a request, or declines one. */
+async function unfriend(req: Request, name: string) {
+  const me = await signedIn(req);
+  const other = await accountNamed(name);
+  await sql`delete from friends where (requester = ${me.id} and addressee = ${other.id}) or (requester = ${other.id} and addressee = ${me.id})`;
+  return json({ friend: null });
+}
+
+/** Friends by name, and the requests waiting each way, newest first. */
+async function friendList(req: Request) {
+  const me = await signedIn(req);
+  const rows = await sql`select a.username, f.requester, f.accepted_at from friends f join accounts a on a.id = case when f.requester = ${me.id} then f.addressee else f.requester end
+    where (f.requester = ${me.id} or f.addressee = ${me.id}) and a.banned_at is null order by coalesce(f.accepted_at, f.at) desc limit 500`;
+  const names = (keep: (r: any) => boolean) => rows.filter(keep).map((r: any) => r.username as string);
+  return json({ friends: names((r) => r.accepted_at), received: names((r) => !r.accepted_at && r.requester !== me.id), sent: names((r) => !r.accepted_at && r.requester === me.id) });
 }
 
 // ---------- messages ----------
@@ -785,7 +827,10 @@ async function thread(req: Request, name: string) {
 async function block(req: Request, name: string, on: boolean) {
   const me = await signedIn(req);
   const other = await accountNamed(name);
-  if (on) await sql`insert into blocks (account, blocked) values (${me.id}, ${other.id}) on conflict do nothing`;
+  if (on) {
+    await sql`insert into blocks (account, blocked) values (${me.id}, ${other.id}) on conflict do nothing`;
+    await sql`delete from friends where (requester = ${me.id} and addressee = ${other.id}) or (requester = ${other.id} and addressee = ${me.id})`;
+  }
   else await sql`delete from blocks where account = ${me.id} and blocked = ${other.id}`;
   return json({ blocked: on });
 }
@@ -810,10 +855,16 @@ const shownComment = (c: any, account: Account | null) => ({
   mine: !!account && c.account === account.id,
   canRemove: !!account && !c.removed_at && (c.account === account.id || c.owner === account.id),
 });
+/** A world that can be opened: published and not taken down. */
+async function live(world: string) {
+  const [w] = await sql`select 1 from worlds where id = ${world} and zip_key is not null and removed_at is null`;
+  if (!w) throw new Refusal("There is no such world.", 404);
+}
 const COMMENT_ROWS = sql`select c.*, a.username, w.account as owner from comments c join accounts a on a.id = c.account join worlds w on w.id = c.world`;
 
 /** A world's comments, oldest first, 100 at a time; ?after=<id> goes on from there. */
 async function comments(req: Request, world: string) {
+  await live(world);
   const account = await sessionOf(req);
   const after = Number(new URL(req.url).searchParams.get("after")) || 0;
   const rows = await sql`${COMMENT_ROWS} where c.world = ${world} and c.id > ${after} and a.banned_at is null order by c.id limit 100`;
@@ -824,8 +875,7 @@ async function comment(req: Request, world: string) {
   const account = allowed(await signedIn(req));
   const body = String((await req.json()).body ?? "").trim();
   if (!body || body.length > 1000) throw new Refusal("A comment is 1 to 1,000 characters.");
-  const [live] = await sql`select id from worlds where id = ${world} and zip_key is not null and removed_at is null`;
-  if (!live) throw new Refusal("There is no such world.", 404);
+  await live(world);
   await limit(account.id, "comment", "One comment every 20 seconds.");
   const [row] = await sql`insert into comments (world, account, body) values (${world}, ${account.id}, ${body}) returning id`;
   const [c] = await sql`${COMMENT_ROWS} where c.id = ${row.id}`;
@@ -875,6 +925,7 @@ async function route(req: Request, ip: string) {
     const me = await signedIn(req);
     return json({ unread: (await sql`select count(*)::int as n from messages where recipient = ${me.id} and read_at is null`)[0].n });
   }
+  if (at === "GET /friends") return friendList(req);
   if (at === "POST /playtime") return playtime(req);
   if (at === "POST /agent-usage") return agentUsage(req);
   const [, part, part2, part3] = url.pathname.split("/");
@@ -883,6 +934,8 @@ async function route(req: Request, ip: string) {
   if (req.method === "GET" && part === "users" && part2 && !part3) return profile(req, decodeURIComponent(part2));
   if (req.method === "GET" && part === "messages" && part2 && !part3) return thread(req, decodeURIComponent(part2));
   if (req.method === "POST" && part === "messages" && part2 && part3 === "report") return reportMessage(req, part2);
+  if (req.method === "PUT" && part === "friends" && part2 && !part3) return befriend(req, decodeURIComponent(part2));
+  if (req.method === "DELETE" && part === "friends" && part2 && !part3) return unfriend(req, decodeURIComponent(part2));
   if ((req.method === "PUT" || req.method === "DELETE") && part === "blocks" && part2 && !part3) return block(req, decodeURIComponent(part2), req.method === "PUT");
   if (req.method === "POST" && part === "comments" && part2 && part3 === "report") return report(req, ip, "comment", part2);
   if (at === "GET /account/worlds") {
@@ -923,6 +976,7 @@ async function route(req: Request, ip: string) {
     }
     case "GET :id/forks": {
       // Newest first, 50 at a time, going on from ?after=<id>.
+      await live(id!);
       const account = await sessionOf(req);
       const after = url.searchParams.get("after") ?? "";
       const cursor = ID.test(after) ? sql`and (w.created_at, w.id) < (select created_at, id from worlds where id = ${after})` : sql``;
