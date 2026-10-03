@@ -62,6 +62,8 @@
   .comment .quiet { margin-left: 20px; padding: 0 4px; }
   .comment.mine small { color: var(--accent); }
   #world-by a, a.quiet { text-decoration: none; }
+  #mod-part pre { margin: 0 0 32px; max-width: 720px; max-height: 420px; overflow: auto; padding: 16px; background: rgba(0, 0, 0, .45); color: var(--text); font: 14px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #mods-search-form { width: min(720px, 100%); }
   #world-by a:hover { color: var(--text); }
   #profile-about { margin: -24px 0 20px; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .12em; text-transform: uppercase; }
   #message-list { width: min(720px, 100%); margin-bottom: 16px; }
@@ -117,7 +119,8 @@
   <section id="worlds" class="screen" data-nav hidden>
     <h1>Community</h1>
     <div class="worlds" id="live-list"></div>
-    <div class="field"><span>Show</span><div class="pick" id="world-sort" data-options="top:Most played,new:Newest"></div></div>
+    <div class="field"><span>Show</span><div class="pick" id="world-sort" data-options="top:Most played,new:Newest,mods:Mods"></div></div>
+    <form id="mods-search-form" hidden><label class="item entry"><input type="text" id="mods-search" maxlength="100" placeholder="Search mods" autocomplete="off"></label></form>
     <div class="worlds" id="world-list"></div>
     <p id="empty" class="status" hidden></p>
     <div class="items"><button class="item" id="more" hidden>More</button></div>
@@ -129,6 +132,13 @@
     <p id="world-by"></p>
     <p id="world-about"></p>
     <p id="world-parent" hidden></p>
+    <div id="mod-part" hidden>
+      <div class="copy-row"><span>Add</span><code id="mod-add"></code><button data-copy="mod-add">Copy</button></div>
+      <p class="note">Paste it to the agent building your world.</p>
+      <pre id="mod-readme"></pre>
+      <h2>API</h2>
+      <pre id="mod-api"></pre>
+    </div>
     <div class="items"><button class="item" id="world-get">Play or fork it in the app</button><button class="item" id="vote">Upvote<span class="value" id="votes"></span></button></div>
     <p class="note" id="world-tip" hidden>Link copied. In Sandbox, open <b>Worlds</b>, then <b>Community</b>, and paste it.</p>
     <div class="actions"><a class="quiet" href="/host">Get the app</a><button class="quiet" id="report">Report</button><button class="quiet danger" id="take-down" hidden>Take down</button></div>

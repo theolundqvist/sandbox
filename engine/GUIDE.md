@@ -76,6 +76,7 @@ Your world folder's `skills/` holds tested how-tos. Read the matching one before
 - `pbr-textures.md`: realistic surface materials from Poly Haven and ambientCG.
 - `shaders.md`: custom shader effects and Shadertoy ports.
 - `animations.md`: animated characters, Mixamo clips and blending.
+- `community-mods.md`: before building a common system, finding, reading and adding one another world published.
 
 ## The world
 

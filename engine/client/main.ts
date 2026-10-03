@@ -2409,7 +2409,7 @@ for (const keysList of $("howto").querySelectorAll(".keys")) $("help-keys").appe
 let leaving = false;
 /** The desktop app says when a newer release is out, and installs it when asked. */
 type Updating = { downloaded?: number; installing?: boolean } | null;
-const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void; onUpdating?(fn: (progress: Updating) => void): void; leave(): void; agents: { id: string; name: string }[]; build(id: string, key: string | null): Promise<boolean | string>; publish?(id: string): Promise<string | null>; unpublish?(id: string): Promise<string | null> } }).sandboxDesktop;
+const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void; onUpdating?(fn: (progress: Updating) => void): void; leave(): void; agents: { id: string; name: string }[]; build(id: string, key: string | null): Promise<boolean | string>; publish?(id: string): Promise<string | null>; unpublish?(id: string): Promise<string | null>; publishMod?(id: string, name: string): Promise<string | null> } }).sandboxDesktop;
 desktop?.onUpdate((version) => ($("menu-update").hidden = !version));
 // Apps before 0.2.9 don't tell how the update goes.
 desktop?.onUpdating?.((progress) => {
@@ -2748,6 +2748,11 @@ async function refreshMenu() {
           const [love, undo] = li.querySelectorAll("button");
           love!.textContent += m.love ? ` ${m.love}` : "";
           undo!.textContent += ` ${m.undo}/${status.undoNeeded}`;
+          if (hostsThisWorld && desktop?.publishMod) {
+            const share = Object.assign(document.createElement("button"), { textContent: "Share" });
+            share.onclick = () => shareMod(m, share);
+            li.querySelector(".votes")!.append(share);
+          }
           for (const b of [love!, undo!]) {
             b.disabled = m.author === me;
             b.classList.toggle("picked", myVotes.get(m.name) === `${m.version}:${b.dataset.kind}`);
@@ -2761,6 +2766,17 @@ async function refreshMenu() {
       : [Object.assign(document.createElement("li"), { textContent: "No mods yet" })]),
   );
   if (voting >= 0 || landing) $("menu-mods").querySelectorAll("button")[Math.max(voting, 0)]?.focus();
+}
+
+/** Shares one mod to Community from the desktop app, with the current view as its preview. */
+async function shareMod(m: { name: string; about?: { title?: string; text?: string } }, button: HTMLButtonElement) {
+  button.disabled = true;
+  button.textContent = "Sharing…";
+  const res = await hostMenu("mod-stage", { id: info.id, name: m.name, title: m.about?.title ?? m.name, description: m.about?.text ?? "", cover: viewJpeg() });
+  const said = res.ok ? await desktop!.publishMod!(info.id, m.name) : (await res.json()).error;
+  if (said) toast(said);
+  button.disabled = false;
+  button.textContent = "Share";
 }
 
 for (const button of all<HTMLButtonElement>("[data-copy]"))

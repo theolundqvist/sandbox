@@ -28,6 +28,8 @@
   #cworld-by { margin: -16px 0 8px; }
   #cworld-about { margin: 0 0 24px; color: var(--dim); max-width: 640px; }
   #cworld-lineage { margin: -12px 0 20px; }
+  #cworld-mod pre { margin: 0 0 24px; max-width: 640px; max-height: 360px; overflow: auto; padding: 16px; background: #1b1c1f; color: var(--text); font: 13px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
+  #cworld-mod h2 { margin: 0 0 8px; }
   .comment { max-width: 720px; padding: 14px 0 14px 32px; border-bottom: 1px solid var(--line); user-select: text; }
   .comment p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .comment.removed p { color: var(--dim); }
@@ -104,7 +106,8 @@
   <section id="community" class="screen" data-nav hidden>
     <h1>Community</h1>
     <div class="items" id="live-list"></div>
-    <div class="field"><span>Show</span><div class="pick" id="community-tab" data-options="top:Most played,new:Newest,mine:My worlds"></div></div>
+    <div class="field"><span>Show</span><div class="pick" id="community-tab" data-options="top:Most played,new:Newest,mine:My worlds,mods:Mods"></div></div>
+    <div class="items" id="mods-search-row" hidden><label class="item entry"><input type="text" id="mods-search" maxlength="100" placeholder="Search mods" autocomplete="off"></label></div>
     <div class="items"><button class="item" id="go-notices"><span><svg class="bell" viewBox="0 0 14 16" aria-hidden="true"><path d="M7 0a1.2 1.2 0 0 1 1.2 1.3A5 5 0 0 1 12 6.2V11l2 2v1H0v-1l2-2V6.2a5 5 0 0 1 3.8-4.9A1.2 1.2 0 0 1 7 0zm-2 15h4a2 2 0 0 1-4 0z"/></svg>Notifications</span><span class="value live" id="notice-count"></span></button><button class="item" id="go-publish">Publish a world</button><button class="item" id="go-inbox">Messages<span class="value" id="unread"></span></button><button class="item" id="go-friends">Friends<span class="value" id="friend-requests"></span></button><button class="item" id="go-me">Your profile</button></div>
     <div class="items" id="community-list"></div>
     <p id="community-status" class="status" hidden></p>
@@ -117,6 +120,12 @@
     <p class="status" id="cworld-by"></p>
     <p id="cworld-about"></p>
     <p class="status" id="cworld-lineage" hidden></p>
+    <div id="cworld-mod" hidden>
+      <div class="items"><button class="item" id="cworld-add">Add to a world<span class="value" id="cworld-add-line"></span></button></div>
+      <pre id="cworld-readme"></pre>
+      <h2 class="status">API</h2>
+      <pre id="cworld-api"></pre>
+    </div>
     <div class="items">
       <button class="item" id="cworld-play">Play</button>
       <button class="item" id="cworld-fork">Fork<span class="value">Copy to Worlds</span></button>
@@ -570,21 +579,25 @@
   let listed = [];
   async function loadCommunity(more = false) {
     const mine = $("community-tab").dataset.value === "mine";
+    const mods = $("community-tab").dataset.value === "mods";
+    $("mods-search-row").hidden = !mods;
     if (mine && !account) return needAccount(() => loadCommunity());
     if (!more) listed = [];
     communityStatus(listed.length ? "" : "Loading");
     try {
-      const page = await communityCall("list", { mine, sort: $("community-tab").dataset.value, after: more ? listed.at(-1)?.id : undefined });
+      const after = more ? listed.at(-1)?.id : undefined;
+      const page = mods ? await communityCall("mods", { q: $("mods-search").value, after }) : await communityCall("list", { mine, sort: $("community-tab").dataset.value, after });
       listed.push(...page);
       $("community-more").hidden = mine || page.length < 50;
     } catch (e) {
       $("error").textContent = e.message;
     }
-    communityStatus(listed.length ? "" : mine ? "Worlds you publish show up here" : "No worlds shared yet");
+    communityStatus(listed.length ? "" : mods ? ($("mods-search").value.trim() ? "No mods match" : "No mods shared yet") : mine ? "Worlds you publish show up here" : "No worlds shared yet");
     $("community-list").replaceChildren(...listed.map(worldRow));
   }
   function worldRow(w) {
-    const b = el("button", { className: "item pictured", onclick: () => openWorld(w) }, clipOf(w, "cover"), el("span", { className: "what", textContent: w.title }, el("small", { textContent: `by ${w.author} · ${counted(w.plays, "play")} · ${counted(w.votes, "vote")}` })), el("span", { className: "value", textContent: w.visibility === "link" ? "Link only" : counted(w.players, "player") }));
+    const mod = w.kind === "mod";
+    const b = el("button", { className: "item pictured", onclick: () => openWorld(w) }, clipOf(w, "cover"), el("span", { className: "what", textContent: w.title }, el("small", { textContent: `by ${w.author} · ${mod ? w.description : counted(w.plays, "play")} · ${counted(w.votes, "vote")}` })), el("span", { className: "value", textContent: mod ? `${counted(w.uses, "world")} use it` : w.visibility === "link" ? "Link only" : counted(w.players, "player") }));
     b.dataset.key = w.id;
     return b;
   }
@@ -624,13 +637,26 @@
   pick($("community-tab"), () => loadCommunity());
   $("go-community").addEventListener("click", () => loadCommunity());
   $("community-more").onclick = () => loadCommunity(true);
+  let searching;
+  $("mods-search").addEventListener("input", () => {
+    clearTimeout(searching);
+    searching = setTimeout(() => loadCommunity(), 250);
+  });
 
   function renderWorld() {
     const w = opened;
     $("cworld-stage").replaceChildren(clipOf(w, "stage-art"));
     $("cworld-title").textContent = w.title;
     const names = w.builders ?? [w.author];
-    $("cworld-by").replaceChildren("by ", ...names.flatMap((n, i) => [i ? ", " : "", el("button", { textContent: n, onclick: () => openProfile(n) })]), ` · ${counted(w.players, "player")} · ${counted(w.plays, "play")}`);
+    const mod = w.kind === "mod";
+    $("cworld-by").replaceChildren("by ", ...names.flatMap((n, i) => [i ? ", " : "", el("button", { textContent: n, onclick: () => openProfile(n) })]), mod ? ` · ${counted(w.uses ?? 0, "world")} use it` : ` · ${counted(w.players, "player")} · ${counted(w.plays, "play")}`);
+    $("cworld-play").hidden = $("cworld-fork").hidden = mod;
+    $("cworld-mod").hidden = !mod;
+    $("cworld-add-line").textContent = `./world add_mod id=${w.id}`;
+    $("cworld-add").firstChild.textContent = "Add to a world";
+    $("cworld-readme").textContent = w.readme ?? "";
+    $("cworld-readme").hidden = !w.readme;
+    $("cworld-api").textContent = w.api || "Exports nothing to other mods";
     $("cworld-about").textContent = w.description;
     $("cworld-votes").textContent = String(w.votes);
     $("cworld-vote").firstChild.textContent = w.voted ? "Upvoted" : "Upvote";
@@ -643,7 +669,7 @@
     $("cworld-parent").hidden = !parent?.id;
     $("cworld-parent-name").textContent = parent?.title ?? "";
     $("cworld-lineage").hidden = !parent || !!parent.id;
-    $("cworld-lineage").textContent = parent?.removed ? "Forked from a removed world" : "Forked from an unlisted world";
+    $("cworld-lineage").textContent = `Forked from ${parent?.removed ? "a removed" : "an unlisted"} ${mod ? "mod" : "world"}`;
     $("cworld-forks").hidden = !w.forks;
     $("cworld-fork-count").textContent = String(w.forks ?? "");
   }
@@ -652,13 +678,15 @@
     opened = w;
     renderWorld();
     show("cworld");
-    const full = await communityCall("world", { id: w.id }).catch((e) => void ($("error").textContent = e.message));
+    const full = await communityCall(w.kind === "mod" ? "mod" : "world", { id: w.id }).catch((e) => void ($("error").textContent = e.message));
     if (full && opened === w) {
       Object.assign(w, full);
       renderWorld();
     }
   }
-  $("cworld-parent").onclick = () => openWorld({ ...opened.parent, votes: 0, plays: 0, players: 0 });
+  $("cworld-parent").onclick = () => openWorld({ ...opened.parent, kind: opened.kind, votes: 0, plays: 0, players: 0, uses: 0 });
+  /** Any world's agent adds a mod with this line; the player pastes it to their agent. */
+  $("cworld-add").onclick = () => navigator.clipboard.writeText(`Add the Community mod ${opened.title}: ./world add_mod id=${opened.id}`).then(() => ($("cworld-add").firstChild.textContent = "Copied"));
   let forks = [];
   async function loadForks(more = false) {
     if (!more) forks = [];
@@ -898,7 +926,7 @@
   }
   /** What a notice says, and where it leads. */
   const NOTICES = {
-    fork: (n) => [`${n.actor} forked your world`, n.world.title, () => openWorld(n.world)],
+    fork: (n) => [`${n.actor} forked your ${n.world.kind}`, n.world.title, () => openWorld(n.world)],
     comment: (n) => [`${n.actor} commented`, n.world.title, () => openWorld(n.world)],
     message: (n) => [`${n.actor} sent you a message`, "", () => openThread(n.actor)],
     credit: (n) => [`${n.actor} credited you`, n.world.title, () => openProfile(account.username)],

@@ -392,6 +392,23 @@ async function publishWorld(id) {
   await publishStaged(id, stage);
   return null;
 }
+/** The game's Share on a mod: the world staged it, and the player confirms. What happened, or null when they said no. A mod shared from here before, or added from Community, updates that one when it's theirs and becomes a fork of it otherwise. */
+async function publishMod(id, name) {
+  const stage = await menu("mod-staged", { id, name });
+  if (!stage) return "Share it again.";
+  const account = await ACCOUNT_ACTIONS.account();
+  if (!account) return "Sign in to Community in Settings, then share again.";
+  const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Publish", "Cancel"], defaultId: 0, cancelId: 1, message: `Publish the mod ${stage.details.title} as ${account.username}?`, detail: "Anyone can find it in Community and add it to their world. Only this mod's code and assets are shared." });
+  if (response !== 0) return null;
+  const body = { ...stage.details, files: stage.sizes };
+  const before = stage.community;
+  const updated = before && (await community(`/mods/${before}`, { method: "PUT", body }).catch((e) => ([403, 404, 410].includes(e.status) ? null : Promise.reject(e))));
+  const { id: mod, uploads } = updated || (await community("/mods", { method: "POST", body: { ...body, forkOf: before ?? undefined } }));
+  await menu("mod-upload", { id, name, uploads });
+  const published = await community(`/worlds/${mod}/done`, { method: "POST" });
+  await menu("mod-published", { id, name, mod: published });
+  return `${stage.details.title} is in Community: ${published.link}`;
+}
 /** Takes a world this app published out of Community, once the player confirms. */
 async function unpublishWorld(id) {
   const shared = (await hostState())?.worlds.find((w) => w.id === id)?.shared?.id;
@@ -516,6 +533,8 @@ const publishedFrom = async (id) => (await startServer(), await hostState())?.wo
 const COMMUNITY_ACTIONS = {
   list: ({ after, mine, sort }) => (mine ? community("/account/worlds") : community(`/worlds?sort=${sort === "new" ? "new" : "top"}${after ? `&after=${worldId(after)}` : ""}`)),
   world: ({ id }) => community(`/worlds/${worldId(id)}`),
+  mods: ({ q, sort, after }) => community(`/mods?sort=${sort === "new" ? "new" : "top"}&q=${encodeURIComponent(String(q ?? "").slice(0, 100))}${after ? `&after=${worldId(after)}` : ""}`),
+  mod: ({ id }) => community(`/mods/${worldId(id)}`),
   forks: ({ id, after }) => community(`/worlds/${worldId(id)}/forks${after ? `?after=${worldId(after)}` : ""}`),
   vote: ({ id, up }) => community(`/worlds/${worldId(id)}/vote`, { method: "PUT", body: { up: up === true } }),
   report: ({ id }) => community(`/worlds/${worldId(id)}/report`, { method: "POST" }),
@@ -938,6 +957,7 @@ app.whenReady().then(() => {
     usage.step("agent", "build-with", { agent: Object.hasOwn(AGENTS, id) ? id : null, outcome: started === true ? "started" : started === false ? "declined" : "failed" });
     return started;
   });
+  ipcMain.handle("publish-mod", async (event, id, name) => ((await hostingHere(event, String(id))) ? publishMod(String(id), String(name)).catch((e) => e.message) : "Publish from the Sandbox app."));
   for (const [channel, fn] of [["publish", publishWorld], ["unpublish", unpublishWorld]])
     ipcMain.handle(channel, async (event, id) => ((await hostingHere(event, String(id))) ? fn(String(id)).catch((e) => e.message) : "Publish from the Sandbox app."));
   ipcMain.on("agent-name", (event) => (event.returnValue = fromAgent(event) ? agent.name : ""));

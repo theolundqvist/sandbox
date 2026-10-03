@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Server, ServerWebSocket, Subprocess } from "bun";
 import { frontFile } from "./front";
 import { hasGit } from "./mods";
+import { ORIGIN, packMod } from "./modshare";
 import { latencies, openRecord, route, type Recorder } from "./record";
 import type { Config } from "./server";
 import { identify, PROVIDERS, type Voice } from "./voice";
@@ -496,6 +497,10 @@ async function menuApi(req: Request, action: string) {
     } else if (action === "publish-stage") return Response.json(await stagePublish(body));
     else if (action === "publish-upload") return Response.json(await uploadStaged(body));
     else if (action === "staged") return Response.json(staged.get(body.id)?.stage ?? null);
+    else if (action === "mod-stage") return Response.json(stageMod(body));
+    else if (action === "mod-staged") return Response.json(staged.get(modStage(body.id, body.name))?.stage ?? null);
+    else if (action === "mod-upload") return Response.json(await uploadStaged({ id: modStage(body.id, body.name), uploads: body.uploads }));
+    else if (action === "mod-published") modPublished(body);
     else if (action === "builders") return Response.json(builders(body.id));
     else if (action === "credit-checks") return Response.json(creditChecks(body.id, body.names));
     else if (action === "published") published(body);
@@ -623,6 +628,48 @@ async function stagePublish(body: any) {
   const stage = { details, sizes: Object.fromEntries(Object.entries(files).map(([k, f]) => [k, f.bytes.length])), community: before.id ?? null };
   staged.set(body.id, { files, stage, picked: !!body.cover });
   return stage;
+}
+
+const modStage = (id: unknown, name: unknown) => `mod ${id} ${name}`;
+/** Every value that unlocks something here, so none leaves inside a shared mod: the world's invite, host key and password, its players' keys, and the paid services' keys. */
+function secretsOf(id: string) {
+  const values = (v: unknown): string[] => (typeof v === "string" ? [v] : v && typeof v === "object" ? Object.values(v).flatMap(values) : []);
+  const own = config(id);
+  return [own.invite, own.hostKey, own.password, ...Object.keys(readJson(join(WORLDS, id, "keys.json"))), ...values(secrets())].filter((s): s is string => typeof s === "string");
+}
+
+/** One mod of a world packed for Community, with its README, API and the picture the game took. A mod added from Community, or shared before, updates that one. */
+function stageMod(body: any) {
+  if (!exists(body.id)) throw new Error("That world doesn't exist.");
+  const root = join(WORLDS, body.id, "world");
+  const name = String(body.name ?? "");
+  const pack = packMod(root, name, secretsOf(body.id));
+  const cover = body.cover ? Buffer.from(String(body.cover), "base64") : null;
+  const origin = readJson(join(root, "mods", name, ORIGIN));
+  const files: Record<string, { bytes: Uint8Array<ArrayBuffer>; type: string }> = { zip: { bytes: pack.zip as Uint8Array<ArrayBuffer>, type: "application/zip" } };
+  if (cover) files.cover = { bytes: cover, type: "image/jpeg" };
+  const details = {
+    name,
+    title: String(body.title ?? "").trim().slice(0, 60) || name,
+    description: String(body.description ?? "").trim().slice(0, 200),
+    readme: pack.readme,
+    api: pack.api,
+    packages: pack.packages,
+    needs: pack.needs,
+    engineVersion: ENGINE_VERSION,
+  };
+  const stage = { details, sizes: Object.fromEntries(Object.entries(files).map(([k, f]) => [k, f.bytes.length])), community: origin.id ?? null };
+  staged.set(modStage(body.id, name), { files, stage, picked: false });
+  return stage;
+}
+
+/** Where a shared mod went, in its community.json: later shares update it. */
+function modPublished(body: any) {
+  if (!exists(body.id)) throw new Error("That world doesn't exist.");
+  const path = join(WORLDS, body.id, "world", "mods", String(body.name), ORIGIN);
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(String(body.name)) || !existsSync(join(path, ".."))) throw new Error("That mod doesn't exist.");
+  const m = body.mod ?? {};
+  writeFileSync(path, JSON.stringify({ ...readJson(path), id: m.id, name: body.name, title: m.title, author: m.author, link: m.link }, null, 2));
 }
 
 /** Everyone who has played in a world here, by name. */

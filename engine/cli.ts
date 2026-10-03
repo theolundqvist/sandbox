@@ -8,6 +8,7 @@ import { brief, type Recorder } from "./record";
 import type { GameCard } from "./games";
 import type { Sims } from "./sims";
 import { PlaytestError, type playtests } from "./playtest";
+import { communityClient } from "./modshare";
 
 export type Task = { title: string; status: string; percent?: number; state: "working" | "done" | "blocked"; at: number };
 const speaker = (who: string) => `${who}'s agent`;
@@ -317,12 +318,29 @@ const tools = [
       required: ["text"],
     },
   },
+  {
+    name: "search_mods",
+    description:
+      "Search Community mods: systems other worlds built and published, ready to add here (an inventory, day and night, vehicles, a shop). Before building a common system, search here first. Each result has the mod's id, name, author, how many worlds use it, a one-line description and a preview image URL.",
+    inputSchema: { type: "object", properties: { q: { type: "string", description: "Words to find in a mod's title, name, description or README; empty lists the most used." }, sort: { type: "string", enum: ["top", "new"], description: "top: most used first (default); new: newest first." } } },
+  },
+  {
+    name: "read_mod",
+    description: "A Community mod's README and the API it exports to other mods, with the npm packages and other mods it needs.",
+    inputSchema: { type: "object", properties: { id: { type: "string", description: "The mod's id from search_mods, or its link." } }, required: ["id"] },
+  },
+  {
+    name: "add_mod",
+    description:
+      "Install a Community mod in this world as mods/<name>/, with the npm packages it needs, then reload it live for everyone. Afterwards it is a normal mod: edit and reload it like your own. mods/<name>/community.json records where it came from.",
+    inputSchema: { type: "object", properties: { id: { type: "string", description: "The mod's id from search_mods, or its link." }, as: { type: "string", description: "Another folder name, when mods/<name>/ is taken." } }, required: ["id"] },
+  },
 ];
 
 const instructions = `This is a live multiplayer game that the players build together while playing. Every player's Claude edits the same shared file tree on the game server, and anything you reload goes live for everyone at once.
 Workflow: call status, read GUIDE.md and the mods that touch what you are about to build, then write or edit files under mods/<your-mod>/ and call reload. Nothing is live until reload succeeds.
 A world can hold several games: check list_games before you build, and put a game's mods in it with game: "<id>" (GUIDE.md, Games).
-One game, not a pile of mods: every shared system (movement, ground and sky, lighting, economy, shop, inventory, progression, map, HUD, each key) has one owner mod, which names it in its server.ts with export const owns = ["inventory"] so status lists it. Extend it through its exports or wrap, or ask its owner with say to "claudes"; never build a second one. Hook new things into what players already earn, press and see.
+One game, not a pile of mods: every shared system (movement, ground and sky, lighting, economy, shop, inventory, progression, map, HUD, each key) has one owner mod, which names it in its server.ts with export const owns = ["inventory"] so status lists it. Extend it through its exports or wrap, or ask its owner with say to "claudes"; never build a second one. Hook new things into what players already earn, press and see. Before building a common system from scratch, search_mods: another world may have published one to add.
 Before you tell anyone something works, see it work: logs for your player stay clean, screenshot shows it, the input reaches the server (query_world, with wait when you expect state to change; never poll it in a loop). Only then mark your task done. Chat belongs to the players: say one greeting when you connect and nothing more there; players follow your work through task, and when a task goes done and they can try something new, call announce with what to try.
 Other Claudes edit at the same time: re-read a file right before changing it. Between builds call wait_for_chat, for the whole session: players ask for things in the in-game chat, which is also appended to every tool result.`;
 
@@ -332,6 +350,10 @@ class ToolError extends Error {}
 const treePath = (root: string, abs: string) => relative(root, abs).split(sep).join("/");
 
 export function createCli(ctx: CliContext) {
+  const mods = communityClient(process.env.SANDBOX_SECRETS, () => JSON.parse(readFileSync(join(ctx.data, "config.json"), "utf8")).telemetry);
+  const refuse = (e: Error): never => {
+    throw new ToolError(e.message);
+  };
   function resolvePath(path: string) {
     const abs = resolve(ctx.root, path);
     const rel = treePath(ctx.root, abs);
@@ -620,6 +642,16 @@ export function createCli(ctx: CliContext) {
         }
         ctx.feed(`${speaker(who)} added the ${spec} package`, "info");
         return `${out.trim().split("\n").slice(-3).join("\n")}\nImport it from any mod, then reload that mod.`;
+      }
+      case "search_mods":
+        return await mods.search(String(args.q ?? ""), String(args.sort ?? "top")).catch(refuse);
+      case "read_mod":
+        return await mods.read(args.id).catch(refuse);
+      case "add_mod": {
+        const added = await mods.add(args.id, args.as, ctx.root).catch(refuse);
+        ctx.feed(`${speaker(who)} added ${added.mod.title} from Community`, "info");
+        const reloaded = await run("reload", { mod: added.name }, who).catch((e) => `It didn't go live: ${e.message}\nThe files are in mods/${added.name}/: fix them and reload.`);
+        return `Added ${added.mod.title} by ${added.mod.author} as mods/${added.name}/ (${added.files.join(", ")}${added.packages.length ? `; installed ${added.packages.join(", ")}` : ""}).${added.mod.needs.length ? ` It uses the mods ${added.mod.needs.join(", ")}: check status for them.` : ""}\n${typeof reloaded === "string" ? reloaded : ""}`;
       }
       case "wait_for_chat": {
         const until = Date.now() + Math.min(Number(args.seconds) || 60, 240) * 1000;

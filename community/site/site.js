@@ -1,4 +1,4 @@
-// The public face of Sandbox: join a friend's world, browse Community worlds, get the app. Every screen has its own address; a world's is /w/<id>.
+// The public face of Sandbox: join a friend's world, browse Community worlds and mods, get the app. Every screen has its own address; a world's is /w/<id>, a mod's /m/<id>.
 import { COMPUTERS, backdrop, computer, computerPick, joinLink, logo, pick, usage } from "/front.js";
 
 const API = "https://sandbox.api.lundqvistliss.com";
@@ -61,12 +61,14 @@ const ago = (ms) => {
   return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : Math.round(m / 1440) === 1 ? "yesterday" : `${Math.round(m / 1440)} days ago`;
 };
 
-/** A world as a row: its clip, its name, who made it, and the link to play or fork it in the app. */
+const pageOf = (w) => `/${w.kind === "mod" ? "m" : "w"}/${w.id}`;
+/** A world as a row: its clip, its name, who made it, and the link to play or fork it in the app. A mod's row says how many worlds use it instead. */
 function worldRow(w) {
+  if (w.kind === "mod") return el("a", { className: "world", href: pageOf(w) }, el("span", { className: "cover" }, media(w)), el("span", { className: "what" }, el("b", { textContent: w.title }), el("small", { textContent: `by ${w.author} · ${counted(w.uses, "world")} use it · ${counted(w.votes, "vote")}` }), el("small", { textContent: w.description })));
   const get = el("button", { className: "quiet", textContent: "Play or fork it in the app" });
   get.dataset.event = "world-get";
   const about = w.visibility === "link" ? "link only" : `${counted(w.players, "player")} · ${counted(w.plays, "play")} · ${counted(w.votes, "vote")}`;
-  const row = el("a", { className: "world", href: `/w/${w.id}` }, el("span", { className: "cover" }, media(w)), el("span", { className: "what" }, el("b", { textContent: w.title }), el("small", { textContent: `by ${w.author} · ${about}` }), get));
+  const row = el("a", { className: "world", href: pageOf(w) }, el("span", { className: "cover" }, media(w)), el("span", { className: "what" }, el("b", { textContent: w.title }), el("small", { textContent: `by ${w.author} · ${about}` }), get));
   get.onclick = (e) => {
     e.preventDefault();
     copyFor(w, $("world-tip"));
@@ -116,23 +118,42 @@ async function showWorlds(more = false) {
   if (!more) listed = [];
   $("empty").hidden = !!listed.length;
   $("empty").textContent = "Loading";
-  const page = await api(`/worlds?sort=${$("world-sort").dataset.value}${more && listed.length ? `&after=${listed.at(-1).id}` : ""}`);
+  const mods = $("world-sort").dataset.value === "mods";
+  $("mods-search-form").hidden = !mods;
+  const after = more && listed.length ? `&after=${listed.at(-1).id}` : "";
+  const page = await api(mods ? `/mods?q=${encodeURIComponent($("mods-search").value)}${after}` : `/worlds?sort=${$("world-sort").dataset.value}${after}`);
   listed.push(...page);
-  $("empty").textContent = "No worlds shared yet";
+  $("empty").textContent = mods ? ($("mods-search").value.trim() ? "No mods match" : "No mods shared yet") : "No worlds shared yet";
   $("empty").hidden = !!listed.length;
   $("more").hidden = page.length < 50;
   $("world-list").replaceChildren(...listed.map(worldRow));
 }
 pick($("world-sort"), () => showWorlds().catch((e) => ($("error").textContent = e.message)));
 $("more").onclick = () => showWorlds(true).catch((e) => ($("error").textContent = e.message));
+let searching;
+$("mods-search").oninput = () => {
+  clearTimeout(searching);
+  searching = setTimeout(() => showWorlds().catch((e) => ($("error").textContent = e.message)), 250);
+};
+$("mods-search-form").onsubmit = (e) => e.preventDefault();
 
-async function showWorld(id) {
-  const w = await api(`/worlds/${id}`);
+/** A world's page, or a mod's: a mod is added by an agent rather than played, so it shows its README, its API and the line that adds it. */
+async function showWorld(id, kind = "world") {
+  const mod = kind === "mod";
+  const w = await api(mod ? `/mods/${id}` : `/worlds/${id}`);
+  const here = pageOf(w);
   document.title = `${w.title} · Sandbox`;
   $("world-stage").replaceChildren(media(w));
   $("world-title").textContent = w.title;
   const names = w.builders ?? [w.author];
-  $("world-by").replaceChildren("by ", ...names.flatMap((n, i) => [i ? ", " : "", el("a", { href: `/u/${n}`, textContent: n })]), ["", counted(w.players, "player"), counted(w.plays, "play"), w.mods ? `${w.mods} mods` : ""].filter((x, i) => !i || x).join(" · "));
+  const counts = mod ? ["", `${counted(w.uses, "world")} use it`] : ["", counted(w.players, "player"), counted(w.plays, "play"), w.mods ? `${w.mods} mods` : ""];
+  $("world-by").replaceChildren("by ", ...names.flatMap((n, i) => [i ? ", " : "", el("a", { href: `/u/${n}`, textContent: n })]), counts.filter((x, i) => !i || x).join(" · "));
+  $("world-get").hidden = mod;
+  $("mod-part").hidden = !mod;
+  $("mod-add").textContent = `./world add_mod id=${w.id}`;
+  $("mod-readme").textContent = w.readme ?? "";
+  $("mod-readme").hidden = !w.readme;
+  $("mod-api").textContent = w.api || "Exports nothing to other mods";
   $("world-about").textContent = w.description;
   $("world-tip").hidden = true;
   $("world-get").onclick = () => copyFor(w, $("world-tip"));
@@ -143,7 +164,7 @@ async function showWorld(id) {
   showVote();
   // Voting needs an account: signing in comes back here.
   $("vote").onclick = async () => {
-    if (!(await whoAmI())) return go(`/signin?then=/w/${id}`);
+    if (!(await whoAmI())) return go(`/signin?then=${here}`);
     try {
       Object.assign(w, await api(`/worlds/${id}/vote`, { method: "PUT", body: JSON.stringify({ up: !w.voted }) }));
       showVote();
@@ -174,9 +195,9 @@ async function showWorld(id) {
   $("world-parent").hidden = !parent;
   $("world-parent").replaceChildren(
     "Forked from ",
-    parent?.id ? el("a", { href: `/w/${parent.id}`, textContent: `${parent.title} by ${parent.author}` }) : parent?.removed ? "a removed world" : "an unlisted world",
+    parent?.id ? el("a", { href: `/${mod ? "m" : "w"}/${parent.id}`, textContent: `${parent.title} by ${parent.author}` }) : `${parent?.removed ? "a removed" : "an unlisted"} ${kind}`,
   );
-  await Promise.all([showForks(id, w.forks), showComments(id)]);
+  await Promise.all([showForks(id, w.forks), showComments(id, false, here)]);
 }
 
 /** The listed worlds forked from this one, newest first. */
@@ -194,16 +215,16 @@ async function showForks(id, count, more = false) {
 
 /** A world's comments, oldest first, 100 at a time. Their author and the world's owner remove them; anyone reports them. */
 let thread = [];
-async function showComments(id, more = false) {
+async function showComments(id, more = false, here = `/w/${id}`) {
   if (!more) thread = [];
   const signedIn = !!(await whoAmI());
   $("comment-form").hidden = !signedIn;
   $("comment-signin").hidden = signedIn;
-  $("comment-signin").href = `/signin?then=/w/${id}`;
+  $("comment-signin").href = `/signin?then=${here}`;
   const page = await api(`/worlds/${id}/comments${more && thread.length ? `?after=${thread.at(-1).id}` : ""}`);
   thread.push(...page);
   $("comments-more").hidden = page.length < 100;
-  $("comments-more").onclick = () => showComments(id, true).catch((e) => ($("error").textContent = e.message));
+  $("comments-more").onclick = () => showComments(id, true, here).catch((e) => ($("error").textContent = e.message));
   $("comment-form").onsubmit = async (e) => {
     e.preventDefault();
     const body = $("comment-text").value.trim();
@@ -258,8 +279,8 @@ async function whoAmI(fresh = false) {
 
 /** What a notice says, and where it leads. */
 const NOTICES = {
-  fork: (n) => [`${n.actor} forked your world`, n.world.title, `/w/${n.world.id}`],
-  comment: (n) => [`${n.actor} commented`, n.world.title, `/w/${n.world.id}`],
+  fork: (n) => [`${n.actor} forked your ${n.world.kind}`, n.world.title, pageOf(n.world)],
+  comment: (n) => [`${n.actor} commented`, n.world.title, pageOf(n.world)],
   message: (n) => [`${n.actor} sent you a message`, "", `/messages/${n.actor}`],
   credit: (n) => [`${n.actor} credited you`, `${n.world.title} · accept it in the app`, `/w/${n.world.id}`],
   "friend-request": (n) => [`${n.actor} wants to be friends`, "", `/u/${n.actor}`],
@@ -443,7 +464,7 @@ const SCREENS = { "/": "home", "/join": "join", "/worlds": "worlds", "/host": "h
 const BACK = { world: "/worlds", signup: "/signin", delete: "/account", messages: "/account", friends: "/account", notifications: "/account", thread: "/messages" };
 async function route() {
   const path = location.pathname.replace(/\/+$/, "") || "/";
-  const id = path.match(/^\/w\/([a-z0-9]{12})$/)?.[1];
+  const [, kind, id] = path.match(/^\/(w|m)\/([a-z0-9]{12})$/) ?? [];
   const user = path.match(/^\/u\/([A-Za-z0-9_]{3,20})$/)?.[1];
   const talking = path.match(/^\/messages\/([A-Za-z0-9_]{3,20})$/)?.[1];
   const screen = id ? "world" : user ? "profile" : talking ? "thread" : (SCREENS[path] ?? "home");
@@ -456,7 +477,7 @@ async function route() {
   document.title = "Sandbox";
   try {
     if (screen === "worlds") await Promise.all([showWorlds(), showLive()]);
-    if (screen === "world") await showWorld(id);
+    if (screen === "world") await showWorld(id, kind === "m" ? "mod" : "world");
     if (screen === "account") await showAccount();
     if (screen === "profile") await showProfile(user);
     if (screen === "messages") await showMessages();

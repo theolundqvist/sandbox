@@ -35,13 +35,14 @@ const RATE = {
   "agent-usage": [30, "1 minute"],
   friend: [20, "1 day"],
   live: [10, "1 minute"],
+  "mod-use": [30, "1 hour"],
 } as const;
 const ID = /^[a-z0-9]{12}$/;
 
-const SITE = process.env.SITE!;
+export const SITE = process.env.SITE!;
 const RELAY = process.env.RELAY ?? "https://sandbox-relay.lundqvistliss.com";
 const worlds = bucketFromEnv(process.env.R2_BUCKET!);
-const STORAGE = !!worlds.endpoint;
+export const STORAGE = !!worlds.endpoint;
 const files = s3(worlds);
 export const sql = process.env.DATABASE_URL
   ? new SQL(process.env.DATABASE_URL)
@@ -56,9 +57,9 @@ export class Refusal extends Error {
 }
 
 const cors = { "access-control-allow-origin": SITE, "access-control-allow-credentials": "true", vary: "origin" };
-const json = (body: unknown, status = 200, headers: Record<string, string> = {}) => Response.json(body, { status, headers: { ...cors, ...headers } });
+export const json = (body: unknown, status = 200, headers: Record<string, string> = {}) => Response.json(body, { status, headers: { ...cors, ...headers } });
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
-const randomId = (length: number) => [...randomBytes(length)].map((b) => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join("");
+export const randomId = (length: number) => [...randomBytes(length)].map((b) => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join("");
 const bearer = (req: Request) => req.headers.get("authorization")?.match(/^Bearer (\S+)$/)?.[1] ?? "";
 
 /** The client's IP, hashed; NPM, in front, names it in X-Real-IP. */
@@ -119,7 +120,7 @@ export const NOBODY = await Bun.password.hash(randomBytes(16).toString("hex"), {
 
 const cookie = (req: Request) => req.headers.get("cookie")?.match(/(?:^|;\s*)session=([^;]+)/)?.[1] ?? "";
 /** The signed-in account: a bearer session from the desktop app, or the site's cookie. A cookie changes nothing unless the request comes from the site itself with its header, so no other page can act as the visitor. */
-async function sessionOf(req: Request): Promise<Account | null> {
+export async function sessionOf(req: Request): Promise<Account | null> {
   let token = bearer(req);
   if (!token) {
     token = cookie(req);
@@ -133,12 +134,12 @@ async function accountOfToken(token: string): Promise<Account | null> {
     ) select a.id, a.email, a.username, a.created_at, a.username_changed_at, a.banned_at from accounts a join s on s.account = a.id`;
   return (account as Account) ?? null;
 }
-async function signedIn(req: Request) {
+export async function signedIn(req: Request) {
   const account = await sessionOf(req);
   if (!account) throw new Refusal("Sign in first.", 401);
   return account;
 }
-function allowed(account: Account) {
+export function allowed(account: Account) {
   if (account.banned_at) throw new Refusal("This account can't do that any more.", 403);
   return account;
 }
@@ -231,7 +232,7 @@ async function logDeletion(kind: "account" | "world", id: string, by = "") {
 // ---------- worlds ----------
 
 /** A live world, its owner's username, and who may change it: its account, or, shared before accounts and not yet claimed, its owner token, which can only take it down. */
-async function owned(req: Request, id: string, { token = false } = {}) {
+export async function owned(req: Request, id: string, { token = false } = {}) {
   const [row] = await sql`select w.*, a.username from worlds w left join accounts a on a.id = w.account where w.id = ${id}`;
   if (!row) throw new Refusal("There is no such world.", 404);
   if (row.removed_at) throw new Refusal("This world was taken down.", 410);
@@ -283,11 +284,11 @@ function details(body: any, update: boolean) {
   return { meta, sizes };
 }
 
-/** A parent is a world Community has, or had: never the world itself or one of its own forks. */
-async function parentOk(id: string | null, parent: string | null) {
+/** A parent is a world Community has, or had, never a mod: never the world itself or one of its own forks. */
+export async function parentOk(id: string | null, parent: string | null) {
   if (!parent) return;
   const [chain] = await sql`with recursive up (id, remix_of, depth) as (
-      select id, remix_of, 0 from worlds where id = ${parent}
+      select id, remix_of, 0 from worlds where id = ${parent} and kind = 'world'
       union all select w.id, w.remix_of, up.depth + 1 from worlds w join up on w.id = up.remix_of where up.depth < 1000
     ) select count(*)::int n, bool_or(id = ${id ?? ""}) loops from up`;
   if (!chain.n) throw new Refusal("The world this was forked from isn't in Community.");
@@ -295,7 +296,7 @@ async function parentOk(id: string | null, parent: string | null) {
 }
 
 /** Every upload gets fresh keys, so the world stays whole while it is replaced and its file URLs change when it does. */
-async function prepare(id: string, meta: object, sizes: Partial<Record<Kind, number>>) {
+export async function prepare(id: string, meta: object, sizes: Partial<Record<Kind, number>>) {
   const upload = randomId(8);
   const keys = Object.fromEntries(Object.keys(sizes).map((kind) => [kind, `worlds/${id}/${upload}/${KINDS[kind as Kind].name}`]));
   const [old] = await sql`select pending from worlds where id = ${id}`;
@@ -346,7 +347,7 @@ async function done(req: Request, id: string) {
   const { meta, keys, sizes } = pending;
   const [live] = await sql`update worlds set title = ${meta.title}, description = ${meta.description}, author = ${account!.username}, visibility = ${meta.visibility},
       remix_of = coalesce(remix_of, ${meta.remix_of}), origin = coalesce(${meta.origin ?? null}, origin), engine_version = ${meta.engine_version}, mods = ${meta.mods}, size = ${sizes.zip},
-      zip_key = ${keys.zip}, cover_key = ${keys.cover ?? row.cover_key}, clip_key = ${keys.clip ?? row.clip_key}, pending = null, updated_at = now()
+      zip_key = ${keys.zip}, cover_key = ${keys.cover ?? row.cover_key}, clip_key = ${keys.clip ?? row.clip_key}, mod = ${meta.mod ?? null}, pending = null, updated_at = now()
     where id = ${id} and removed_at is null and pending->>'upload' = ${pending.upload} returning *`;
   if (!live) throw new Refusal("This world changed while it uploaded. Share it again.", 409);
   if (!row.zip_key && live.remix_of && live.visibility === "public") await notify((await sql`select account from worlds where id = ${live.remix_of} and removed_at is null`)[0]?.account ?? null, "fork", account!.id, id);
@@ -370,7 +371,7 @@ export async function takeDown(row: any, by: "owner" | "account" | "moderator", 
   if (log) await logDeletion("world", row.id, by);
   const keys = [row.zip_key, row.cover_key, row.clip_key, ...Object.values(row.pending?.keys ?? {})].filter(Boolean) as string[];
   await sql`update worlds set removed_at = coalesce(removed_at, now()), removed_by = ${by}, title = '', description = '', author = '', owner_token_hash = null,
-      zip_key = null, cover_key = null, clip_key = null, pending = null where id = ${row.id}`;
+      zip_key = null, cover_key = null, clip_key = null, mod = null, pending = null where id = ${row.id}`;
   if (keys.length) await sql`insert into doomed ${sql(keys.map((key) => ({ key })))} on conflict do nothing`;
   await deleteDoomed(keys);
 }
@@ -379,7 +380,7 @@ async function deleteDoomed(keys: string[]) {
 }
 
 /** A world as anyone sees it: no owner token, its owner's username as author, links to its files that last the hour, and whether it is the asker's own. */
-async function shown(row: any, account?: Account | null) {
+export async function shown(row: any, account?: Account | null) {
   return {
     id: row.id,
     title: row.title,
@@ -392,7 +393,7 @@ async function shown(row: any, account?: Account | null) {
     size: Number(row.size),
     createdAt: new Date(row.created_at).getTime(),
     updatedAt: new Date(row.updated_at).getTime(),
-    link: `${SITE}/w/${row.id}`,
+    link: `${SITE}/${row.kind === "mod" ? "m" : "w"}/${row.id}`,
     zip: presign(worlds, row.zip_key),
     cover: presign(worlds, row.cover_key),
     clip: row.clip_key ? presign(worlds, row.clip_key) : null,
@@ -401,6 +402,7 @@ async function shown(row: any, account?: Account | null) {
     plays: row.plays ?? 0,
     players: row.players ?? 0,
     mine: !!account && row.account === account.id,
+    kind: row.kind,
   };
 }
 
@@ -439,7 +441,7 @@ async function register(req: Request, ip: string) {
   return json({ id, token }, 201);
 }
 
-async function installOf(req: Request) {
+export async function installOf(req: Request) {
   const token = req.headers.get("authorization")?.match(/^Bearer (\S+)$/)?.[1] ?? "";
   const [row] = await sql`select id, spent from installs where token_hash = ${sha256(token)}`;
   if (!row) throw new Refusal("This computer isn't signed up with Community.", 401);
@@ -540,16 +542,16 @@ async function events(req: Request) {
 }
 
 /** Worlds with their owner's username, their votes, whether the asker voted, and the world they were forked from if that one is listed. */
-const worldRows = (account: Account | null) =>
+export const worldRows = (account: Account | null) =>
   sql`select w.*, a.username, (select count(*)::int from votes v where v.world = w.id) as votes, exists(select 1 from votes v where v.world = w.id and v.account = ${account?.id ?? null}::uuid) as voted,
       (select p.id from worlds p left join accounts pa on pa.id = p.account where p.id = w.remix_of and p.visibility = 'public' and p.zip_key is not null and p.removed_at is null and pa.banned_at is null) as fork_of
     from worlds w left join accounts a on a.id = w.account`;
 const PAGE = 50;
 /** What lists show: public, live, and not by a banned account. Link-only worlds open only by their link. */
-const listed = () => sql`w.visibility = 'public' and w.zip_key is not null and w.removed_at is null and a.banned_at is null`;
+export const listed = () => sql`w.visibility = 'public' and w.zip_key is not null and w.removed_at is null and a.banned_at is null`;
 
 /** The world a fork came from, as much of it as anyone may see: a removed one is only that, and a link-only one keeps its link to itself. */
-async function parentOf(id: string | null) {
+export async function parentOf(id: string | null) {
   if (!id) return null;
   const [p] = await sql`select w.id, w.title, coalesce(a.username, w.author) as author, ${listed()} as shown, w.removed_at is not null as removed from worlds w left join accounts a on a.id = w.account where w.id = ${id}`;
   if (!p || p.removed) return { removed: true };
@@ -718,7 +720,7 @@ async function dropCredit(req: Request, id: string) {
   return new Response(null, { status: 204, headers: cors });
 }
 
-const builders = async (world: string) =>
+export const builders = async (world: string) =>
   (await sql`select a.username from credits c join accounts a on a.id = c.account where c.world = ${world} and c.state = 'accepted' and a.banned_at is null order by c.accepted_at`).map((r: any) => r.username as string);
 
 /** A builder's public page: their username, when they joined, and the listed worlds they own or are credited on, with those worlds' players and votes. Never their email. */
@@ -726,7 +728,7 @@ async function profile(req: Request, name: string) {
   const viewer = await sessionOf(req);
   const [who] = /^[a-z0-9_]{3,20}$/.test(name.toLowerCase()) ? await sql`select id, username, created_at from accounts where username = ${name} and banned_at is null` : [];
   if (!who) throw new Refusal("There is no such builder.", 404);
-  const rows = await sql`${worldRows(viewer)} where ${listed()} and (w.account = ${who.id} or exists (select 1 from credits c where c.world = w.id and c.account = ${who.id} and c.state = 'accepted'))
+  const rows = await sql`${worldRows(viewer)} where ${listed()} and w.kind = 'world' and (w.account = ${who.id} or exists (select 1 from credits c where c.world = w.id and c.account = ${who.id} and c.state = 'accepted'))
     order by w.players desc, w.created_at desc, w.id desc limit 100`;
   const worlds = await Promise.all(rows.map((row: any) => shown(row, viewer)));
   return json({
@@ -798,11 +800,11 @@ async function notify(account: string | null, kind: Notice, actor: string | null
 /** The newest 50 notices, with who did it and on which world. */
 async function notices(req: Request) {
   const me = await signedIn(req);
-  const rows = await sql`select n.id, n.kind, n.at, n.read_at, a.username as actor, w.id as world, w.title from notifications n
+  const rows = await sql`select n.id, n.kind, n.at, n.read_at, a.username as actor, w.id as world, w.kind as world_kind, w.title from notifications n
       left join accounts a on a.id = n.actor left join worlds w on w.id = n.world
     where n.account = ${me.id} and (n.world is null or (w.removed_at is null and w.zip_key is not null)) and (n.actor is null or a.banned_at is null)
     order by n.at desc limit 50`;
-  return json(rows.map((r: any) => ({ id: String(r.id), kind: r.kind, actor: r.actor, world: r.world ? { id: r.world, title: r.title } : null, at: new Date(r.at).getTime(), read: !!r.read_at })));
+  return json(rows.map((r: any) => ({ id: String(r.id), kind: r.kind, actor: r.actor, world: r.world ? { id: r.world, kind: r.world_kind, title: r.title } : null, at: new Date(r.at).getTime(), read: !!r.read_at })));
 }
 
 const unreadNotices = async (me: string) => (await sql`select count(*)::int as n from notifications where account = ${me} and read_at is null`)[0].n as number;
@@ -994,6 +996,7 @@ async function route(req: Request, ip: string) {
   const url = new URL(req.url);
   const at = `${req.method} ${url.pathname}`;
   if (/^\/admin(\/|$)/.test(url.pathname)) return (await import("./admin")).admin(req, ip);
+  if (/^\/mods(\/|$)/.test(url.pathname)) return (await import("./mods")).mods(req, ip);
   if (at === "POST /installs") return register(req, ip);
   if (at === "POST /events") return events(req);
   if (at === "POST /ai/tts") return speak(req);
@@ -1038,7 +1041,7 @@ async function route(req: Request, ip: string) {
   if (req.method === "POST" && part === "comments" && part2 && part3 === "report") return report(req, ip, "comment", part2);
   if (at === "GET /account/worlds") {
     const account = await signedIn(req);
-    const rows = await sql`${worldRows(account)} where w.account = ${account.id} and w.zip_key is not null and w.removed_at is null order by w.created_at desc, w.id desc`;
+    const rows = await sql`${worldRows(account)} where w.account = ${account.id} and w.kind = 'world' and w.zip_key is not null and w.removed_at is null order by w.created_at desc, w.id desc`;
     return json(await Promise.all(rows.map((row: any) => shown(row, account))));
   }
   const [top, id, sub, ...rest] = url.pathname.split("/").filter(Boolean);
@@ -1058,7 +1061,7 @@ async function route(req: Request, ip: string) {
         : top
           ? sql`and (w.players, w.created_at, w.id) < (select players, created_at, id from worlds where id = ${after})`
           : sql`and (w.created_at, w.id) < (select created_at, id from worlds where id = ${after})`;
-      const rows = await sql`${worldRows(account)} where ${listed()}
+      const rows = await sql`${worldRows(account)} where ${listed()} and w.kind = 'world'
         ${cursor} order by ${top ? sql`w.players desc,` : sql``} w.created_at desc, w.id desc limit ${PAGE}`;
       return json(await Promise.all(rows.map((row: any) => shown(row, account))));
     }

@@ -161,29 +161,33 @@ async function counts(url: URL, admin: Admin) {
   const days = await sql`with days as (select generate_series((now() at time zone 'utc')::date - 29, (now() at time zone 'utc')::date, interval '1 day')::date as day),
       i as (select (created_at at time zone 'utc')::date as day, count(*) as n from installs where created_at > now() - interval '31 days' group by 1),
       a as (select (created_at at time zone 'utc')::date as day, count(*) as n from accounts where created_at > now() - interval '31 days' group by 1),
-      w as (select (created_at at time zone 'utc')::date as day, count(*) as n from worlds where created_at > now() - interval '31 days' and (zip_key is not null or removed_at is not null) group by 1),
+      w as (select (created_at at time zone 'utc')::date as day, count(*) filter (where kind = 'world') as n, count(*) filter (where kind = 'mod') as mods from worlds where created_at > now() - interval '31 days' and (zip_key is not null or removed_at is not null) group by 1),
       p as (select (started_at at time zone 'utc')::date as day, count(*) as n, count(distinct install) as players from plays where started_at > now() - interval '31 days' and seconds >= 60 group by 1),
       e as (select (at at time zone 'utc')::date as day, count(*) as n from events where at > now() - interval '31 days' group by 1)
-    select d.day, coalesce(i.n, 0)::int as installs, coalesce(a.n, 0)::int as accounts, coalesce(w.n, 0)::int as worlds, coalesce(p.n, 0)::int as plays, coalesce(p.players, 0)::int as players, coalesce(e.n, 0)::int as events
+    select d.day, coalesce(i.n, 0)::int as installs, coalesce(a.n, 0)::int as accounts, coalesce(w.n, 0)::int as worlds, coalesce(w.mods, 0)::int as mods, coalesce(p.n, 0)::int as plays, coalesce(p.players, 0)::int as players, coalesce(e.n, 0)::int as events
     from days d left join i using (day) left join a using (day) left join w using (day) left join p using (day) left join e using (day)`;
   const [all] = await sql`select (select count(*) from installs)::int as installs, (select count(*) from accounts)::int as accounts,
-      (select count(*) from worlds where zip_key is not null and removed_at is null)::int as worlds, (select count(*) from plays where seconds >= 60)::int as plays,
+      (select count(*) from worlds where kind = 'world' and zip_key is not null and removed_at is null)::int as worlds,
+      (select count(*) from worlds where kind = 'mod' and zip_key is not null and removed_at is null)::int as mods, (select count(*) from plays where seconds >= 60)::int as plays,
       (select count(distinct install) from plays where seconds >= 60)::int as players, (select count(*) from events)::int as events`;
   const columns: Column[] = [
     { key: "installs", label: "Installs", kind: "num" },
     { key: "accounts", label: "Accounts", kind: "num" },
     { key: "worlds", label: "Worlds", kind: "num" },
+    { key: "mods", label: "Mods", kind: "num" },
     { key: "plays", label: "Plays", kind: "num" },
     { key: "players", label: "Players", kind: "num" },
     { key: "events", label: "Events", kind: "num" },
   ];
   const perDay = table(days, [{ key: "day", label: "Day (UTC)", kind: "date", show: (d) => (d.total ? "All time" : new Date(d.day).toISOString().slice(0, 10)) }, ...columns], url, "day", undefined, [{ ...all, total: true }]);
-  return page("Counts", `${perDay}<p class="dim">Worlds are those published, plays last at least a minute, and players are installs with such a play.</p>`, admin, "/admin");
+  return page("Counts", `${perDay}<p class="dim">Worlds and mods are those published, plays last at least a minute, and players are installs with such a play.</p>`, admin, "/admin");
 }
 
+/** A world's page on the site, or a mod's. */
+const pageOf = (kind: string, id: string) => `${SITE}/${kind === "mod" ? "m" : "w"}/${esc(id)}`;
 const stateOf = (w: any) => (w.removed_at ? "Taken down" : w.banned_at ? "Owner banned" : w.visibility === "public" ? "Listed" : "Link only");
 async function worldsPage(url: URL, admin: Admin) {
-  const rows = await sql`select w.id, w.title, coalesce(a.username, w.author) as author, w.reports, w.players, w.plays, w.created_at, w.visibility, w.removed_at, a.banned_at
+  const rows = await sql`select w.id, w.kind, w.title, coalesce(a.username, w.author) as author, w.reports, w.uses, w.players, w.plays, w.created_at, w.visibility, w.removed_at, a.banned_at
     from worlds w left join accounts a on a.id = w.account where w.zip_key is not null order by w.reports desc, w.created_at desc limit 500`;
   for (const r of rows) r.state = stateOf(r);
   const here = url.pathname + url.search;
@@ -192,11 +196,13 @@ async function worldsPage(url: URL, admin: Admin) {
     table(
       rows,
       [
-        { key: "title", label: "World", kind: "text", show: (w) => (w.removed_at ? esc(w.title) : `<a href="${SITE}/w/${esc(w.id)}">${esc(w.title)}</a>`) },
+        { key: "title", label: "World", kind: "text", show: (w) => (w.removed_at ? esc(w.title) : `<a href="${pageOf(w.kind, w.id)}">${esc(w.title)}</a>`) },
+        { key: "kind", label: "Kind", kind: "text" },
         { key: "author", label: "By", kind: "text" },
         { key: "reports", label: "Reports", kind: "num" },
         { key: "players", label: "Players", kind: "num" },
         { key: "plays", label: "Plays", kind: "num" },
+        { key: "uses", label: "Uses", kind: "num" },
         { key: "created_at", label: "Published", kind: "date" },
         { key: "state", label: "State", kind: "text" },
       ],
@@ -213,9 +219,9 @@ async function worldsPage(url: URL, admin: Admin) {
 }
 
 async function commentsPage(url: URL, admin: Admin) {
-  const rows = await sql`select c.id, c.body, a.username, c.world, w.title, c.at, count(r.*)::int as reports
+  const rows = await sql`select c.id, c.body, a.username, c.world, w.kind, w.title, c.at, count(r.*)::int as reports
     from comments c join accounts a on a.id = c.account join worlds w on w.id = c.world join reports r on r.kind = 'comment' and r.target = c.id::text
-    where c.removed_at is null group by c.id, a.username, w.title limit 500`;
+    where c.removed_at is null group by c.id, a.username, w.kind, w.title limit 500`;
   const here = url.pathname + url.search;
   return page(
     "Reported comments",
@@ -224,7 +230,7 @@ async function commentsPage(url: URL, admin: Admin) {
       [
         { key: "body", label: "Comment", kind: "text" },
         { key: "username", label: "By", kind: "text" },
-        { key: "title", label: "On", kind: "text", show: (c) => `<a href="${SITE}/w/${esc(c.world)}">${esc(c.title) || '<span class="dim">removed world</span>'}</a>` },
+        { key: "title", label: "On", kind: "text", show: (c) => `<a href="${pageOf(c.kind, c.world)}">${esc(c.title) || '<span class="dim">removed world</span>'}</a>` },
         { key: "reports", label: "Reports", kind: "num" },
         { key: "at", label: "Posted", kind: "date" },
       ],

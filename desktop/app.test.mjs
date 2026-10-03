@@ -67,7 +67,7 @@ const VOICE_KEY = "sk_test_voice_key";
 const COVER = Buffer.from("/9j/4AAQSkZJRgABAgAAAQABAAD//gARTGF2YzU4LjEzNC4xMDAA/9sAQwAIFBQXFBcbGxsbGxsgHiAhISEgICAgISEhJCQkKioqJCQkISEkJCgoKiouLy4rKyorLy8yMjI8PDk5RkZIVlZn/8QASwABAQAAAAAAAAAAAAAAAAAAAAUBAQAAAAAAAAAAAAAAAAAAAAUQAQAAAAAAAAAAAAAAAAAAAAARAQAAAAAAAAAAAAAAAAAAAAD/wAARCAAIABADASIAAhEAAxEA/9oADAMBAAIRAxEAPwCGAIGP/9k=", "base64");
 
 /** A world shared to Community: an export's zip, as the Worker serves it. */
-const { zipSync } = createRequire(join(DESKTOP, "../package.json"))("fflate");
+const { zipSync, unzipSync } = createRequire(join(DESKTOP, "../package.json"))("fflate");
 const tinyIsle = Buffer.from(zipSync({ "config.json": Buffer.from(JSON.stringify({ name: "Tiny Isle", rules: "open", start: "blank" })), "cover.jpg": COVER, "world/mods/isle/server.ts": Buffer.from("export default { load() {} };") }));
 
 /** GitHub as the app sees it: the latest release and the installer script the app runs to update; Community, with one world and whatever the app shares; and ElevenLabs, which knows one key. */
@@ -76,7 +76,8 @@ const releases = { latest: VERSION, installer: null, build: true };
 const BUILD = Buffer.alloc(4 << 20, 7);
 const RELEASES = port();
 const isle = { id: "tinyisle0001", title: "Tiny Isle", description: "One small island.", author: "maker", visibility: "public", votes: 2, plays: 5, players: 3, forks: 0, cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, zip: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/zip`, clip: null, link: "https://site.example/w/tinyisle0001" };
-const community = { shared: null, files: {}, session: "session-token-1" };
+const community = { shared: null, mod: null, files: {}, session: "session-token-1" };
+const jetpack = { id: "jetpack00001", kind: "mod", name: "jetpack", title: "Jetpack", description: "Fly with space.", author: "maker", votes: 4, uses: 12, forks: 0, cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, link: "https://site.example/m/jetpack00001", readme: "# Jetpack\nHold space to fly. Fuel refills on the ground.", api: '// server.ts, reached with world.use("jetpack")\n/** Fuel left for a player, 0 to 1. */\nfuel(world, player: string): number', builders: ["maker"], parent: null };
 const ACCOUNT = { username: "ana", email: "ana@example.com" };
 const body = (req) => new Promise((resolve) => {
   const chunks = [];
@@ -97,6 +98,15 @@ const github = createServer(async (req, res) => {
     const uploads = Object.fromEntries(Object.keys(community.shared.files).map((kind) => [kind, `http://127.0.0.1:${RELEASES}/upload/${kind}`]));
     return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001", ownerToken: "owner", uploads }));
   }
+  if (req.url === "/mods" && req.method === "POST") {
+    if (!signedIn) return (res.statusCode = 401), res.end("{}");
+    community.mod = JSON.parse(await body(req));
+    const uploads = Object.fromEntries(Object.keys(community.mod.files).map((kind) => [kind, `http://127.0.0.1:${RELEASES}/upload/mod-${kind}`]));
+    return res.end(JSON.stringify({ id: "sharedmod001", link: "https://site.example/m/sharedmod001", uploads }));
+  }
+  if (req.url === "/worlds/sharedmod001/done" && req.method === "POST") return res.end(JSON.stringify({ id: "sharedmod001", kind: "mod", title: community.mod.title, author: ACCOUNT.username, link: "https://site.example/m/sharedmod001" }));
+  if (req.url.split("?")[0] === "/mods") return res.end(JSON.stringify([jetpack].filter((m) => m.readme.toLowerCase().includes(new URL(req.url, "http://x").searchParams.get("q").toLowerCase()))));
+  if (req.url === "/mods/jetpack00001") return res.end(JSON.stringify(jetpack));
   if (req.url.startsWith("/upload/") && req.method === "PUT") {
     community.files[req.url.slice(8)] = await body(req);
     return res.end();
@@ -510,8 +520,41 @@ describe("hosting and joining", () => {
     assert.deepEqual([...community.files.clip.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3]);
     assert.equal(community.files.zip.subarray(0, 2).toString(), "PK");
     assert.equal(await game.textContent("#share-go"), "Update");
+
+    // One mod of it goes to Community on its own from the Mods page, with the current view as its preview.
+    await game.click("#rail [data-tab=mods]");
+    const isleRow = game.locator("#menu-mods li", { hasText: "isle" });
+    await capture(game, "game-mods-share");
+    await answer(app, 0);
+    await isleRow.locator("button", { hasText: "Share" }).click();
+    await until("the mod's toast", async () => (await game.locator("#toasts .toast").allTextContents()).includes("isle is in Community: https://site.example/m/sharedmod001"), 30_000);
+    assert.deepEqual((await asked(app)).map((q) => q.message), ["Publish the mod isle as ana?"]);
+    assert.deepEqual([community.mod.name, community.mod.forkOf, community.mod.packages, community.mod.needs], ["isle", undefined, {}, []]);
+    assert.deepEqual(Object.keys(unzipSync(community.files["mod-zip"])), ["server.ts"]);
+    assert.deepEqual([...community.files["mod-cover"].subarray(0, 2)], [0xff, 0xd8]);
+    assert.deepEqual(JSON.parse(readFileSync(join(worlds, isleId, "world", "mods", "isle", "community.json"), "utf8")), { id: "sharedmod001", name: "isle", title: "isle", author: "ana", link: "https://site.example/m/sharedmod001" });
     await leave(app, shell);
     await until("the host's view of Tiny Isle", async () => readFileSync(join(worlds, isleId, "cover.jpg")).length > COVER.length);
+
+    // Community's Mods tab finds a mod by its README and shows what it does, its API and the line that adds it.
+    await shell.click("text=Worlds");
+    await shell.click("#go-community");
+    await shell.locator("#community-tab i").first().click();
+    assert.equal(await shell.textContent("#community-tab output"), "Mods");
+    await shell.fill("#mods-search", "fuel");
+    const mods = shell.locator("#community-list .item");
+    await until("the mods found", async () => (await mods.count()) === 1 && (await mods.first().textContent()).includes("Jetpack"));
+    assert.equal(await mods.first().locator(".value").textContent(), "12 worlds use it");
+    await capture(shell, "shell-community-mods");
+    await mods.first().click();
+    await until("the mod's README", async () => (await shell.textContent("#cworld-readme")).startsWith("# Jetpack"));
+    assert.equal(await shown(shell, "#cworld-play"), false);
+    assert.equal(await shell.textContent("#cworld-add-line"), "./world add_mod id=jetpack00001");
+    assert.match(await shell.textContent("#cworld-api"), /fuel\(world, player: string\): number/);
+    await capture(shell, "shell-community-mod");
+    await shell.keyboard.press("Escape");
+    await shell.keyboard.press("Escape");
+    await shell.keyboard.press("Escape");
   });
 
   test("a hosted world opens straight into the game, and Stop hosting in its World tab ends it and goes back to the title", async () => {

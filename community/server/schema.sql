@@ -240,3 +240,10 @@ create table if not exists notifications (
 );
 create unique index if not exists notifications_unread on notifications (account, kind, actor, world) nulls not distinct where read_at is null;
 create index if not exists notifications_account on notifications (account, at desc);
+
+-- Community mods: a mod is a world row of kind 'mod', so comments, votes, reports, forks and takedown are the same. `mod` holds its folder name, README, exported API and npm packages; `uses` counts the worlds that added it, one each (mod_uses).
+alter table worlds add column if not exists kind text not null default 'world' check (kind in ('world', 'mod'));
+alter table worlds add column if not exists mod jsonb;
+alter table worlds add column if not exists uses integer not null default 0;
+create index if not exists worlds_mods on worlds (uses desc, created_at desc, id desc) where kind = 'mod' and removed_at is null and zip_key is not null;
+create table if not exists mod_uses (mod text not null references worlds (id) on delete cascade, world_key text not null, install text references installs (id) on delete set null, at timestamptz not null default now(), primary key (mod, world_key));
