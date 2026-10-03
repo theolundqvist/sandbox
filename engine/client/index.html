@@ -249,8 +249,12 @@
   /* Over the live game, every entry reads at a glance. */
   #join .item { color: rgba(243,241,236,.8); text-shadow: 0 1px 2px rgba(0,0,0,.85), 0 0 1px rgba(0,0,0,.9); }
   #join .item:focus, #join .item:focus-within { color: var(--text); }
-  #share-picture { display: block; width: 320px; aspect-ratio: 16 / 9; object-fit: cover; margin: 20px 0 0; background: #1b1c1f; }
-  #share-picture:not([src]) { visibility: hidden; }
+  #share-shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 6px; margin: 8px 0 0; }
+  #share-shots button { position: relative; display: block; width: 100%; padding: 0; margin: 0; aspect-ratio: 16 / 9; background: #1b1c1f; border: 2px solid transparent; }
+  #share-shots button:hover, #share-shots button:focus-visible { border-color: rgba(255,255,255,.4); }
+  #share-shots button[data-n] { border-color: var(--accent); }
+  #share-shots button[data-n]::after { content: attr(data-n); position: absolute; left: 0; top: 0; padding: 3px 6px; background: var(--accent); color: #111; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+  #share-shots img { display: block; width: 100%; height: 100%; object-fit: cover; }
   #share-go { width: auto; }
   :is(#join, #menu) .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
   #menu .note code { white-space: nowrap; }
@@ -419,8 +423,10 @@
       <label class="field" id="share-changes-field" hidden><span>What changed</span><input type="text" id="share-changes" maxlength="280" autocomplete="off"></label>
       <div class="field"><span>Who sees it</span><div class="pick" id="share-visibility" data-options="link:Link only,public:Everyone"></div></div>
       <p class="note" id="share-names" hidden>Player names in scores and items are shared with the world.</p>
-      <div class="field"><span>Picture</span><div class="pick" id="share-cover" data-options="world:World picture,view:Current view"></div></div>
-      <img id="share-picture" alt="">
+      <div class="field"><span>Timelapse</span><div class="pick" id="share-timelapse" data-options="on:On its page,off:Off"></div></div>
+      <div class="field"><span>Pictures</span><button id="share-moments">Take from the timelapse</button></div>
+      <p class="note" id="share-pick-note"></p>
+      <div id="share-shots"></div>
       <div class="copy-row" id="share-shared" hidden><span>Link</span><code id="share-link"></code><button data-copy="share-link">Copy</button><button id="share-stop" class="danger">Stop sharing</button></div>
       <div class="gap"></div>
       <button id="share-go" class="item">Share</button>

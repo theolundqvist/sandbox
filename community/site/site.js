@@ -49,6 +49,17 @@ const api = async (path, init = {}) => {
   if (!res.ok) throw new Error(data.error ?? "Community can't be reached right now.");
   return data;
 };
+/** A world's gallery under its clip: its cover stands for the clip, and each picture shows in its place. */
+function showGallery(w) {
+  const pictures = w.gallery?.length ? [w.cover, ...w.gallery] : [];
+  const thumbs = pictures.map((src, i) =>
+    el("button", { className: i ? "" : "on", onclick: () => {
+      for (const t of thumbs) t.classList.toggle("on", t === thumbs[i]);
+      $("world-stage").replaceChildren(i ? el("img", { src, alt: "" }) : media(w));
+    } }, el("img", { src, alt: "" })),
+  );
+  $("world-gallery").replaceChildren(...thumbs);
+}
 /** Playing or forking happens in the app: the world's link goes on the clipboard to paste there. */
 async function copyFor(w, tip) {
   await navigator.clipboard?.writeText(w.link).catch(() => {});
@@ -160,6 +171,7 @@ async function showWorld(id, kind = "world") {
   const here = pageOf(w);
   document.title = `${w.title} · Sandbox`;
   $("world-stage").replaceChildren(media(w));
+  showGallery(w);
   $("world-title").textContent = w.title;
   const names = w.builders ?? [w.author];
   const counts = mod ? ["", usedBy(w.uses)] : ["", counted(w.players, "player"), counted(w.plays, "play"), w.mods ? `${w.mods} mods` : ""];

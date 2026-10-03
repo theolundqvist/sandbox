@@ -6,13 +6,17 @@ import { join } from "node:path";
 import { bucketFromEnv, client as s3, presign } from "./r2";
 
 const MB = 1 << 20;
-const LIMITS = { zip: 200 * MB, cover: 2 * MB, clip: 6 * MB };
+const LIMITS = { zip: 200 * MB, cover: 2 * MB, clip: 6 * MB, gallery: 2 * MB };
 const KINDS = {
   zip: { name: "world.zip", type: "application/zip", magic: [0x50, 0x4b, 0x03, 0x04], refusal: "A world is a zip under 200 MB." },
   cover: { name: "cover.jpg", type: "image/jpeg", magic: [0xff, 0xd8], refusal: "A cover is a JPEG under 2 MB." },
   clip: { name: "clip.webm", type: "video/webm", magic: [0x1a, 0x45, 0xdf, 0xa3], refusal: "A clip is a WebM under 6 MB." },
+  gallery: { name: "gallery.jpg", type: "image/jpeg", magic: [0xff, 0xd8], refusal: "The gallery is up to 8 JPEGs under 2 MB each." },
 } as const;
 type Kind = keyof typeof KINDS;
+/** A file of an upload: one of KINDS, or gallery0 to gallery7. */
+const kindOf = (file: string) => (file.startsWith("gallery") ? "gallery" : file) as Kind;
+const fileName = (file: string) => (file.startsWith("gallery") ? `gallery-${file.slice(7)}.jpg` : KINDS[file as Kind].name);
 /** How often each action may happen, per hashed IP, install (or the site's anonymous id), account or email, over a fixed window. Usage stats come every 10 s from each of an install's pages, plus a last batch as one closes. Sign-in backs off from 5 a minute to 20 an hour per IP. */
 const RATE = {
   publish: [10, "1 hour"],
@@ -269,16 +273,23 @@ function details(body: any, update: boolean) {
     engine_version: text(body.engineVersion, 40),
     mods: Math.max(0, Math.floor(Number(body.mods) || 0)),
     changelog: text(body.changelog, 280),
+    // A gallery sent, even an empty one, replaces the old one; the timelapse turned off takes the clip down.
+    gallery: Array.isArray(body.files?.gallery),
+    timelapse: body.timelapse !== false,
   };
   if (!meta.title) throw new Refusal("A world needs a title.");
   if (meta.visibility !== "link" && meta.visibility !== "public") throw new Refusal("Visibility is link or public.");
   if (meta.remix_of && !ID.test(meta.remix_of)) throw new Refusal("forkOf is a world id.");
-  const sizes: Partial<Record<Kind, number>> = {};
-  for (const kind of Object.keys(KINDS) as Kind[]) {
-    const size = body.files?.[kind];
-    if (size === undefined) continue;
-    if (!Number.isInteger(size) || size < KINDS[kind].magic.length || size > LIMITS[kind]) throw new Refusal(KINDS[kind].refusal);
-    sizes[kind] = size;
+  const sizes: Record<string, number> = {};
+  const gallery: unknown[] = meta.gallery ? body.files.gallery : [];
+  if (gallery.length > 8) throw new Refusal(KINDS.gallery.refusal);
+  const files = { ...body.files, gallery: undefined, ...Object.fromEntries(gallery.map((size, i) => [`gallery${i}`, size])) };
+  if (!meta.timelapse) delete files.clip;
+  for (const [file, size] of Object.entries(files)) {
+    if (size === undefined || !(file in KINDS || /^gallery[0-7]$/.test(file))) continue;
+    const kind = kindOf(file);
+    if (!Number.isInteger(size) || (size as number) < KINDS[kind].magic.length || (size as number) > LIMITS[kind]) throw new Refusal(KINDS[kind].refusal);
+    sizes[file] = size as number;
   }
   if (sizes.zip === undefined) throw new Refusal("A share sends the world's zip.");
   if (!update && sizes.cover === undefined) throw new Refusal("A world needs a cover.");
@@ -297,13 +308,13 @@ export async function parentOk(id: string | null, parent: string | null) {
 }
 
 /** Every upload gets fresh keys, so the world stays whole while it is replaced and its file URLs change when it does. */
-export async function prepare(id: string, meta: object, sizes: Partial<Record<Kind, number>>) {
+export async function prepare(id: string, meta: object, sizes: Record<string, number>) {
   const upload = randomId(8);
-  const keys = Object.fromEntries(Object.keys(sizes).map((kind) => [kind, `worlds/${id}/${upload}/${KINDS[kind as Kind].name}`]));
+  const keys = Object.fromEntries(Object.keys(sizes).map((file) => [file, `worlds/${id}/${upload}/${fileName(file)}`]));
   const [old] = await sql`select pending from worlds where id = ${id}`;
   await forget(old?.pending);
   await sql`update worlds set pending = ${{ upload, meta, sizes, keys }} where id = ${id}`;
-  return Object.fromEntries(Object.entries(keys).map(([kind, key]) => [kind, presign(worlds, key, { type: KINDS[kind as Kind].type, length: sizes[kind as Kind]! })]));
+  return Object.fromEntries(Object.entries(keys).map(([file, key]) => [file, presign(worlds, key, { type: KINDS[kindOf(file)].type, length: sizes[file]! })]));
 }
 
 const forget = async (pending: { keys: Record<string, string> } | null | undefined) => {
@@ -339,22 +350,25 @@ async function done(req: Request, id: string) {
   allowed(account!);
   const pending = row.pending;
   if (!pending) throw new Refusal("Nothing is waiting to be uploaded.", 409);
-  for (const [kind, key] of Object.entries(pending.keys) as [Kind, string][]) {
+  for (const [name, key] of Object.entries(pending.keys) as [string, string][]) {
+    const kind = kindOf(name);
     const file = files.file(key);
     const size = await file.stat().then((s) => s.size, () => null);
-    const head = size === pending.sizes[kind] ? new Uint8Array(await file.slice(0, KINDS[kind].magic.length).arrayBuffer()) : null;
+    const head = size === pending.sizes[name] ? new Uint8Array(await file.slice(0, KINDS[kind].magic.length).arrayBuffer()) : null;
     if (!head || !KINDS[kind].magic.every((b, i) => head[i] === b)) throw new Refusal("The world's files didn't all arrive. Share it again.");
   }
   const { meta, keys, sizes } = pending;
+  const gallery = meta.gallery ? Object.keys(keys).filter((k) => k.startsWith("gallery")).sort().map((k) => keys[k]) : (row.gallery_keys ?? []);
+  const clip = meta.timelapse === false ? null : (keys.clip ?? row.clip_key);
   const [live] = await sql`update worlds set title = ${meta.title}, description = ${meta.description}, author = ${account!.username}, visibility = ${meta.visibility},
       remix_of = coalesce(remix_of, ${meta.remix_of}), origin = coalesce(${meta.origin ?? null}, origin), engine_version = ${meta.engine_version}, mods = ${meta.mods}, size = ${sizes.zip},
-      zip_key = ${keys.zip}, cover_key = ${keys.cover ?? row.cover_key}, clip_key = ${keys.clip ?? row.clip_key}, mod = ${meta.mod ?? null}, pending = null, updated_at = now(), version = version + 1,
+      zip_key = ${keys.zip}, cover_key = ${keys.cover ?? row.cover_key}, clip_key = ${clip}, gallery_keys = ${sql.array(gallery, "TEXT")}, mod = ${meta.mod ?? null}, pending = null, updated_at = now(), version = version + 1,
       parent_version = coalesce(parent_version, (select p.version from worlds p where p.id = coalesce(worlds.remix_of, ${meta.remix_of})))
     where id = ${id} and removed_at is null and pending->>'upload' = ${pending.upload} returning *`;
   if (!live) throw new Refusal("This world changed while it uploaded. Share it again.", 409);
   await sql`insert into versions (world, version, changelog) values (${id}, ${live.version}, ${meta.changelog ?? ""})`;
   if (!row.zip_key && live.remix_of && live.visibility === "public") await notify((await sql`select account from worlds where id = ${live.remix_of} and removed_at is null`)[0]?.account ?? null, "fork", account!.id, id);
-  const replaced = [row.zip_key, keys.cover && row.cover_key, keys.clip && row.clip_key].filter(Boolean) as string[];
+  const replaced = [row.zip_key, keys.cover && row.cover_key, clip !== row.clip_key && row.clip_key, ...(meta.gallery ? (row.gallery_keys ?? []) : [])].filter(Boolean) as string[];
   await Promise.allSettled(replaced.map((key) => files.delete(key)));
   const [fresh] = await sql`${worldRows(account)} where w.id = ${id}`;
   return json(await shown(fresh, account));
@@ -372,9 +386,9 @@ async function remove(req: Request, id: string) {
  */
 export async function takeDown(row: any, by: "owner" | "account" | "moderator", log = true) {
   if (log) await logDeletion("world", row.id, by);
-  const keys = [row.zip_key, row.cover_key, row.clip_key, ...Object.values(row.pending?.keys ?? {})].filter(Boolean) as string[];
+  const keys = [row.zip_key, row.cover_key, row.clip_key, ...(row.gallery_keys ?? []), ...Object.values(row.pending?.keys ?? {})].filter(Boolean) as string[];
   await sql`update worlds set removed_at = coalesce(removed_at, now()), removed_by = ${by}, title = '', description = '', author = '', owner_token_hash = null,
-      zip_key = null, cover_key = null, clip_key = null, mod = null, pending = null where id = ${row.id}`;
+      zip_key = null, cover_key = null, clip_key = null, gallery_keys = null, mod = null, pending = null where id = ${row.id}`;
   await sql`delete from versions where world = ${row.id}`;
   if (keys.length) await sql`insert into doomed ${sql(keys.map((key) => ({ key })))} on conflict do nothing`;
   await deleteDoomed(keys);
@@ -402,6 +416,7 @@ export async function shown(row: any, account?: Account | null) {
     zip: presign(worlds, row.zip_key),
     cover: presign(worlds, row.cover_key),
     clip: row.clip_key ? presign(worlds, row.clip_key) : null,
+    gallery: (row.gallery_keys ?? []).map((key: string) => presign(worlds, key)),
     votes: row.votes ?? 0,
     voted: !!row.voted,
     plays: row.plays ?? 0,

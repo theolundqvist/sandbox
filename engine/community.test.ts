@@ -105,7 +105,7 @@ test("a shared world goes up as its export, comes down on another computer as a 
   const communityId = shared.id;
   // Neither the menu's state nor the launcher's own file holds anything that changes the world: the account does.
   const state = await menu(ana, "state");
-  expect(state.worlds.find((w: any) => w.id === id).shared).toEqual({ id: communityId, link: shared.link, visibility: "link", title: "Lava Keep", description: "Run from the lava." });
+  expect(state.worlds.find((w: any) => w.id === id).shared).toEqual({ id: communityId, link: shared.link, visibility: "link", title: "Lava Keep", description: "Run from the lava.", timelapse: true });
   expect(readFileSync(join(ana.data, "community.json"), "utf8")).not.toContain("ownerToken");
 
   // What went up is the world without its keys or what its players did and said; who made its mods stays as their credit.

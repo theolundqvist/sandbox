@@ -60,7 +60,7 @@ function worlds() {
         players: Object.keys(readJson(join(dir, "keys.json"))).length,
         played: statSync(saved).mtimeMs,
         cover: existsSync(join(dir, "cover.jpg")) ? statSync(join(dir, "cover.jpg")).mtimeMs : null,
-        shared: shared[id]?.link ? { id: shared[id].id, link: shared[id].link, visibility: shared[id].visibility, title: shared[id].title, description: shared[id].description } : null,
+        shared: shared[id]?.link ? { id: shared[id].id, link: shared[id].link, visibility: shared[id].visibility, title: shared[id].title, description: shared[id].description, timelapse: shared[id].timelapse !== false } : null,
         from: shared[id]?.from ?? null,
         telemetry: config(id).telemetry ?? null,
       };
@@ -451,16 +451,53 @@ async function menuState() {
   };
 }
 
-/** A world's picture: its host's game sends a frame of their own view every few minutes, and Worlds shows it. A picture the host picked when sharing stays, marked by cover.picked. */
+/**
+ * A world's picture: its host's game sends a frame of their own view every few minutes, and Worlds shows it. A picture the host picked when sharing stays, marked by cover.picked.
+ * Each frame is also kept in shots/, the newest 12, for Share to pick a cover and gallery from.
+ */
 async function cover(req: Request, id: string) {
   const path = join(WORLDS, id, "cover.jpg");
   if (!exists(id)) return Response.json({ error: "That world doesn't exist." }, { status: 404 });
   if (req.method !== "POST") return existsSync(path) ? new Response(Bun.file(path), { headers: { "content-type": "image/jpeg", "cache-control": "no-cache" } }) : new Response(null, { status: 404 });
-  if (existsSync(join(WORLDS, id, "cover.picked"))) return Response.json({ error: "The host picked this world's picture." }, { status: 409 });
   const jpeg = new Uint8Array(await req.arrayBuffer());
-  if (jpeg.length > 2 << 20 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return Response.json({ error: "A cover is a JPEG under 2 MB." }, { status: 400 });
+  if (!isJpeg(jpeg)) return Response.json({ error: "A cover is a JPEG under 2 MB." }, { status: 400 });
+  keepShots(id, "view", [jpeg], 12);
+  if (existsSync(join(WORLDS, id, "cover.picked"))) return Response.json({ error: "The host picked this world's picture." }, { status: 409 });
   saveCover(id, jpeg);
   return new Response(null, { status: 204 });
+}
+const isJpeg = (jpeg: Uint8Array) => jpeg.length <= 2 << 20 && jpeg[0] === 0xff && jpeg[1] === 0xd8;
+/** Adds pictures of one kind to a world's shots/, named by time, keeping the newest `keep` of that kind. */
+function keepShots(id: string, kind: "view" | "timelapse", jpegs: Uint8Array[], keep: number) {
+  const dir = join(WORLDS, id, "shots");
+  mkdirSync(dir, { recursive: true });
+  const now = Date.now();
+  for (const jpeg of jpegs) writeFileSync(join(dir, `${kind}-${now}-${shotCount++}.jpg`), jpeg);
+  const mine = readdirSync(dir).filter((f) => f.startsWith(`${kind}-`)).sort(byTime);
+  for (const old of mine.slice(0, -keep)) rmSync(join(dir, old));
+}
+let shotCount = 0;
+const byTime = (a: string, b: string) => {
+  const [, at, n] = a.split(/[-.]/).map(Number);
+  const [, bt, m] = b.split(/[-.]/).map(Number);
+  return at! - bt! || n! - m!;
+};
+/** A world's pictures to share it with, newest first: its current picture, then the views and timelapse moments in shots/. */
+function shots(id: unknown) {
+  if (!exists(id)) throw new Error("That world doesn't exist.");
+  const dir = join(WORLDS, id, "shots");
+  const names = existsSync(dir) ? readdirSync(dir).filter((f) => /^(view|timelapse)-\d+-\d+\.jpg$/.test(f)).sort(byTime).reverse() : [];
+  const cover = join(WORLDS, id, "cover.jpg");
+  return [...(existsSync(cover) ? [{ name: "cover", jpeg: readFileSync(cover).toString("base64") }] : []), ...names.map((name) => ({ name, jpeg: readFileSync(join(dir, name)).toString("base64") }))];
+}
+/** Moments of the timelapse the game drew for Share: they replace the ones it drew before. */
+function timelapseShots(id: unknown, frames: unknown) {
+  if (!exists(id)) throw new Error("That world doesn't exist.");
+  const jpegs = (Array.isArray(frames) ? frames : []).slice(0, 8).map((f) => Buffer.from(String(f), "base64"));
+  if (!jpegs.every(isJpeg)) throw new Error("A picture is a JPEG under 2 MB.");
+  const dir = join(WORLDS, id, "shots");
+  if (existsSync(dir)) for (const old of readdirSync(dir).filter((f) => f.startsWith("timelapse-"))) rmSync(join(dir, old));
+  keepShots(id, "timelapse", jpegs, 8);
 }
 function saveCover(id: string, jpeg: Uint8Array) {
   const path = join(WORLDS, id, "cover.jpg");
@@ -502,6 +539,8 @@ async function menuApi(req: Request, action: string) {
     else if (action === "mod-upload") return Response.json(await uploadStaged({ id: modStage(body.id, body.name), uploads: body.uploads }));
     else if (action === "mod-published") modPublished(body);
     else if (action === "builders") return Response.json(builders(body.id));
+    else if (action === "shots") return Response.json(shots(body.id));
+    else if (action === "timelapse-shots") timelapseShots(body.id, body.frames);
     else if (action === "credit-checks") return Response.json(creditChecks(body.id, body.names));
     else if (action === "published") published(body);
     else if (action === "unshare") await unshareWorld(body.id);
@@ -542,7 +581,7 @@ async function menuApi(req: Request, action: string) {
 const COMMUNITY = process.env.SANDBOX_COMMUNITY ?? "https://sandbox.api.lundqvistliss.com";
 /** Per world here: where it is shared and the token that changes it, and the community world it was downloaded from. Never in a world's folder, so no export carries it. */
 const SHARED = join(DATA, "community.json");
-type Shared = { id?: string; ownerToken?: string; link?: string; visibility?: "link" | "public"; title?: string; description?: string; from?: string };
+type Shared = { id?: string; ownerToken?: string; link?: string; visibility?: "link" | "public"; title?: string; description?: string; from?: string; timelapse?: boolean };
 const sharedWorlds = (): Record<string, Shared> => readJson(SHARED);
 function saveShared(id: string, next: Shared | null) {
   const all = sharedWorlds();
@@ -601,8 +640,8 @@ async function download(id: unknown, trust: boolean, hosting: boolean) {
  * Publishing goes through the desktop app, which alone holds the account's session: this launcher packs a world and its pictures (stage), uploads them to the URLs Community signed (upload), then remembers where the world went (published).
  * The pack is the world's export without what its players did and said, with a cover and the timelapse's clip.
  */
-type Stage = { details: object; sizes: Record<string, number>; community: string | null };
-const staged = new Map<string, { files: Record<string, { bytes: Uint8Array<ArrayBuffer>; type: string }>; stage: Stage; picked: boolean }>();
+type Stage = { details: object; sizes: Record<string, number | number[]>; community: string | null };
+const staged = new Map<string, { files: Record<string, { bytes: Uint8Array<ArrayBuffer>; type: string }>; stage: Stage; picked: boolean; timelapse?: boolean }>();
 async function stagePublish(body: any) {
   if (!exists(body.id)) throw new Error("That world doesn't exist.");
   const visibility = body.visibility === "public" ? "public" : "link";
@@ -614,7 +653,11 @@ async function stagePublish(body: any) {
   const { zip } = await archive({ t: "pack", dir: join(WORLDS, body.id), community: true });
   const files: Record<string, { bytes: Uint8Array<ArrayBuffer>; type: string }> = { zip: { bytes: zip, type: "application/zip" } };
   if (cover) files.cover = { bytes: cover, type: "image/jpeg" };
-  if (body.clip) files.clip = { bytes: Buffer.from(String(body.clip), "base64"), type: "video/webm" };
+  const timelapse = body.timelapse !== false;
+  if (body.clip && timelapse) files.clip = { bytes: Buffer.from(String(body.clip), "base64"), type: "video/webm" };
+  // A gallery sent, even an empty one, replaces the one Community has; none sent keeps it.
+  const gallery = Array.isArray(body.gallery) ? body.gallery.slice(0, 8).map((g: unknown) => new Uint8Array(Buffer.from(String(g), "base64"))) : null;
+  gallery?.forEach((bytes: Uint8Array<ArrayBuffer>, i: number) => (files[`gallery${i}`] = { bytes, type: "image/jpeg" }));
   const own = config(body.id);
   const details = {
     title: String(body.title ?? "").trim() || own.name,
@@ -625,9 +668,12 @@ async function stagePublish(body: any) {
     origin: own.telemetry,
     engineVersion: ENGINE_VERSION,
     mods: Object.keys(readJson(join(WORLDS, body.id, "mods.json"))).length,
+    timelapse,
   };
-  const stage = { details, sizes: Object.fromEntries(Object.entries(files).map(([k, f]) => [k, f.bytes.length])), community: before.id ?? null };
-  staged.set(body.id, { files, stage, picked: !!body.cover });
+  const sizes: Record<string, number | number[]> = Object.fromEntries(Object.entries(files).filter(([k]) => !k.startsWith("gallery")).map(([k, f]) => [k, f.bytes.length]));
+  if (gallery) sizes.gallery = gallery.map((g: Uint8Array) => g.length);
+  const stage = { details, sizes, community: before.id ?? null };
+  staged.set(body.id, { files, stage, picked: !!body.cover, timelapse });
   return stage;
 }
 
@@ -692,7 +738,7 @@ function creditChecks(id: unknown, names: unknown) {
 }
 
 async function uploadStaged(body: any) {
-  const { files, picked } = staged.get(body.id) ?? {};
+  const { files, picked, timelapse } = staged.get(body.id) ?? {};
   if (!files) throw new Error("Share it again.");
   await Promise.all(
     Object.entries(files).map(async ([kind, f]) => {
@@ -701,6 +747,7 @@ async function uploadStaged(body: any) {
     }),
   );
   staged.delete(body.id);
+  if (timelapse !== undefined && exists(body.id)) saveShared(body.id, { ...sharedWorlds()[body.id], timelapse });
   // The view picked for Community is the world's picture here too, and the game's own pictures no longer replace it.
   if (picked && files.cover && exists(body.id)) {
     saveCover(body.id, files.cover.bytes);

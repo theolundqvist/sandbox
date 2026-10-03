@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' https:; media-src 'self' https:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' https: data:; media-src 'self' https:">
 <title>Sandbox</title>
 <link rel="stylesheet" href="/front.css">
 <style>
@@ -22,9 +22,19 @@
   /* A community world's own screen: its clip over its picture, who made it, and what to do with it. */
   #cworld:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 420px); column-gap: 48px; align-content: start; width: min(1080px, 100%); }
   #cworld > * { grid-column: 1; }
-  #cworld .stage { grid-column: 2; grid-row: 1 / span 4; align-self: start; width: 100%; aspect-ratio: 16 / 9; background: #1b1c1f; }
+  #cworld .side { grid-column: 2; grid-row: 1 / span 4; align-self: start; }
+  #cworld .stage { width: 100%; aspect-ratio: 16 / 9; background: #1b1c1f; }
   #cworld .stage > span { display: block; width: 100%; height: 100%; }
   #cworld .stage :is(img, video) { display: block; width: 100%; height: 100%; object-fit: cover; }
+  /* A world's gallery and the publish screen's pictures: small 16:9 frames; the one shown, or each one picked, is outlined. */
+  .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; margin: 6px 0 0; }
+  .shots button { position: relative; display: block; padding: 0; aspect-ratio: 16 / 9; background: #1b1c1f; border: 2px solid transparent; cursor: pointer; }
+  .shots button:hover, .shots button:focus-visible { border-color: rgba(255,255,255,.4); outline: none; }
+  .shots button:is(.on, [data-n]) { border-color: var(--accent); }
+  .shots button[data-n]::after { content: attr(data-n); position: absolute; left: 0; top: 0; padding: 3px 6px; background: var(--accent); color: #0b0b0c; font: 700 11px/1 var(--display); letter-spacing: .08em; text-transform: uppercase; }
+  .shots img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  #publish-shots { max-width: 640px; margin: 8px 0 24px; }
+  #publish-pick-note { margin: 20px 0 0; }
   #cworld-by { margin: -16px 0 8px; }
   #cworld-about { margin: 0 0 24px; color: var(--dim); max-width: 640px; }
   #cworld-lineage { margin: -12px 0 20px; }
@@ -115,7 +125,7 @@
   </section>
 
   <section id="cworld" class="screen" data-nav hidden>
-    <div class="stage" id="cworld-stage"></div>
+    <div class="side"><div class="stage" id="cworld-stage"></div><div class="shots" id="cworld-gallery"></div></div>
     <h1 id="cworld-title"></h1>
     <p class="status" id="cworld-by"></p>
     <p id="cworld-about"></p>
@@ -237,6 +247,9 @@
     <label class="field"><span>Description</span><input type="text" id="publish-description" maxlength="200" autocomplete="off"></label>
     <label class="field" id="publish-changes-field" hidden><span>What changed</span><input type="text" id="publish-changes" maxlength="280" autocomplete="off"></label>
     <div class="field"><span>Who can play</span><div class="pick" id="publish-visibility" data-options="public:Everyone,link:Anyone with the link"></div></div>
+    <div class="field"><span>Timelapse</span><div class="pick" id="publish-timelapse" data-options="on:On its page,off:Off"></div></div>
+    <p class="status" id="publish-pick-note"></p>
+    <div class="shots" id="publish-shots"></div>
     <div id="publish-builders"></div>
     <div class="items"><button class="item" id="publish-go">Publish</button></div>
   </section>
@@ -598,6 +611,17 @@
     else if (w.cover) tile.append(el("img", { src: w.cover, alt: "", onerror: (e) => e.target.remove() }));
     return tile;
   };
+  /** A world's gallery under its clip: its cover stands for the clip, and each picture shows in its place. */
+  function showGallery(w) {
+    const pictures = w.gallery?.length ? [w.cover, ...w.gallery] : [];
+    const thumbs = pictures.map((src, i) =>
+      el("button", { className: i ? "" : "on", onclick: () => {
+        for (const t of thumbs) t.classList.toggle("on", t === thumbs[i]);
+        $("cworld-stage").replaceChildren(i ? el("span", { className: "stage-art" }, el("img", { src, alt: "" })) : clipOf(w, "stage-art"));
+      } }, el("img", { src, alt: "" })),
+    );
+    $("cworld-gallery").replaceChildren(...thumbs);
+  }
   const counted = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
 /** How many worlds added a mod. */
 const usedBy = (n = 0) => `${counted(n, "world")} use${n === 1 ? "s" : ""} it`;
@@ -671,6 +695,7 @@ const usedBy = (n = 0) => `${counted(n, "world")} use${n === 1 ? "s" : ""} it`;
   function renderWorld() {
     const w = opened;
     $("cworld-stage").replaceChildren(clipOf(w, "stage-art"));
+    showGallery(w);
     $("cworld-title").textContent = w.title;
     const names = w.builders ?? [w.author];
     const mod = w.kind === "mod";
@@ -1095,9 +1120,40 @@ const usedBy = (n = 0) => `${counted(n, "world")} use${n === 1 ? "s" : ""} it`;
     $("publish-changes-field").hidden = !w.shared;
     $("publish-changes").value = "";
     $("publish-builders").replaceChildren();
+    $("publish-timelapse").set(w.shared?.timelapse === false ? "off" : "on");
+    shots = [];
+    picks = [];
+    repicked = false;
+    showShots();
     show("publish");
     loadBuilders(w);
+    loadShots(w);
   }
+  /** The world's picture and the views and timelapse moments its game kept: the first picked is the cover, up to 8 more go on its page. Nothing re-picked keeps what Community has. */
+  let shots = [], picks = [], repicked = false;
+  async function loadShots(w) {
+    const got = await communityCall("shots", { id: w.id }).catch(() => []);
+    if (publishing !== w) return;
+    shots = got;
+    if (!w.shared && shots[0]) picks = [shots[0].name];
+    showShots();
+  }
+  function showShots() {
+    $("publish-shots").replaceChildren(
+      ...shots.map((shot) => {
+        const n = picks.indexOf(shot.name);
+        const b = el("button", { onclick: () => {
+          repicked = true;
+          picks = n >= 0 ? picks.filter((p) => p !== shot.name) : picks.length < 9 ? [...picks, shot.name] : picks;
+          showShots();
+        } }, el("img", { src: `data:image/jpeg;base64,${shot.jpeg}`, alt: "" }));
+        if (n >= 0) b.dataset.n = n ? String(n) : "Cover";
+        return b;
+      }),
+    );
+    $("publish-pick-note").textContent = !shots.length ? "Host it once to take pictures" : !picks.length && publishing?.shared ? "Pick none to keep its pictures" : "First pick is the cover, up to 8 more";
+  }
+  pick($("publish-timelapse"));
   /** Who played in the world, to credit: each one picked is asked on Community, and shows once they accept. */
   async function loadBuilders(w) {
     const names = await communityCall("builders", { id: w.id }).catch(() => []);
@@ -1124,7 +1180,9 @@ const usedBy = (n = 0) => `${counted(n, "world")} use${n === 1 ? "s" : ""} it`;
         let world;
         try {
           const builders = [...document.querySelectorAll("#publish-builders [data-builder]")].filter((b) => b.dataset.value === "yes").map((b) => b.dataset.builder);
-          world = await communityCall("publish", { id: publishing.id, title: $("publish-title").value, description: $("publish-description").value, visibility: $("publish-visibility").dataset.value, changelog: $("publish-changes").value, builders });
+          const jpegOf = (name) => shots.find((s) => s.name === name).jpeg;
+          const media = { cover: picks[0] && picks[0] !== "cover" ? jpegOf(picks[0]) : undefined, gallery: repicked ? picks.slice(1).map(jpegOf) : undefined, timelapse: $("publish-timelapse").dataset.value !== "off" };
+          world = await communityCall("publish", { id: publishing.id, title: $("publish-title").value, description: $("publish-description").value, visibility: $("publish-visibility").dataset.value, changelog: $("publish-changes").value, builders, ...media });
         } catch (e) {
           return e.message;
         }

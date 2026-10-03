@@ -2478,18 +2478,65 @@ const blobBase64 = (blob: Blob) =>
     reader.onload = () => resolve(String(reader.result).split(",")[1]!);
     reader.readAsDataURL(blob);
   });
-let viewPicture = "";
-async function showPicture() {
-  const img = $<HTMLImageElement>("share-picture");
-  if ($("share-cover").dataset.value === "view") return void (img.src = `data:image/jpeg;base64,${(viewPicture = viewJpeg())}`);
-  const res = await hostMenu(`cover?id=${info.id}`);
-  img.src = res.ok ? URL.createObjectURL(await res.blob()) : "";
-  if (!res.ok) img.removeAttribute("src");
+/**
+ * The pictures Share can send, all world-only: the view right now, the world's picture and the views its game kept, and moments of its timelapse.
+ * The first picked is the cover and up to 8 more make its gallery; a shared world nobody re-picks for keeps the ones Community has.
+ */
+let shots: { name: string; jpeg: string }[] = [];
+let picks: string[] = [];
+let repicked = false;
+async function loadShots(fresh: boolean) {
+  const res = await hostMenu("shots", { id: info.id });
+  const kept: typeof shots = res.ok ? await res.json() : [];
+  const view = fresh || !shots[0] ? { name: "view", jpeg: viewJpeg() } : shots[0];
+  shots = [view, ...kept];
+  picks = picks.filter((p) => shots.some((s) => s.name === p));
+  showShots();
 }
+function showShots() {
+  $("share-shots").replaceChildren(
+    ...shots.map((shot) => {
+      const n = picks.indexOf(shot.name);
+      const button = Object.assign(document.createElement("button"), { type: "button", title: shot.name === "view" ? "Current view" : shot.name === "cover" ? "World picture" : "" });
+      if (n >= 0) button.dataset.n = n ? String(n) : "Cover";
+      button.append(Object.assign(document.createElement("img"), { src: `data:image/jpeg;base64,${shot.jpeg}`, alt: "" }));
+      button.onclick = () => {
+        repicked = true;
+        picks = n >= 0 ? picks.filter((p) => p !== shot.name) : picks.length < 9 ? [...picks, shot.name] : picks;
+        showShots();
+      };
+      return button;
+    }),
+  );
+  const shared = $("share-go").textContent === "Update";
+  $("share-pick-note").textContent = !picks.length && shared ? "Pick none to keep the pictures it has." : "The first you pick is the cover; up to 8 more go on its page.";
+}
+const jpegOf = (name: string) => shots.find((s) => s.name === name)!.jpeg;
+/** Moments of the timelapse, evenly spaced, drawn without trails or name tags as the replay shows them. */
+$("share-moments").onclick = async () => {
+  const res = await fetch("/api/timelapse", { headers: { authorization: `Bearer ${key}` } });
+  const frames: Moment[] = res.ok ? await res.json() : [];
+  if (frames.length < 2) return toast("Nothing to replay yet: the world records a moment every two seconds, so come back in a minute.");
+  showMenu(false);
+  startReplay(frames);
+  replay!.playing = false;
+  const moments: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    seek(Math.round((i * (frames.length - 1)) / 7));
+    await loading;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    replayLayer.visible = false;
+    moments.push(viewJpeg());
+    replayLayer.visible = true;
+  }
+  await openMenu();
+  await hostMenu("timelapse-shots", { id: info.id, frames: moments });
+  await openShare("", true);
+};
 const showNames = (value: string) => ($("share-names").hidden = value !== "public");
 const visibility = front.pick($("share-visibility"), showNames);
-const coverPick = front.pick($("share-cover"), showPicture);
-async function openShare(status = "") {
+const timelapsePick = front.pick($("share-timelapse"), () => {});
+async function openShare(status = "", keepPicks = false) {
   const s = await (await hostMenu("state")).json();
   const w = s.worlds.find((x: { id: string }) => x.id === info.id);
   const shared = w?.shared;
@@ -2499,25 +2546,32 @@ async function openShare(status = "") {
   $<HTMLInputElement>("share-description").value = shared?.description ?? (titles.length > 3 ? `${titles.slice(0, 3).join(", ")} and ${titles.length - 3} more` : titles.join(", "));
   visibility.set(shared?.visibility ?? "link");
   showNames(visibility.dataset.value!);
-  coverPick.set(w?.cover ? "world" : "view");
+  if (!status && !keepPicks) timelapsePick.set(shared?.timelapse === false ? "off" : "on");
   $("share-shared").hidden = !shared?.link;
   $("share-link").textContent = shared?.link ?? "";
   $("share-stop").textContent = "Stop sharing";
   $("share-go").textContent = shared?.link ? "Update" : "Share";
   $("share-changes-field").hidden = !shared?.link;
-  if (!status) $<HTMLInputElement>("share-changes").value = "";
-  $("share-status").textContent = status || "The timelapse goes with it. Chat stays on this computer.";
+  if (!status && !keepPicks) {
+    $<HTMLInputElement>("share-changes").value = "";
+    picks = shared?.link ? [] : [w?.cover ? "cover" : "view"];
+    repicked = false;
+  }
+  $("share-status").textContent = status || "Chat stays on this computer.";
   openPage("share");
   $("page-title").textContent = "Share";
-  void showPicture();
+  await loadShots(!status);
 }
 $("world-share").onclick = () => openShare();
 $("share-go").onclick = async () => {
-  const cover = $("share-cover").dataset.value === "view" ? viewPicture || viewJpeg() : undefined;
-  const form = { id: info.id, title: $<HTMLInputElement>("share-title").value, description: $<HTMLInputElement>("share-description").value, changelog: $<HTMLInputElement>("share-changes").value, visibility: $("share-visibility").dataset.value, cover };
+  // The world's picture is already its cover, so only another pick replaces it.
+  const cover = picks[0] && picks[0] !== "cover" ? jpegOf(picks[0]) : undefined;
+  const gallery = repicked ? picks.slice(1).map(jpegOf) : undefined;
+  const timelapse = $("share-timelapse").dataset.value !== "off";
+  const form = { id: info.id, title: $<HTMLInputElement>("share-title").value, description: $<HTMLInputElement>("share-description").value, changelog: $<HTMLInputElement>("share-changes").value, visibility: $("share-visibility").dataset.value, cover, gallery, timelapse };
   showMenu(false);
-  toast("Recording a clip of the timelapse…");
-  const clip = await recordClip().catch(() => null);
+  if (timelapse) toast("Recording a clip of the timelapse…");
+  const clip = timelapse ? await recordClip().catch(() => null) : null;
   await openMenu();
   if (!desktop?.publish) return void (await openShare("Publish from the Sandbox app."));
   await openShare("Uploading…");
