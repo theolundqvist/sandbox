@@ -1,0 +1,33 @@
+name: World list proof
+
+on:
+  push:
+    branches: [worldlist]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+        working-directory: .
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright-core install --with-deps chromium
+      - run: bun test engine/launcher.test.ts
+        working-directory: .
+      - run: xvfb-run -a node --test --test-force-exit --test-name-pattern="world list|hosting and joining" app.test.mjs
+        env:
+          SANDBOX_CAPTURES: ${{ runner.temp }}/captures
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: worldlist-captures
+          path: ${{ runner.temp }}/captures

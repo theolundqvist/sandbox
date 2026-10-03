@@ -329,6 +329,7 @@
   let selected = null;
   async function refresh() {
     const s = await shell.state();
+    if ($("games").querySelector(".renaming")) return;
     games = [...s.hosted.map((g) => ({ ...g, value: g.live ? "Live" : ago(g.at), kind: "Hosted" })), ...s.joined.map((g) => ({ ...g, value: ago(g.at), kind: "Joined" }))].sort(
       (a, b) => (b.live ? Infinity : b.at) - (a.live ? Infinity : a.at),
     );
