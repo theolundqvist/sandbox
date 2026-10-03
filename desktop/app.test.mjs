@@ -832,6 +832,7 @@ describe("updates", () => {
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#menu-update");
     await until("the download partway in the game's menu", () => game.locator("#menu-update").evaluate((b) => b.textContent === "Updating…" && ((d) => d > 0.2 && d < 0.8)(b.querySelector(".bar i").offsetWidth / b.querySelector(".bar").offsetWidth)));
+    assert.equal(await game.getByText("The update didn't download. Check your connection.").count(), 0, "the last attempt's failure is gone");
     await capture(game, "update-in-game");
     await closed;
     await until("the installer", async () => existsSync(marker) && readFileSync(marker, "utf8").trim() === String(pid));

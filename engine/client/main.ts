@@ -1871,6 +1871,7 @@ function toast(text: string, kind = "info") {
   $("toasts").append(el);
   toTop($("toasts"));
   setTimeout(() => el.remove(), 5000);
+  return el;
 }
 
 /** The host answers whether a new computer may play as an offline player's name; no answer in a minute means no. */
@@ -2381,9 +2382,12 @@ desktop?.onUpdating?.((progress) => {
   bar.hidden = !progress;
   bar.querySelector("i")!.style.width = `${(progress?.installing ? 1 : (progress?.downloaded ?? 0)) * 100}%`;
 });
+/** The last attempt's failure, which a new attempt takes away. */
+let updateFailed: HTMLElement | undefined;
 $("menu-update").onclick = async () => {
+  updateFailed?.remove();
   const error = await desktop?.update();
-  if (error) toast(error, "error");
+  if (error) updateFailed = toast(error, "error");
 };
 /** In the app everyone leaves to its title screen; in a browser the host goes to their main menu. */
 function leave() {
