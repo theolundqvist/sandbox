@@ -1304,21 +1304,55 @@ export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(() => bla
     const key = await join("shooter");
     const context = await browser.newContext({ viewport: { width: 1600, height: 900 } });
     const answered = [];
+    const started = performance.now();
+    const timeline = [];
+    const tabs = new Map();
+    const note = (tab, event, bytes) => timeline.push({ ms: Math.round(performance.now() - started), tab, event, bytes });
     const open = async (tab) => {
       const p = await context.newPage();
-      p.on("websocket", (ws) => ws.on("framesent", ({ payload }) => String(payload).startsWith('{"t":"shot"') && answered.push(tab)));
+      tabs.set(p, tab);
+      p.on("websocket", (ws) => {
+        note(tab, "socket created");
+        ws.on("framereceived", ({ payload }) => {
+          if (String(payload).startsWith('{"t":"shot"')) note(tab, "shot received");
+        });
+        ws.on("framesent", ({ payload }) => {
+          if (!String(payload).startsWith('{"t":"shot"')) return;
+          answered.push(tab);
+          note(tab, "shot sent", Buffer.byteLength(payload));
+        });
+        ws.on("close", () => note(tab, "socket closed"));
+      });
       await p.goto(`${other.url}/#key=${key}`);
       await p.locator("#howto-play:not([disabled])").waitFor();
       return p;
     };
     const shot = async () => {
       const before = answered.length;
+      note("server", "POST screenshot");
       const res = await fetch(`${other.url}/cli/screenshot`, { method: "POST", headers: { authorization: `Bearer ${key}` } });
       const body = Buffer.from(await res.arrayBuffer());
+      note("server", `HTTP ${res.status}`);
+      let text = body.toString();
+      if (!res.ok && context.pages().length) {
+        // Observe late replies without changing the failed response or retrying it.
+        await sleep(10000);
+        const pages = [];
+        for (const p of context.pages()) {
+          const state = await within(p.locator("#status").evaluate((el) => ({ status: el.textContent, visibility: document.visibilityState, focused: document.hasFocus() })));
+          pages.push({ tab: tabs.get(p), state });
+        }
+        const detail = JSON.stringify({ timeline, pages }, null, 2);
+        if (CAPTURES) {
+          mkdirSync(CAPTURES, { recursive: true });
+          writeFileSync(`${CAPTURES}/screenshot-trace.json`, detail);
+        }
+        text += `\n${detail}`;
+      }
       // Playwright reports the tab's frame after the server has already answered.
       if (res.ok) await until("the answering tab", async () => answered.length > before);
       const sof = body.findIndex((b, i) => b === 0xff && (body[i + 1] === 0xc0 || body[i + 1] === 0xc2));
-      return { status: res.status, type: res.headers.get("content-type"), width: sof > 0 ? body.readUInt16BE(sof + 7) : 0, text: body.toString(), by: res.ok ? answered.at(-1) : null };
+      return { status: res.status, type: res.headers.get("content-type"), width: sof > 0 ? body.readUInt16BE(sof + 7) : 0, text, by: res.ok ? answered.at(-1) : null };
     };
     try {
       await context.addInitScript(OPEN_UI);
