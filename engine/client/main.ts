@@ -1107,6 +1107,23 @@ async function reconnect() {
   connect();
 }
 
+
+/** Shots waiting for the next frame the game draws, copied right after it is drawn. */
+const frameWanted = new Set<(frame: ImageBitmap | null) => void>();
+function nextFrame() {
+  return new Promise<ImageBitmap | null>((resolve) => {
+    let settled = false;
+    const take = (frame: ImageBitmap | null) => {
+      if (settled) return frame?.close();
+      settled = true;
+      clearTimeout(timer);
+      frameWanted.delete(take);
+      resolve(frame);
+    };
+    const timer = setTimeout(() => take(null), 1000);
+    frameWanted.add(take);
+  });
+}
 /** The scene with every mod layer and HTML overlay (engine HUD and mod UI) drawn on top, as base64 JPEG at most 1280 px wide. */
 async function screenshot() {
   const scale = Math.min(1, 1280 / innerWidth);
@@ -1114,10 +1131,16 @@ async function screenshot() {
   const out = Object.assign(document.createElement("canvas"), { width: w, height: h });
   const g = out.getContext("2d")!;
   g.imageSmoothingEnabled = !screen.pixelated;
-  // Copied while the frame is still in the drawing buffer, instead of encoding it to PNG and decoding it again on the main thread.
+  // The frame the game draws next, instead of drawing one more just for this; a tab that gets no frames draws its own.
   if (screen.scene !== false) {
-    draw(0);
-    g.drawImage(renderer.domElement, 0, 0, w, h);
+    const frame = document.hidden ? null : await nextFrame();
+    if (frame) {
+      g.drawImage(frame, 0, 0, w, h);
+      frame.close();
+    } else {
+      draw(0);
+      g.drawImage(renderer.domElement, 0, 0, w, h);
+    }
   }
   // html-to-image waits on animation frames, which never come in a background tab and crawl in a covered or busy one.
   const overlay = document.hidden
@@ -2881,6 +2904,12 @@ renderer.setAnimationLoop(() => {
   else if (coverDue(now, dt)) untagged(() => (draw(dt), takeCover()));
   else if (screen.scene !== false && still) untagged(() => draw(dt));
   else if (screen.scene !== false) draw(dt);
+  if (frameWanted.size && screen.scene !== false) {
+    for (const take of frameWanted) {
+      frameWanted.delete(take);
+      createImageBitmap(renderer.domElement).then(take, () => take(null));
+    }
+  }
   view.position.sub(shakeOffset);
   if (heldMaterials) for (const m of heldMaterials.splice(0)) disposeMaterial.call(m);
   heldMaterials = null;
