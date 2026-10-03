@@ -30,7 +30,7 @@ The start screen starts on **Continue**, which takes you back into the world you
 - **Reload:** Cmd+R on a Mac, Ctrl+Shift+R elsewhere.
 - **Mouse:** click the game to look around. Esc, Tab (menu) and Enter (chat) free the mouse. Switching back to the app from another window picks the mouse back up.
 - **Quit:** Cmd+Q on a Mac. It asks first while you're in a world or friends are in yours.
-- **Agents:** the game menu's Agent page has **Build with Claude Code** and **Build with Codex**. One click, and a yes in the app's own dialog, runs it in a terminal beside the game with the world's prompt, installing it first with its maker's installer. You sign in to it there, so the app never sees your login; Stop ends it.
+- **Agents:** the game menu's Agent page has **Build with Claude Code** and **Build with Codex**. One click, and a yes in the app's own dialog, sets up the world's folder under `~/Sandbox` and starts it there in a terminal beside the game, installing it first with its maker's installer. You sign in to it there, so the app never sees your login; Stop ends it.
 - **Updates:** the app checks GitHub for a new release every few minutes. **Update** shows up on the start screen and in the game menu, and one click installs it and reopens the app.
 
 ## Release

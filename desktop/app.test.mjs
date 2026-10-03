@@ -347,26 +347,28 @@ describe("hosting and joining", () => {
     await game.keyboard.press("Escape");
   });
 
-  test("connecting an agent: the player picks theirs, gets its install and start, and Copy prompt copies the one prompt in place", async () => {
+  test("connecting an agent: the player picks theirs, gets its install, a one-time command that sets up the world's folder, and the prompt to paste there", async () => {
     const game = await gamePage(app);
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#rail [data-tab=claude]");
     assert.equal(await shown(game, "#agent-guide"), false);
     await game.locator(".item.agent:not(.build)", { hasText: "Claude Code" }).click();
-    assert.deepEqual([await game.textContent("#agent-install"), await game.textContent("#agent-start")], ["curl -fsSL https://claude.ai/install.sh | bash", "claude --dangerously-skip-permissions"]);
+    const [, folder] = await until("the world's folder", async () => (await game.textContent("#agent-start")).match(/^cd (~\/Sandbox\/[a-z0-9-]+) && claude$/));
+    assert.deepEqual([await game.textContent("#agent-install"), await game.textContent("#agent-start")], ["curl -fsSL https://claude.ai/install.sh | bash", `cd ${folder} && claude`]);
     assert.deepEqual([await game.textContent("#agent-os output"), await game.textContent("#agent-terminal")], ["Linux", "Press Ctrl+Alt+T. Paste this line and press Enter."]);
     await game.click("#agent-os i:last-child");
     assert.deepEqual([await game.textContent("#agent-os output"), await game.textContent("#agent-install")], ["Windows", "irm https://claude.ai/install.ps1 | iex"]);
     assert.match(await game.textContent("#agent-terminal"), /^Press the Windows key, type PowerShell, press Enter\./);
-    const copy = game.locator("[data-copy=claude-prompt]");
+    const copy = game.locator("[data-copy=agent-connect]");
     const box = await copy.boundingBox();
     await copy.click();
     await until("Copied", async () => (await copy.textContent()) === "Copied");
     assert.deepEqual(await copy.boundingBox(), box);
-    const prompt = await app.evaluate(({ clipboard }) => clipboard.readText());
-    assert.equal(prompt, await game.textContent("#claude-prompt"));
-    assert.match(prompt, /^First install the command for our game by running `mkdir -p ~\/\.local\/bin && curl .*\/cli\?name=/);
-    await until("Copy prompt again", async () => (await copy.textContent()) === "Copy prompt");
+    const command = await app.evaluate(({ clipboard }) => clipboard.readText());
+    assert.equal(command, await game.textContent("#agent-connect"));
+    assert.match(command, /^curl -fsSL '[^']+\/join\/[0-9a-f]{12}' \| sh$/);
+    await until("Copy again", async () => (await copy.textContent()) === "Copy");
+    assert.match(await game.textContent("#agent-prompt"), /^We're playing .+\. Read AGENTS\.md in this folder and join as it says\.$/);
     // The page remembers the pick, and Change goes back to the list on that agent.
     await game.keyboard.press("Escape");
     await game.click("#rail [data-tab=claude]");
@@ -584,7 +586,7 @@ describe("a friend in a browser", () => {
     await page.locator("#menu-button").dispatchEvent("click");
     await page.click("#rail [data-tab=claude]");
     assert.equal(await page.textContent("#agents-off"), "The host turned agents off for this world.");
-    assert.equal(await shown(page, "#claude-prompt"), false);
+    assert.equal(await shown(page, "#agent-connect"), false);
     const { id } = await (await fetch(`${base}/api/info`)).json();
     const key = await page.evaluate((id) => localStorage.getItem(`sandbox-key:${id}`), id);
     const res = await fetch(`${base}/cli/status`, { method: "POST", headers: { authorization: `Bearer ${key}` } });
@@ -1168,7 +1170,7 @@ describe("building with an agent", () => {
   let app, shell, game;
   before(async () => {
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(home, ".local", "bin", "claude"), `#!/bin/sh\necho "$$" > '${said}'\necho "claude $1"\nprintf '%s\\n' "$2" | cut -c1-40\nexec sleep 600\n`, { mode: 0o755 });
+    writeFileSync(join(home, ".local", "bin", "claude"), `#!/bin/sh\necho "$$" > '${said}'\necho "claude in $PWD"\nprintf '%s\\n' "$1" | cut -c1-40\nexec sleep 600\n`, { mode: 0o755 });
     ({ app, shell } = await launch("builder", { HOME: home, SHELL: "/bin/sh" }, "builder"));
     await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
@@ -1178,7 +1180,7 @@ describe("building with an agent", () => {
   });
   after(() => close(app));
 
-  test("Build with asks first in the app's own dialog, then runs the agent beside the game with the world's prompt, and Stop ends it", async () => {
+  test("Build with asks first in the app's own dialog, then sets up the world's folder and runs the agent there beside the game with the prompt, and Stop ends it", async () => {
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#rail [data-tab=claude]");
     assert.deepEqual(await game.locator(".item.agent.build").allTextContents(), ["Build with Claude Code", "Build with Codex"]);
@@ -1193,7 +1195,7 @@ describe("building with an agent", () => {
     await game.click("text=Build with Claude Code");
     await until("the menu closed", async () => !(await shown(game, "#menu")));
     const pane = await until("the agent pane", async () => app.windows().find((w) => w.url().endsWith("/agent.html")));
-    await until("the agent started with the prompt", async () => /claude --dangerously-skip-permissions\s*First install the command for our game/.test(await pane.textContent("#term")));
+    await until("the agent started in the world's folder with the prompt", async () => /claude in \S+\/Sandbox\/[a-z0-9-]+\s*We're playing/.test(await pane.textContent("#term")));
     assert.equal(await pane.textContent("#name"), "Claude Code");
     const pid = Number(readFileSync(said, "utf8"));
     await pane.click("#close");

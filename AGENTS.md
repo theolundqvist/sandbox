@@ -28,7 +28,7 @@ curl -s -X POST localhost:7777/api/menu/export -H "authorization: Bearer $K" -H 
 curl -s -X POST localhost:7777/api/menu/import -H "authorization: Bearer $K" --data-binary @world.zip
 ```
 
-The zip holds every mod and its history, the entities, each mod's database and the record. It never holds the invite, the host key or players' keys, so after a move every player pastes the new prompt from the game's Agent page into their agent; a name they played under gets its mods back. Imports through the relay are capped at 25 MB.
+The zip holds every mod and its history, the entities, each mod's database and the record. It never holds the invite, the host key or players' keys, so after a move every player runs the new install command from the game's Agent page; a name they played under gets its mods back. Imports through the relay are capped at 25 MB.
 
 ## Host on a Linux server
 

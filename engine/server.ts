@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { basename, join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { frontFile } from "./front";
-import { connectPrompt, createCli, type Task } from "./cli";
+import { createCli, joinCodes, joinCommand, joinScript, type Task } from "./cli";
 import { ENGINE_KEYS, hasGit, Mods } from "./mods";
 import { latencies, openRecord, route } from "./record";
 import { Sims } from "./sims";
@@ -420,6 +420,7 @@ const joiningLine = new Map<string, ReturnType<typeof setTimeout>>();
 const leavingLine = new Map<string, ReturnType<typeof setTimeout>>();
 /** The world's one invite link, from the launcher, and whether it only works on the host's Wi-Fi because the relay is down. */
 let invite = { link: null as string | null, wifiOnly: false };
+const codes = joinCodes();
 const shots = new Map<string, (data: string) => void>();
 const cli = createCli({
   data: DATA,
@@ -603,13 +604,21 @@ const server = Bun.serve<Conn>({
       }
     }
     if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json(status()) : new Response(null, { status: 401 });
-    if (path === "/api/prompt") {
-      const who = nameByKey(bearer(req));
-      if (!who) return new Response(null, { status: 401 });
+    if (path === "/api/join-code" && req.method === "POST") {
+      const key = bearer(req);
+      if (!nameByKey(key)) return new Response(null, { status: 401 });
       if (config.agents === false) return new Response("The host turned agents off for this world.\n", { status: 403 });
       // Players reach the world by its invite link; without one, at the address their game came from.
       const base = invite.link?.split("/#")[0] ?? url.searchParams.get("base");
-      return base ? new Response(connectPrompt(config.name, base, who, bearer(req)!)) : new Response("Give ?base=<this world's address>.\n", { status: 400 });
+      if (!base) return new Response("Give ?base=<this world's address>.\n", { status: 400 });
+      return Response.json(joinCommand(base, codes.mint(key!, base), config.name));
+    }
+    if (path.startsWith("/join/")) {
+      const entry = codes.take(path.slice(6));
+      const who = entry && config.agents !== false && nameByKey(entry.key);
+      // The player pipes this into sh, so a refusal is a script that says why.
+      if (!who) return new Response("echo 'This install command expired or was used already. Copy a new one from the Agent page of the game menu.' >&2\nexit 1\n");
+      return new Response(joinScript(config.name, entry.base, who, entry.key), { headers: { "content-type": "text/x-shellscript" } });
     }
     if (path === "/api/voice" && req.method === "POST") {
       const who = nameByKey(bearer(req));
@@ -680,7 +689,7 @@ const server = Bun.serve<Conn>({
     }
 
     if ((path === "/cli" || path.startsWith("/cli/")) && config.agents === false) return new Response("The host turned agents off for this world.\n", { status: 403 });
-    if (path === "/cli" || path.startsWith("/cli/")) return cli(req, nameByKey(bearer(req)) ?? null, path.slice(5) || "script", url.searchParams.get("url"), url.searchParams.get("name"));
+    if (path === "/cli" || path.startsWith("/cli/")) return cli(req, nameByKey(bearer(req)) ?? null, path.slice(5) || "help");
 
     if (path === "/ws") {
       const invite = url.searchParams.get("invite");

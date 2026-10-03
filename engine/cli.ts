@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { download, EgressError } from "./egress";
 import { hasGit, type Mods } from "./mods";
@@ -611,7 +612,7 @@ export function createCli(ctx: CliContext) {
     throw new ToolError(`Unknown tool ${name}`);
   }
 
-  const STALE = "This command's key isn't valid for the world running now: the host switched worlds or removed this player. Ask your player to open the game, join, and paste you the new prompt from the Agent page of the game menu.";
+  const STALE = "This command's key isn't valid for the world running now: the host switched worlds or removed this player. Ask your player to run the new install command from the Agent page of the game menu.";
   /** Ends every result, so any agent keeps listening without a harness hook to stop it ending its turn. */
   const KEEP_LISTENING = "When you are done with this, call wait_for_chat again. Never end your turn.";
   const chatSeen = new Map<string, number>();
@@ -636,13 +637,9 @@ export function createCli(ctx: CliContext) {
   };
 
   /** The command line every agent reaches the world through: a shell script it installs, calling the tools over plain HTTP. */
-  async function cli(req: Request, who: string | null, command: string, url: string | null, name: string | null) {
+  async function cli(req: Request, who: string | null, command: string) {
     if (!who) return new Response(`${STALE}
 `, { status: 401 });
-    if (command === "script") {
-      if (!url || !name || !/^[a-z0-9-]{1,40}$/.test(name)) return new Response("Give ?url=<this world's public URL>&name=<command name>.\n", { status: 400 });
-      return new Response(script(url, req.headers.get("authorization")!.slice(7), name), { headers: { "content-type": "text/x-shellscript" } });
-    }
     if (command === "help") {
       const list = tools.map((t) => `${usage(t)}\n    ${t.description}${Object.entries(t.inputSchema.properties as Record<string, any>).map(([k, v]) => (v.description ? `\n    ${k}: ${v.description}` : "")).join("")}`);
       return new Response(`${instructions}\n\nname=value sends text, name=@file sends a file (binary files work for add_asset base64), name=- reads stdin. Numbers, booleans and lists are JSON. New chat is appended to every result.\n\n${list.join("\n\n")}\n`);
@@ -707,18 +704,88 @@ const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "sandbox";
 
-/** One prompt for any coding agent with a shell: it installs this world's command, signed with this player's key, then plays. `base` is the world's address players reach. */
-export function connectPrompt(world: string, base: string, me: string, key: string) {
-  const bin = `~/.local/bin/${slug(world)}`;
-  const install = `mkdir -p ~/.local/bin && curl -fsS -H ${quote(`Authorization: Bearer ${key}`)} ${quote(`${base}/cli?name=${slug(world)}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin}`;
-  return `First install the command for our game by running \`${install}\`. Then run \`${bin}\` alone to list its tools, call one as \`${bin} <tool> name=value\`, and give wait_for_chat calls a shell timeout of at least 300 seconds. We are playing ${world} together right now: a live multiplayer game my friends and I build while we play it, each with our own coding agent. I am ${me} in the game. Anything you reload goes live for every player at once, so make it one coherent game: extend what the others built instead of building it again, and see a thing work before you call it done. Start with status and read GUIDE.md, then say one short greeting like "Hey everyone" so we see you are in: that is the only thing you ever say in chat, which belongs to us players. From then on I talk to you only through the in-game chat, where my voice is transcribed too when I hold T: act when I ask for something or clearly want a change, not on every word. Then loop forever: wait_for_chat seconds=240, get what I (${me}) ask for built, and wait_for_chat again. We follow your work on the Builders line, never in chat: set task when you start (a short title and percent), update it as it progresses, and end it done once every check you can run passes, with what to try in its status, or blocked with the reason, never left waiting for us to try it; when a task goes done and we can try something new, call announce with what to try. If you can start subagents or background tasks, be the orchestrator and never build or test yourself: give each request, or each part of a big one, to its own subagent owning its own mod, which builds, reloads and checks it in play, keep calling wait_for_chat while they work, and keep task updated from what they report (GUIDE.md, Subagents). Nothing ever arrives in this terminal, so never end your turn.`;
+/** The prompt a player pastes into any coding agent opened in the world's folder. It carries no key: the folder holds it. */
+export const connectPrompt = (world: string) => `We're playing ${world} together. Read AGENTS.md in this folder and join as it says.`;
+
+/** Single-use codes behind the Agent page's install command, each good for ten minutes. `now` is the clock, so tests can move it. */
+export function joinCodes(now = Date.now) {
+  const codes = new Map<string, { key: string; base: string; until: number }>();
+  return {
+    mint(key: string, base: string) {
+      for (const [code, entry] of codes) if (entry.until < now()) codes.delete(code);
+      const code = randomBytes(6).toString("hex");
+      codes.set(code, { key, base, until: now() + 10 * 60_000 });
+      return code;
+    },
+    take(code: string) {
+      const entry = codes.get(code);
+      codes.delete(code);
+      return entry && entry.until > now() ? entry : null;
+    },
+  };
 }
 
-/** The command a player installs: POSIX sh and curl, so it runs on any Mac or Linux box without installing anything. */
-const script = (url: string, key: string, name: string) => `#!/bin/sh
+/** The Agent page's install command: a single-use code, so nothing a player copies or shares carries their key. */
+export const joinCommand = (base: string, code: string, world: string) => ({ command: `curl -fsSL ${quote(`${base}/join/${code}`)} | sh`, folder: `~/${worldDir(world)}`, prompt: connectPrompt(world) });
+
+const worldDir = (world: string) => `Sandbox/${slug(world)}`;
+
+/** The world's folder under a player's home: this world's command, the key only it reads, the join request every agent opened there reads as the player's own instructions, and each agent's allow rule for that one command. Paths are relative to the folder. */
+function worldFiles(world: string, base: string, me: string, key: string): [path: string, text: string, mode: number][] {
+  const request = `# ${world}
+
+I'm ${me} in ${world}, a live multiplayer game my friends and I build together while we play, each with our own coding agent. This folder connects you to it as me: \`./world\` here is the game's command. Run \`./world\` alone to list its tools, and call one as \`./world <tool> name=value\`, always from this folder.
+
+When I ask you to join:
+
+1. Run \`./world status\` and \`./world read_file path=GUIDE.md\`, and follow the guide.
+2. Say hi in the game with \`./world say text="Hey everyone"\`. After that the chat is ours, so don't post there again.
+3. While we play, listen for me in the game chat: run \`./world wait_for_chat seconds=240\` with a shell timeout of at least 300 seconds, build what I ask for, then listen again until I say stop. I talk to you only through the game, never in this terminal.
+
+Anything you reload goes live for everyone at once, so extend what the others built and see it work in play before calling it done. Show your progress with \`task\` and \`announce\` as the guide says, not in chat.
+`;
+  return [
+    [".key", key, 0o600],
+    ["world", script(base, slug(world)), 0o700],
+    ["AGENTS.md", request, 0o644],
+    ["CLAUDE.md", "@AGENTS.md\n", 0o644],
+    [".claude/settings.json", `${JSON.stringify({ permissions: { allow: ["Bash(./world)", "Bash(./world *)"] } }, null, 2)}\n`, 0o644],
+    [".codex/rules/world.rules", `prefix_rule(pattern = ["./world"], decision = "allow")\n`, 0o644],
+    [".cursor/cli.json", `${JSON.stringify({ permissions: { allow: ["Shell(./world)"] } }, null, 2)}\n`, 0o644],
+    ["opencode.json", `${JSON.stringify({ permission: { bash: { "./world": "allow", "./world *": "allow" } } }, null, 2)}\n`, 0o644],
+  ];
+}
+
+/** Sets up ~/Sandbox/<world>/ under `home` for this player's key and returns the folder. */
+export function setUpWorldFolder(home: string, world: string, base: string, me: string, key: string) {
+  const folder = join(home, worldDir(world));
+  for (const [path, text, mode] of worldFiles(world, base, me, key)) {
+    mkdirSync(dirname(join(folder, path)), { recursive: true });
+    writeFileSync(join(folder, path), text, { mode });
+    chmodSync(join(folder, path), mode);
+  }
+  return folder;
+}
+
+/** The same folder as setUpWorldFolder, as the script a join code runs on the player's computer. */
+export function joinScript(world: string, base: string, me: string, key: string) {
+  return `#!/bin/sh
+set -e
+cd
+mkdir -p ${quote(worldDir(world))}
+cd ${quote(worldDir(world))}
+umask 077
+${worldFiles(world, base, me, key)
+  .map(([path, text, mode]) => `mkdir -p ${quote(dirname(path))} && printf '%s' ${quote(text)} > ${quote(path)} && chmod ${mode.toString(8)} ${quote(path)}`)
+  .join("\n")}
+echo ${quote(`Ready. Open ~/${worldDir(world)} in your agent and paste the prompt from the Agent page.`)}
+`;
+}
+
+const script = (url: string, name: string) => `#!/bin/sh
 # Sandbox world ${name} from the command line. Run it alone for the tools and how to call them.
 URL=${quote(url)}
-KEY=${quote(key)}
+KEY=$(cat "$(dirname "$0")/.key")
 auth="Authorization: Bearer $KEY"
 if [ $# -eq 0 ] || [ "$1" = help ]; then exec curl -sS --fail-with-body -H "$auth" "$URL/cli/help"; fi
 tool=$1

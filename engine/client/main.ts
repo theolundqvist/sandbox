@@ -2515,34 +2515,30 @@ setVolume(savedVolume);
 $("volume").oninput = () => setVolume(Number($<HTMLInputElement>("volume").value));
 $("volume-exact").onchange = () => setVolume(Number($<HTMLInputElement>("volume-exact").value));
 
-/** One prompt for any coding agent with a shell, from the world, which signs it with this player's key. */
-let prompt = "";
-async function loadPrompt() {
-  const res = await fetch(`/api/prompt?base=${encodeURIComponent(origin)}`, { headers: { authorization: `Bearer ${key}` } });
+/** The install command that sets up this world's folder on the player's computer, behind a single-use code, and that folder. */
+let joinFolder = "~/Sandbox";
+async function loadJoin() {
+  const res = await fetch(`/api/join-code?base=${encodeURIComponent(origin)}`, { method: "POST", headers: { authorization: `Bearer ${key}` } });
   if (!res.ok) return;
-  prompt = await res.text();
-  $("claude-prompt").textContent = prompt;
-  if (agentGuide?.open) $<HTMLAnchorElement>("agent-open").href = agentGuide.open.url(prompt);
+  const { command, folder, prompt } = await res.json();
+  $("agent-connect").textContent = command;
+  $("agent-prompt").textContent = prompt;
+  joinFolder = folder;
+  if (agentGuide) showAgentGuide(agentGuide);
 }
 
-/** The coding agents that can run this world's command, each with its own install, its own way to stop asking before every command, and a documented link that opens it with the prompt typed in. Evidence: ~/.config/journal/2026-10-01/coding-agents-shell-access.md. */
-type AgentGuide = { id: string; name: string; open?: { label: string; url: (prompt: string) => string } } & ({ install: { unix: string; windows: string }; run: string } | { download: string; setup: string });
+/** The coding agents that can run this world's command, each with its own install and its own way to open the world's folder, where its allow rule for that one command already sits. Evidence: ~/.config/journal/2026-10-01/coding-agents-shell-access.md. */
+type AgentGuide = { id: string; name: string } & ({ install: { unix: string; windows: string }; run: string } | { download: string; open: string });
 const AGENT_GUIDES: AgentGuide[] = [
-  { id: "claude-code", name: "Claude Code", install: { unix: "curl -fsSL https://claude.ai/install.sh | bash", windows: "irm https://claude.ai/install.ps1 | iex" }, run: "claude --dangerously-skip-permissions" },
-  { id: "claude", name: "Claude app", download: "https://claude.com/download", setup: "In Settings, Claude Code, turn on Allow bypass permissions mode. Then open the Code tab and pick Bypass permissions next to Send." },
-  { id: "codex", name: "Codex", install: { unix: "curl -fsSL https://chatgpt.com/codex/install.sh | sh", windows: `powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"` }, run: "codex --yolo" },
-  {
-    id: "chatgpt",
-    name: "ChatGPT app",
-    download: "https://chatgpt.com/download",
-    setup: "In Settings, General, Permissions, turn on Full access. Then open Codex, start a New chat and pick Full access below the message box.",
-    open: { label: "Open in ChatGPT", url: (prompt) => `codex://new?prompt=${encodeURIComponent(prompt)}` },
-  },
-  { id: "cursor", name: "Cursor", install: { unix: "curl https://cursor.com/install -fsS | bash", windows: "irm 'https://cursor.com/install?win32=true' | iex" }, run: "agent --force" },
-  { id: "copilot", name: "GitHub Copilot", install: { unix: "curl -fsSL https://gh.io/copilot-install | bash", windows: "winget install GitHub.Copilot" }, run: "copilot --allow-all-tools" },
-  { id: "omp", name: "OMP", install: { unix: "curl -fsSL https://omp.sh/install | sh", windows: "irm https://omp.sh/install.ps1 | iex" }, run: "omp --approval-mode=yolo" },
+  { id: "claude-code", name: "Claude Code", install: { unix: "curl -fsSL https://claude.ai/install.sh | bash", windows: "irm https://claude.ai/install.ps1 | iex" }, run: "claude" },
+  { id: "claude", name: "Claude app", download: "https://claude.com/download", open: "Open the Code tab and choose that folder" },
+  { id: "codex", name: "Codex", install: { unix: "curl -fsSL https://chatgpt.com/codex/install.sh | sh", windows: `powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"` }, run: "codex" },
+  { id: "chatgpt", name: "ChatGPT app", download: "https://chatgpt.com/download", open: "Open Codex and choose that folder as the project" },
+  { id: "cursor", name: "Cursor", install: { unix: "curl https://cursor.com/install -fsS | bash", windows: "irm 'https://cursor.com/install?win32=true' | iex" }, run: "agent" },
+  { id: "copilot", name: "GitHub Copilot", install: { unix: "curl -fsSL https://gh.io/copilot-install | bash", windows: "winget install GitHub.Copilot" }, run: "copilot --allow-tool 'shell(./world)'" },
+  { id: "omp", name: "OMP", install: { unix: "curl -fsSL https://omp.sh/install | sh", windows: "irm https://omp.sh/install.ps1 | iex" }, run: "omp" },
   { id: "pi", name: "Pi", install: { unix: "curl -fsSL https://pi.dev/install.sh | sh", windows: "npm install -g --ignore-scripts @earendil-works/pi-coding-agent" }, run: "pi" },
-  { id: "opencode", name: "opencode", install: { unix: "curl -fsSL https://opencode.ai/install | bash", windows: "npm install -g opencode-ai" }, run: "opencode --auto" },
+  { id: "opencode", name: "opencode", install: { unix: "curl -fsSL https://opencode.ai/install | bash", windows: "npm install -g opencode-ai" }, run: "opencode" },
 ];
 const small = (text: string) => Object.assign(document.createElement("small"), { textContent: text });
 let agentGuide: AgentGuide | null = null;
@@ -2551,7 +2547,7 @@ try {
   agentGuide = AGENT_GUIDES.find((g) => g.id === localStorage.getItem("sandbox-agent")) ?? null;
 } catch {}
 
-/** Connect to build: the player picks the agent they have, then gets its three steps, the last one the prompt. */
+/** Connect to build: the player picks the agent they have, then gets its three steps: install it, connect this computer, and paste the prompt in the world's folder. */
 function showAgentGuide(guide: AgentGuide | null) {
   agentGuide = guide ?? agentGuide;
   try {
@@ -2566,16 +2562,15 @@ function showAgentGuide(guide: AgentGuide | null) {
   const app = "download" in guide;
   $("agent-install-what").replaceChildren(...(app ? [`Get the ${guide.name}`, small("Download it, open it and sign in.")] : [`Install ${guide.name}`]));
   $("agent-terminal").textContent = `${COMPUTERS[agentComputer].open} Paste this line and press Enter.`;
-  $("agent-start-what").replaceChildren("Turn permissions off", small(app ? guide.setup : "Start it like this, so it can run the game's command without asking each time."));
+  $("agent-connect-how").textContent = `${COMPUTERS[agentComputer].open} Paste this line and press Enter. It works once, for ten minutes.`;
+  $("agent-start-what").replaceChildren(app ? `Open ${joinFolder} in it and paste this prompt` : `Start it in ${joinFolder} and paste this prompt`, small(`${app ? `${guide.open}. ` : ""}Say yes when it asks whether you trust the folder.`));
   $("agent-os-row").hidden = $("agent-terminal").hidden = $("agent-install-row").hidden = $("agent-start-row").hidden = app;
   $("agent-download").hidden = !app;
   if (app) Object.assign($<HTMLAnchorElement>("agent-download"), { href: guide.download, textContent: `Download the ${guide.name}` });
   else {
     $("agent-install").textContent = agentComputer === "windows" ? guide.install.windows : guide.install.unix;
-    $("agent-start").textContent = guide.run;
+    $("agent-start").textContent = `cd ${joinFolder} && ${guide.run}`;
   }
-  $("agent-open").hidden = !guide.open;
-  if (guide.open) Object.assign($<HTMLAnchorElement>("agent-open"), { textContent: guide.open.label, href: guide.open.url(prompt) });
 }
 /** In the app, one click starts an agent in a terminal beside the game, installing it first when it is missing. */
 const buildRows = (desktop?.agents ?? []).map(({ id, name }) => {
@@ -2634,7 +2629,7 @@ async function openMenu() {
   }
   if (document.pointerLockElement) document.exitPointerLock();
   $("menu-world").textContent = world;
-  if (info.agents !== false) void loadPrompt();
+  if (info.agents !== false) void loadJoin();
   showBuilders();
   await refreshMenu();
 }

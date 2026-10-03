@@ -194,8 +194,8 @@
   .steps .copy-row { border: 0; min-height: 44px; }
   .steps li > small { display: block; margin-top: 4px; color: var(--dim); font: 500 14px/1.4 system-ui, sans-serif; }
   .steps a.quiet { display: inline-block; margin-top: 8px; color: var(--text); text-decoration: none; border-bottom: 1px solid var(--accent); padding: 6px 0; }
-  #agent-guide [data-copy=claude-prompt] { background: var(--text); color: #0b0b0c; padding: 12px 18px; min-width: 170px; text-align: center; }
-  #agent-guide [data-copy=claude-prompt]:hover, #agent-guide [data-copy=claude-prompt]:focus { background: var(--accent); color: #0b0b0c; }
+  #agent-guide [data-copy=agent-connect] { background: var(--text); color: #0b0b0c; padding: 12px 18px; min-width: 170px; text-align: center; }
+  #agent-guide [data-copy=agent-connect]:hover, #agent-guide [data-copy=agent-connect]:focus { background: var(--accent); color: #0b0b0c; }
   #voice-where a { color: var(--text); }
   .field em { font-style: normal; color: var(--dim); font-weight: 700; }
   @media (max-width: 760px) {
@@ -381,11 +381,12 @@
               <small id="agent-terminal"></small>
               <div class="copy-row" id="agent-install-row"><code id="agent-install"></code><button data-copy="agent-install">Copy</button></div>
               <a id="agent-download" class="quiet" target="_blank" rel="noopener"></a></li>
+            <li><b>Connect this computer</b>
+              <small id="agent-connect-how"></small>
+              <div class="copy-row"><code id="agent-connect"></code><button data-copy="agent-connect">Copy</button></div></li>
             <li><b id="agent-start-what"></b>
-              <div class="copy-row" id="agent-start-row"><code id="agent-start"></code><button data-copy="agent-start">Copy</button></div></li>
-            <li><b>Paste this prompt into it</b>
-              <div class="copy-row"><code id="claude-prompt"></code><button data-copy="claude-prompt">Copy prompt</button></div>
-              <a id="agent-open" class="quiet" href="codex://new" hidden></a></li>
+              <div class="copy-row" id="agent-start-row"><code id="agent-start"></code><button data-copy="agent-start">Copy</button></div>
+              <div class="copy-row"><code id="agent-prompt"></code><button data-copy="agent-prompt">Copy</button></div></li>
           </ol>
         </div>
       </div>

@@ -20,10 +20,10 @@ const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write
 const OUTSIDE = /^https:\/\/((console\.groq\.com|platform\.openai\.com|aistudio\.google\.com|elevenlabs\.io|console\.deepgram\.com)\/|(claude|chatgpt)\.com\/download$)/;
 /** The Agent page's Open in ChatGPT, which only types the prompt into a new Codex chat. */
 const AGENT_LINK = /^codex:\/\/new\?prompt=/;
-/** The agents this app starts in its own terminal, each from its maker's installer. The game asks only by id; what runs is decided here. */
+/** The agents this app starts in its own terminal, each from its maker's installer, in the world's folder where its allow rule for the world's command sits. The game asks only by id; what runs is decided here. */
 const AGENTS = {
-  "claude-code": { name: "Claude Code", maker: "Anthropic", bin: "claude", args: "--dangerously-skip-permissions", install: "curl -fsSL https://claude.ai/install.sh | bash" },
-  codex: { name: "Codex", maker: "OpenAI", bin: "codex", args: "--dangerously-bypass-approvals-and-sandbox", install: "curl -fsSL https://chatgpt.com/codex/install.sh | sh" },
+  "claude-code": { name: "Claude Code", maker: "Anthropic", bin: "claude", install: "curl -fsSL https://claude.ai/install.sh | bash" },
+  codex: { name: "Codex", maker: "OpenAI", bin: "codex", install: "curl -fsSL https://chatgpt.com/codex/install.sh | sh" },
 };
 
 /** An invite or personal link passed on the command line, e.g. `sandbox http://host:7777/#invite=…`. */
@@ -403,9 +403,9 @@ async function buildWith(id, key) {
     return true;
   }
   const base = worldBase(new URL(game.view.webContents.getURL()));
-  const res = await ask(`${base}/api/prompt?base=${encodeURIComponent(base)}`, String(key), 5000).catch(() => null);
+  const res = await fetch(`${base}/api/join-code?base=${encodeURIComponent(base)}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(5000) }).catch(() => null);
   if (!res?.ok) return res?.status === 403 ? "The host turned agents off for this world." : "The world didn't answer. Try again.";
-  const prompt = await res.text();
+  const { command, folder, prompt } = await res.json();
   const PATH = await terminalPath();
   const installed = PATH.split(delimiter).some((dir) => dir && existsSync(join(dir, kind.bin)));
   const { response } = await dialog.showMessageBox(win, {
@@ -414,7 +414,7 @@ async function buildWith(id, key) {
     defaultId: 0,
     cancelId: 1,
     message: `Build with ${kind.name}?`,
-    detail: `${installed ? "" : `Sandbox installs ${kind.name} with ${kind.maker}'s installer first. `}${kind.name} runs beside the game with permissions off, so it can run commands on this computer without asking. It builds in ${game.name} as you. Stop closes it.`,
+    detail: `${installed ? "" : `Sandbox installs ${kind.name} with ${kind.maker}'s installer first. `}Sandbox sets up ${folder} for ${game.name} and starts ${kind.name} there, beside the game. When it asks whether you trust that folder, say yes. It builds as you. Stop closes it.`,
   });
   if (response !== 0 || !game || agent) return false;
   const view = new WebContentsView({ webPreferences: { preload: join(__dirname, "agent-preload.cjs"), sandbox: true, contextIsolation: true } });
@@ -426,15 +426,13 @@ async function buildWith(id, key) {
     return { action: "deny" };
   });
   view.webContents.on("before-input-event", keys);
-  const dir = join(app.getPath("userData"), "agents", id);
-  mkdirSync(dir, { recursive: true });
-  const script = `${installed ? "" : `${kind.install} && `}exec ${kind.bin} ${kind.args} "$SANDBOX_PROMPT"`;
+  const script = `${installed ? "" : `${kind.install} && `}${command} && cd ${folder} && exec ${kind.bin} "$SANDBOX_PROMPT"`;
   agent = {
     view,
     name: kind.name,
     pty: null,
     start(cols, rows) {
-      const pty = (this.pty = require("node-pty").spawn("/bin/sh", ["-c", script], { name: "xterm-256color", cols, rows, cwd: dir, env: { ...process.env, PATH, TERM: "xterm-256color", SANDBOX_PROMPT: prompt } }));
+      const pty = (this.pty = require("node-pty").spawn("/bin/sh", ["-c", script], { name: "xterm-256color", cols, rows, cwd: homedir(), env: { ...process.env, PATH, TERM: "xterm-256color", SANDBOX_PROMPT: prompt } }));
       pty.onData((data) => view.webContents.send("agent-output", data));
       pty.onExit(() => {
         if (agent?.pty === pty && !view.webContents.isDestroyed()) view.webContents.send("agent-exit");
