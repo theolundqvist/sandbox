@@ -240,7 +240,7 @@ function startServer() {
     const log = openSync(logPath, "a");
     const from = statSync(logPath).size;
     const proc = spawn(BUN, [join(ENGINE, "engine/launcher.ts")], {
-      env: { ...process.env, PORT: String(port), SANDBOX_DATA: DATA, SANDBOX_NO_OPEN: "1", SANDBOX_EXIT_WITH_STDIN: "1", SANDBOX_RELAY: RELAY },
+      env: { ...process.env, PORT: String(port), SANDBOX_DATA: DATA, SANDBOX_NO_OPEN: "1", SANDBOX_EXIT_WITH_STDIN: "1", SANDBOX_RELAY: RELAY, SANDBOX_VERSION: app.getVersion() },
       stdio: ["pipe", log, log],
     });
     const exited = new Promise((resolve) => proc.once("exit", resolve));
