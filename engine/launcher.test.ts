@@ -147,7 +147,7 @@ test("worlds made without a name each get their own", async () => {
   const create = async () => (await fetch(`http://127.0.0.1:${LAUNCHER}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: "{}" })).json();
   await create();
   const { worlds } = await create();
-  const unnamed = worlds.filter((w: { name: string }) => !["Relay Test", "Link Test"].includes(w.name)).map((w: { name: string }) => w.name);
+  const unnamed = worlds.filter((w: { name: string }) => !["Relay Test", "Link Test", "Lock Test"].includes(w.name)).map((w: { name: string }) => w.name);
   expect(unnamed).toHaveLength(2);
   expect(new Set(unnamed).size).toBe(2);
   expect(unnamed).not.toContain("Sandbox");
