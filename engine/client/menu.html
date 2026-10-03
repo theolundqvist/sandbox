@@ -158,14 +158,19 @@
   const jump = new URLSearchParams(location.hash.slice(1));
   const inApp = navigator.userAgent.includes("SandboxDesktop");
   const leaveApp = () => window.sandboxDesktop.leave();
+  /** The menu has its own origin, 127.0.0.1, where no world's code ever runs; worlds play at localhost. Anywhere else this page only says whose menu it is. */
+  const atMenu = location.hostname === "127.0.0.1";
+  const game = `http://localhost:${location.port}`;
   const hashKey = jump.get("key");
   if (hashKey) {
-    localStorage.setItem("sandbox-menu", hashKey);
+    if (atMenu) localStorage.setItem("sandbox-menu", hashKey);
     history.replaceState(null, "", location.pathname);
   }
+  // A key an older version kept where worlds now play.
+  if (!atMenu) localStorage.removeItem("sandbox-menu");
   // On the host's own computer the launcher hands the key over, so the main menu needs no link there.
   const localKey = () => fetch("/api/local-key").then((r) => (r.ok ? r.json() : {})).then((r) => r.key ?? null, () => null);
-  const key = localStorage.getItem("sandbox-menu") ?? (await localKey());
+  const key = atMenu ? (localStorage.getItem("sandbox-menu") ?? (await localKey())) : null;
   let state = null;
   let selected = null;
 
@@ -280,7 +285,8 @@
 
   function render(s) {
     const r = s.running;
-    offerApp(`${r?.link.split("/#")[0] ?? location.origin}/menu#key=${key}`);
+    // The menu answers only on this computer, so the app opens it here.
+    offerApp(`${location.origin}/menu#key=${key}`);
     $("share-usage").set(s.shareUsage ? "on" : "off");
     $("no-worlds").hidden = !!s.worlds.length;
     // A name being typed stays while the state refreshes.
@@ -355,9 +361,10 @@
     $("configure-rules").set(w.rules);
   }
 
+  /** The host plays at the game's origin with the world's invite, like anyone; their game joins them as the host through the controls it frames from here. */
   const play = (s) => {
     stats.step("hosted");
-    location.assign(`./#invite=${s.running.hostKey}`);
+    location.assign(`${game}/#invite=${s.running.invite}`);
   };
   /** Hosts a world and plays it, unless the host would rather keep the one running; says whether it went ahead. */
   async function hostWorld(id, settings) {
@@ -458,15 +465,17 @@
     if (state.running && state.running.id !== selected && !(await ask(`Stop ${state.running.name}?`, "Stop and watch"))) return;
     await attempt(async () => {
       const s = state.running?.id === selected ? state : await api("host", { id: selected });
-      location.assign(`./#watch=${s.running.hostKey}`);
+      // A one-time pass to the host's view of this timelapse, never a key to the world.
+      const { token } = await lookup("watch", { id: s.running.id });
+      location.assign(`${game}/#watch=${token}`);
     });
   };
-  /** Sharing records a clip of the timelapse in the game, so the world is hosted first and opens on its Share page. */
+  /** Sharing records a clip of the timelapse in the game, so the world is hosted first and opens on its Share page, whose controls are a frame from here. */
   $("world-share").onclick = async () => {
     if (state.running && state.running.id !== selected && !(await ask(`Stop ${state.running.name}?`, "Stop and share"))) return;
     await attempt(async () => {
       const s = state.running?.id === selected ? state : await api("host", { id: selected });
-      location.assign(`./#invite=${s.running.hostKey}&share`);
+      location.assign(`${game}/#invite=${s.running.invite}&share`);
     });
   };
   $("world-stop").onclick = async () => (await ask(`Stop ${state.running.name}?`, "Stop")) && attempt(() => api("stop", {}));

@@ -43,19 +43,49 @@ afterAll(async () => {
 
 const localKey = (base: string, headers: Record<string, string> = {}) => fetch(`${base}/api/local-key`, { headers });
 
-test("loopback gets the host key, and the key opens the main menu", async () => {
-  for (const host of ["127.0.0.1", "localhost"]) {
-    const res = await localKey(`http://${host}:${LAUNCHER}`);
-    expect(res.status).toBe(200);
-    const { key } = await res.json();
-    const menu = await fetch(`http://${host}:${LAUNCHER}/api/menu/state`, { headers: { authorization: `Bearer ${key}` } });
-    expect(menu.status).toBe(200);
-  }
+test("the main menu's origin on this computer gets the host key, private to it, and the key opens the menu only there", async () => {
+  const res = await localKey(`http://127.0.0.1:${LAUNCHER}`);
+  expect(res.status).toBe(200);
+  expect([res.headers.get("cache-control"), res.headers.get("cross-origin-resource-policy"), res.headers.has("access-control-allow-origin")]).toEqual(["no-store", "same-origin", false]);
+  const { key } = await res.json();
+  const state = (base: string) => fetch(`${base}/api/menu/state`, { headers: { authorization: `Bearer ${key}` } });
+  expect((await state(`http://127.0.0.1:${LAUNCHER}`)).status).toBe(200);
+  // Worlds play at localhost: their code can't get the key there, nor use it.
+  expect((await localKey(`http://localhost:${LAUNCHER}`)).status).toBe(401);
+  expect((await state(`http://localhost:${LAUNCHER}`)).status).toBe(403);
 });
 
-test("loopback through a proxy, or under a foreign host name, is not the host", async () => {
-  for (const headers of <Record<string, string>[]>[{ "cf-connecting-ip": "203.0.113.9" }, { "x-forwarded-for": "203.0.113.9" }, { forwarded: "for=203.0.113.9" }, { "x-sandbox-relayed": "1" }, { host: "evil.example" }])
-    expect((await localKey(`http://127.0.0.1:${LAUNCHER}`, headers)).status).toBe(401);
+test("loopback through a proxy, under a foreign host name, or asked by another site's page, is not the host", async () => {
+  const cases: Record<string, string>[] = [
+    { "cf-connecting-ip": "203.0.113.9" },
+    { "x-forwarded-for": "203.0.113.9" },
+    { forwarded: "for=203.0.113.9" },
+    { "x-sandbox-relayed": "1" },
+    { host: "evil.example" },
+    { "sec-fetch-site": "cross-site" },
+    { "sec-fetch-site": "same-site" },
+    { origin: `http://localhost:${LAUNCHER}` },
+  ];
+  for (const headers of cases) expect((await localKey(`http://127.0.0.1:${LAUNCHER}`, headers)).status).toBe(401);
+});
+
+test("the menu's origin never serves a world, and the game's sends the host on this computer to it", async () => {
+  const menu = await hostMenu();
+  await menu("create", { name: "Origin Test", start: "blank" });
+  expect((await fetch(`http://localhost:${LAUNCHER}/`)).status).toBe(200);
+  for (const path of ["/", "/client.js", "/api/info", "/build/", "/assets/basics/x.png"]) expect((await fetch(`http://127.0.0.1:${LAUNCHER}${path}`, { redirect: "manual" })).status).not.toBe(200);
+  const ws = new WebSocket(`ws://127.0.0.1:${LAUNCHER}/ws`);
+  const outcome = Promise.withResolvers<string>();
+  ws.onopen = () => outcome.resolve("open");
+  ws.onerror = () => outcome.resolve("refused");
+  expect(await outcome.promise).toBe("refused");
+  const sent = await fetch(`http://localhost:${LAUNCHER}/menu`, { redirect: "manual" });
+  expect([sent.status, sent.headers.get("location")]).toEqual([302, `http://127.0.0.1:${LAUNCHER}/menu`]);
+  // The menu runs only its own scripts, framed by no one; its controls frame only in the game.
+  const policy = (await fetch(`http://127.0.0.1:${LAUNCHER}/menu`)).headers.get("content-security-policy") ?? "";
+  expect([/script-src 'self'( 'sha256-[\w+/=]+')+;/.test(policy), policy.includes("frame-ancestors 'none'")]).toEqual([true, true]);
+  expect((await fetch(`http://127.0.0.1:${LAUNCHER}/host`)).headers.get("content-security-policy")).toEndWith(`frame-ancestors http://localhost:${LAUNCHER}`);
+  await menu("stop", {});
 });
 
 test("a LAN address is not the host", async () => {
@@ -96,8 +126,8 @@ test("a hosted world has one invite link, the same when hosted again, and a Wi-F
   const again = await menu("host", { id: s.running.id });
   expect(again.running.link).toBe(link);
 
-  const { key } = await (await fetch(`http://127.0.0.1:${LAUNCHER}/api/join`, { method: "POST", body: JSON.stringify({ invite, name: "linker" }) })).json();
-  const player = new WebSocket(`ws://127.0.0.1:${LAUNCHER}/ws?key=${key}`);
+  const { key } = await (await fetch(`http://localhost:${LAUNCHER}/api/join`, { method: "POST", body: JSON.stringify({ invite, name: "linker" }) })).json();
+  const player = new WebSocket(`ws://localhost:${LAUNCHER}/ws?key=${key}`);
   const received: any[] = [];
   player.onmessage = ({ data }) => received.push(JSON.parse(String(data)));
   const welcome = await until("the welcome", async () => received.find((m) => m.t === "welcome"));
@@ -147,11 +177,36 @@ test("worlds made without a name each get their own", async () => {
   const create = async () => (await fetch(`http://127.0.0.1:${LAUNCHER}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: "{}" })).json();
   await create();
   const { worlds } = await create();
-  const unnamed = worlds.filter((w: { name: string }) => !["Relay Test", "Link Test", "Lock Test"].includes(w.name)).map((w: { name: string }) => w.name);
+  const unnamed = worlds.filter((w: { name: string }) => !["Relay Test", "Origin Test", "Link Test", "Lock Test", "Controls Test", "Other Controls Test"].includes(w.name)).map((w: { name: string }) => w.name);
   expect(unnamed).toHaveLength(2);
   expect(new Set(unnamed).size).toBe(2);
   expect(unnamed).not.toContain("Sandbox");
-});
+}, 30_000);
+
+test("the host's controls join them as the host, watch by a one-time pass, picture only the running world, and never hand out its host key", async () => {
+  const menu = await hostMenu();
+  const s = await menu("create", { name: "Controls Test", start: "blank" });
+  const hostKey = worldHostKey(join(dir, "data"), s.running.id);
+  const joined = await menu("join", { id: s.running.id, name: "hosty" });
+  expect([joined.status, joined.name, joined.key === hostKey]).toEqual([200, "hosty", false]);
+  // Once the world has its host, a new name from the controls joins as a player and never takes the role.
+  const other = await menu("join", { id: s.running.id, name: "intruder" });
+  expect([other.status, other.name, JSON.parse(readFileSync(join(dir, "data", "worlds", s.running.id, "config.json"), "utf8")).host]).toEqual([200, "intruder", "hosty"]);
+  // The host key opens nothing from a link: a game page, where mods run, never needs it.
+  expect((await fetch(`http://localhost:${LAUNCHER}/api/join`, { method: "POST", body: JSON.stringify({ name: "mallory", invite: hostKey }) })).status).toBe(403);
+  // Controls opened for a world that isn't running any more act on nothing.
+  const stale = await menu("join", { id: "gone-world", name: "hosty" });
+  expect("key" in stale).toBe(false);
+  const { token } = await menu("watch", { id: s.running.id });
+  const watch = () => fetch(`http://localhost:${LAUNCHER}/api/timelapse`, { headers: { authorization: `Bearer ${token}` } });
+  expect([(await watch()).status, (await watch()).status]).toEqual([200, 401]);
+  expect([token === hostKey, JSON.stringify(await menu("state")).includes(hostKey)]).toEqual([false, false]);
+  await menu("stop", {});
+  await menu("create", { name: "Other Controls Test", start: "blank" });
+  await menu(`cover?id=${s.running.id}`, new Uint8Array([0xff, 0xd8, 0xff, 0xd9]));
+  expect(existsSync(join(dir, "data", "worlds", s.running.id, "cover.jpg"))).toBe(false);
+  await menu("stop", {});
+}, 30_000);
 
 test("a computer without git hosts worlds, reloads mods, and says history needs Git", async () => {
   // Only bun on the PATH: any git call would fail to spawn and stop the world.
@@ -166,11 +221,11 @@ test("a computer without git hosts worlds, reloads mods, and says history needs 
   const { key } = await (await localKey(`http://127.0.0.1:${port}`)).json();
   const s = await (await fetch(`http://127.0.0.1:${port}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ name: "No Git", start: "basics" }) })).json();
   expect(s.running?.name).toBe("No Git");
-  const player = await (await fetch(`http://127.0.0.1:${port}/api/join`, { method: "POST", body: JSON.stringify({ invite: s.running.invite, name: "builder" }) })).json();
+  const player = await (await fetch(`http://localhost:${port}/api/join`, { method: "POST", body: JSON.stringify({ invite: s.running.invite, name: "builder" }) })).json();
   const tool = (name: string, args: Record<string, string>) => {
     const form = new FormData();
     for (const [k, v] of Object.entries(args)) form.append(k, v);
-    return fetch(`http://127.0.0.1:${port}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: form });
+    return fetch(`http://localhost:${port}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: form });
   };
   const reload = await tool("reload", { mod: "basics" });
   expect(reload.status).toBe(200);
@@ -235,8 +290,10 @@ test("the host pastes a speech key from any provider: recognised by its shape or
   const secrets = join(data, "secrets.json");
   expect(JSON.parse(readFileSync(secrets, "utf8"))).toEqual({ voice: { provider: "ElevenLabs", key: keys.ElevenLabs, host: `http://127.0.0.1:${stt.server.port}` } });
 
-  const player = await (await fetch(`${base}/api/join`, { method: "POST", body: JSON.stringify({ invite: s.running.invite, name: "talker", host: s.running.hostKey }) })).json();
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?key=${player.key}`);
+  // The host's game joins through their controls, which keep the world's host key.
+  const player = await (await menu("join", { id: s.running.id, name: "talker" })).json();
+  const game = `http://localhost:${port}`;
+  const ws = new WebSocket(`ws://localhost:${port}/ws?key=${player.key}`);
   const got: any[] = [];
   ws.onmessage = (e) => got.push(JSON.parse(String(e.data)));
   const next = async (t: string) => {
@@ -247,8 +304,8 @@ test("the host pastes a speech key from any provider: recognised by its shape or
     throw new Error(`no ${t}`);
   };
   expect(await next("welcome")).toMatchObject({ voice: true, host: "talker" });
-  const speak = () => fetch(`${base}/api/voice`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: new Blob([new Uint8Array(2000)], { type: "audio/wav" }) });
-  const status = async () => (await (await fetch(`${base}/api/status`, { headers: { authorization: `Bearer ${player.key}` } })).json()).voice;
+  const speak = () => fetch(`${game}/api/voice`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: new Blob([new Uint8Array(2000)], { type: "audio/wav" }) });
+  const status = async () => (await (await fetch(`${game}/api/status`, { headers: { authorization: `Bearer ${player.key}` } })).json()).voice;
 
   for (const [provider, pasted] of Object.entries(keys)) {
     stt.checked.length = 0;
@@ -288,7 +345,7 @@ test("the host pastes a speech key from any provider: recognised by its shape or
   launcher.kill();
   stt.server.stop(true);
   const printed = (await new Response(launcher.stdout).text()) + (await new Response(launcher.stderr).text());
-  for (const k of ["gsk_test_groq_key", "sk-proj-test_openai_key", "AIzaTest_gemini_key", "sk_test_elevenlabs_key", "plain-key-no-provider-shape"]) expect(printed).not.toContain(k);
+  for (const k of ["gsk_test_groq_key", "sk-proj-test_openai_key", "AIzaTest_gemini_key", "sk_test_elevenlabs_key", "plain-key-no-provider-shape"]) expect(printed.includes(k)).toBe(false);
 }, 60_000);
 
 // It finds the world's process in /proc.
@@ -297,13 +354,13 @@ test.skipIf(process.platform !== "linux")("a world that crashes is hosted again 
   const data = join(dir, "crashy");
   const launcher = Bun.spawn(["bun", join(import.meta.dir, "launcher.ts")], { env: { ...env, PORT: String(port), SANDBOX_DATA: data, SANDBOX_NO_OPEN: "1" }, stdout: "ignore", stderr: "ignore" });
   procs.push(launcher);
-  const base = `http://127.0.0.1:${port}`;
-  await up(`${base}/menu`);
-  const { key } = await (await localKey(base)).json();
-  const s = await (await fetch(`${base}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ name: "Crashy", start: "basics" }) })).json();
+  const menu = `http://127.0.0.1:${port}`;
+  const base = `http://localhost:${port}`;
+  await up(`${menu}/menu`);
+  const { key } = await (await localKey(menu)).json();
+  const s = await (await fetch(`${menu}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ name: "Crashy", start: "basics" }) })).json();
   const player = await (await fetch(`${base}/api/join`, { method: "POST", body: JSON.stringify({ invite: s.running.invite, name: "stayer" }) })).json();
-  const world = () => Number(readdirSync(`/proc/${launcher.pid}/task`).flatMap((t) => readFileSync(`/proc/${launcher.pid}/task/${t}/children`, "utf8").trim().split(" ")).find(Boolean));
-  const first = world();
+  const first = worldPid(launcher);
   const reload = new FormData();
   reload.append("mod", "basics");
   expect((await fetch(`${base}/cli/reload`, { method: "POST", headers: { authorization: `Bearer ${player.key}` }, body: reload })).status).toBe(200);
@@ -322,29 +379,31 @@ test.skipIf(process.platform !== "linux")("a world that crashes is hosted again 
   for (let i = 0; i < 100 && !welcome; i++) {
     await Bun.sleep(200);
     welcome = await new Promise((resolve) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?key=${player.key}`);
+      const ws = new WebSocket(`ws://localhost:${port}/ws?key=${player.key}`);
       ws.onmessage = (e) => (resolve(JSON.parse(String(e.data))), ws.close());
       ws.onclose = ws.onerror = () => resolve(null);
     });
   }
   expect(welcome?.t).toBe("welcome");
   expect(welcome.feed.map((f: { text: string }) => f.text)).toContain("The world crashed and restarted by itself without the last change to basics. Anything from the last few seconds before the crash may be gone.");
-  expect(world()).not.toBe(first);
+  expect(worldPid(launcher)).not.toBe(first);
   const log = readFileSync(join(data, "worlds", s.running.id, "world.log"), "utf8");
   expect(log.match(/Crashy is running/g)).toHaveLength(2);
   expect(log).toMatch(/\[launcher\] exited with SIGABRT after \d+ s\. Last sample \d+ s ago: \d+ MB RSS, \d+ MB heap\. Last reload \d+ s ago: basics by stayer, v\d+\.\n/);
   launcher.kill();
 }, 60_000);
-test("a world that crashes within a minute of a reload comes back without that reload, tells its Claude why, and no log holds the host key", async () => {
+// It finds the world's process in /proc.
+test.skipIf(process.platform !== "linux")("a world that crashes within a minute of a reload comes back without that reload, tells its Claude why, and no log holds the host key", async () => {
   const port = LAUNCHER + 750;
   const data = join(dir, "reverty");
   const launcher = Bun.spawn(["bun", join(import.meta.dir, "launcher.ts")], { env: { ...env, PORT: String(port), SANDBOX_DATA: data, SANDBOX_NO_OPEN: "1" }, stdout: "pipe", stderr: "pipe" });
   procs.push(launcher);
   const output = Promise.all([new Response(launcher.stdout).text(), new Response(launcher.stderr).text()]);
-  const base = `http://127.0.0.1:${port}`;
-  await up(`${base}/menu`);
-  const { key } = await (await localKey(base)).json();
-  const s = await (await fetch(`${base}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ name: "Reverty", start: "blank" }) })).json();
+  const menu = `http://127.0.0.1:${port}`;
+  const base = `http://localhost:${port}`;
+  await up(`${menu}/menu`);
+  const { key } = await (await localKey(menu)).json();
+  const s = await (await fetch(`${menu}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ name: "Reverty", start: "blank" }) })).json();
   const player = await (await fetch(`${base}/api/join`, { method: "POST", body: JSON.stringify({ invite: s.running.invite, name: "builder" }) })).json();
   const call = async (name: string, args: Record<string, string>) => {
     const form = new FormData();
@@ -355,9 +414,10 @@ test("a world that crashes within a minute of a reload comes back without that r
   mkdirSync(join(serverTs, ".."), { recursive: true });
   writeFileSync(serverTs, `export default { tick() {} };`);
   expect(await call("reload", { mod: "wobbly" })).toStartWith("wobbly v1 is live");
-  // A test run lasts 20 ticks, so only the live world is still running when this goes off.
-  writeFileSync(serverTs, `export default { load() { setTimeout(() => process.kill(process.pid, "SIGKILL"), 2500); } };`);
+  // A mod that crashes stops only its own simulation's process, so here the world's own process dies right after the reload.
+  writeFileSync(serverTs, `export default { load() {}, tick() {} };`);
   expect(await call("reload", { mod: "wobbly" })).toStartWith("wobbly v2 is live");
+  process.kill(worldPid(launcher), "SIGKILL");
 
   let status: any;
   for (let i = 0; i < 100 && status?.mods?.[0]?.version !== 3; i++) {
@@ -373,8 +433,8 @@ test("a world that crashes within a minute of a reload comes back without that r
   launcher.kill();
   const [stdout, stderr] = await output;
   const worldLog = readFileSync(join(data, "worlds", s.running.id, "world.log"), "utf8");
-  for (const secret of [key, s.running.hostKey]) for (const text of [stdout, stderr, worldLog]) expect(text).not.toContain(secret);
-  expect(stdout).toContain(`Main menu: http://localhost:${port}/menu`);
+  for (const secret of [key, worldHostKey(data, s.running.id)]) for (const text of [stdout, stderr, worldLog]) expect(text.includes(secret)).toBe(false);
+  expect(stdout.includes(`Main menu: ${menu}/menu`)).toBe(true);
 }, 60_000);
 const hostMenu = async () => {
   const { key } = await (await localKey(`http://127.0.0.1:${LAUNCHER}`)).json();
@@ -383,11 +443,11 @@ const hostMenu = async () => {
     return action === "export" && res.ok ? res : { status: res.status, ...(await res.json()) };
   };
 };
-const joinAs = async (name: string, invite: string) => (await (await fetch(`http://127.0.0.1:${LAUNCHER}/api/join`, { method: "POST", body: JSON.stringify({ name, invite }) })).json()).key as string;
+const joinAs = async (name: string, invite: string) => (await (await fetch(`http://localhost:${LAUNCHER}/api/join`, { method: "POST", body: JSON.stringify({ name, invite }) })).json()).key as string;
 async function tool(key: string, name: string, args: Record<string, unknown> = {}) {
   const form = new FormData();
   for (const [k, v] of Object.entries(args)) form.append(k, typeof v === "string" ? v : JSON.stringify(v));
-  const res = await fetch(`http://127.0.0.1:${LAUNCHER}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form });
+  const res = await fetch(`http://localhost:${LAUNCHER}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form });
   const text = await res.text();
   if (!res.ok) throw new Error(`${name}: ${text}`);
   return text;
@@ -395,6 +455,10 @@ async function tool(key: string, name: string, args: Record<string, unknown> = {
 /** A tool's JSON result, without the chat appended after it. */
 const answer = (text: string) => JSON.parse(text.split("\n\n")[0]!);
 const worldDir = (id: string) => join(dir, "data/worlds", id);
+/** A world's own host key, which only its launcher holds: never in the menu's answers. */
+const worldHostKey = (data: string, id: string) => JSON.parse(readFileSync(join(data, "worlds", id, "config.json"), "utf8")).hostKey as string;
+/** The world a launcher hosts: the process it started. */
+const worldPid = (launcher: Subprocess) => Number(readdirSync(`/proc/${launcher.pid}/task`).flatMap((t) => readFileSync(`/proc/${launcher.pid}/task/${t}/children`, "utf8").trim().split(" ")).find(Boolean));
 const count = (path: string, sql: string) => {
   const db = new Database(path, { readonly: true });
   try {
@@ -407,7 +471,9 @@ const count = (path: string, sql: string) => {
 test("a world exported while it runs imports as a new world with its mods, history and state, and none of its secrets", async () => {
   const menu = await hostMenu();
   const created = await menu("create", { name: "Export Test", rules: "additive" });
-  const { id, invite, hostKey } = created.running;
+  const { id, invite } = created.running;
+  const hostKey = worldHostKey(join(dir, "data"), id);
+  expect("hostKey" in created.running).toBe(false);
   const alice = await joinAs("alice", invite);
   const note = `import type { ServerMod } from "../../api";
 export default {
@@ -511,10 +577,11 @@ export default {
   expect(saved(arenaSave)[1]).toHaveLength(2);
   expect(existsSync(join(worldDir(copy.id), "games/arena/game.log"))).toBe(false);
   const hosted = await menu("host", { id: copy.id });
-  expect(hosted.running.hostKey).not.toBe(hostKey);
+  const copyHostKey = worldHostKey(join(dir, "data"), copy.id);
+  expect(copyHostKey === hostKey).toBe(false);
   expect(hosted.running.invite).not.toBe(invite);
   expect(hosted.running.players).toEqual([]);
-  expect((await fetch(`http://127.0.0.1:${LAUNCHER}/api/join`, { method: "POST", body: JSON.stringify({ name: "mallory", invite: hostKey }) })).status).toBe(403);
+  expect((await fetch(`http://localhost:${LAUNCHER}/api/join`, { method: "POST", body: JSON.stringify({ name: "mallory", invite: hostKey }) })).status).toBe(403);
   // alice comes back under her name with a new key, and still owns her mod.
   const again = await joinAs("alice", hosted.running.invite);
   expect(again).not.toBe(alice);
@@ -529,7 +596,7 @@ export default {
   const loadsNow = async () => answer(await tool(again, "query_db", { mod: "note", sql: "select count(*) n from loads" }));
   for (let i = 0; i < 40 && (await loadsNow())[0].n === loads; i++) await Bun.sleep(50);
   expect(await loadsNow()).toEqual([{ n: loads + 1 }]);
-  const activity = await (await fetch(`http://127.0.0.1:${LAUNCHER}/api/host/activity?kind=tool&summary=false&minutes=10`, { headers: { authorization: `Bearer ${hosted.running.hostKey}` } })).json();
+  const activity = await (await fetch(`http://localhost:${LAUNCHER}/api/host/activity?kind=tool&summary=false&minutes=10`, { headers: { authorization: `Bearer ${copyHostKey}` } })).json();
   expect(activity.some((r: any) => r.who === "alice" && r.data.tool === "reload")).toBe(true);
   await menu("stop", {});
 

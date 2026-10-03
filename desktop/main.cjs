@@ -62,6 +62,8 @@ const state = { recents: [], labels: {}, hosts: {}, mic: [], worldKeys: {}, cred
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
 } catch {}
+// Main menus opened on this computer before they had an origin of their own answer only there now.
+for (const [key, base] of Object.entries(state.hosts)) state.hosts[key] = menuBase(base);
 const save = () => writeFileSync(STATE, JSON.stringify(state, null, 2));
 
 /** Names are what worlds accept: 2–16 lowercase letters, digits, - or _. */
@@ -106,14 +108,18 @@ function keys(event, input) {
 
 /** The world's address: the host's origin, plus /r/<room> when it is reached through the relay. */
 const worldBase = (url) => url.origin + (url.pathname.match(/^\/r\/[a-z0-9-]+/)?.[0] ?? "");
+/** A launcher on this computer serves its worlds at localhost and its main menu at 127.0.0.1, on the same port: one place, whose menu is at the second. */
+function menuBase(base) {
+  return base.replace(/^http:\/\/localhost:/, "http://127.0.0.1:");
+}
 
 /** Saves a world the player went into, and unless they only watch its timelapse, makes it the last one played: a world this computer hosts by its entry in Worlds, a joined one by its address. */
 async function remember(base, played = true) {
   const info = await session.defaultSession.fetch(`${base}/api/info`).then((r) => r.json()).catch(() => null);
   const name = state.labels[base] ?? info?.name ?? state.recents.find((r) => r.url === base)?.name ?? new URL(base).host;
   state.recents = [{ url: base, name, at: Date.now() }, ...state.recents.filter((r) => r.url !== base)].slice(0, 8);
-  const host = server?.base === base ? "local" : Object.entries(state.hosts).find(([key, b]) => b === base && key !== ownKey())?.[0];
-  if (played && (!host || info?.id)) state.last = host === "local" ? `local:${info.id}` : host ? `${base}/menu#key=${host}&world=${info.id}` : base;
+  const host = server?.base === base ? "local" : Object.entries(state.hosts).find(([key, b]) => b === menuBase(base) && key !== ownKey())?.[0];
+  if (played && (!host || info?.id)) state.last = host === "local" ? `local:${info.id}` : host ? `${menuBase(base)}/menu#key=${host}&world=${info.id}` : base;
   save();
   if (game) {
     game.name = name;
@@ -149,7 +155,10 @@ function play(raw) {
   // Lets the web client skip its "get the desktop app" offer.
   wc.setUserAgent(`${wc.getUserAgent()} SandboxDesktop`);
   const stayHome = (event, to) => {
-    if (new URL(to).origin !== url.origin) event.preventDefault();
+    if (OUTSIDE.test(to)) {
+      event.preventDefault();
+      void desktop.openExternal(to);
+    } else if (menuBase(new URL(to).origin) !== menuBase(url.origin)) event.preventDefault();
   };
   wc.on("will-navigate", stayHome);
   wc.on("will-redirect", stayHome);
@@ -167,7 +176,7 @@ function play(raw) {
     // The relay's own pages, like its join page, are not a world.
     const relayPage = u.origin === new URL(RELAY).origin && !u.pathname.startsWith("/r/");
     if (u.pathname.endsWith("/menu")) {
-      if (key) hostSeen(key, worldBase(u));
+      if (key) hostSeen(key, menuBase(worldBase(u)));
     } else if (!relayPage) void remember(worldBase(u), !hash.has("watch"));
   });
   wc.on("did-fail-load", (_, code, description, _url, mainFrame) => {
@@ -198,8 +207,8 @@ function waitFor(url) {
 
 const DATA = join(app.getPath("userData"), "data");
 const usage = require("./usage.cjs")(DATA, app.getVersion());
-/** @type {{ proc: import("node:child_process").ChildProcess, base: string, key: string } | null} */ let server = null;
-/** @type {Promise<{ base: string, key: string }> | null} */ let starting = null;
+/** @type {{ proc: import("node:child_process").ChildProcess, base: string, menu: string, key: string } | null} The game server this app runs: its worlds at `base`, its main menu at `menu`. */ let server = null;
+/** @type {Promise<{ base: string, menu: string, key: string }> | null} */ let starting = null;
 
 const portFree = (port) =>
   new Promise((resolve) => {
@@ -251,11 +260,12 @@ function startServer() {
     let failed = null;
     proc.once("error", (e) => (failed = e));
     const base = `http://localhost:${port}`;
+    const menu = menuBase(base);
     for (const until = Date.now() + 20000; Date.now() < until; await new Promise((r) => setTimeout(r, 200))) {
       if (failed || proc.exitCode !== null || proc.signalCode) break;
-      const local = await ask(`${base}/api/local-key`, null, 500).then((r) => (r.ok ? r.json() : null), () => null);
+      const local = await ask(`${menu}/api/local-key`, null, 500).then((r) => (r.ok ? r.json() : null), () => null);
       if (!local) continue;
-      server = { proc, base, key: local.key };
+      server = { proc, base, menu, key: local.key };
       void exited.then(() => {
         console.log(`The game server stopped (${proc.signalCode ?? `code ${proc.exitCode}`}).`);
         if (server?.proc === proc) server = null;
@@ -270,16 +280,16 @@ function startServer() {
 
 /** Hosts a world of this computer's: opens its screen in the main menu here; the launcher shares whatever it hosts through the relay. */
 async function hostGame(target) {
-  const { base, key } = await startServer();
+  const { menu, key } = await startServer();
   const screen = { new: "screen=create", community: "screen=community" }[target] ?? `world=${target}`;
-  return play(`${base}/menu#key=${key}&${screen}`);
+  return play(`${menu}/menu#key=${key}&${screen}`);
 }
 
 /** Starts this app's server again after a restart: the launcher brings back the world it hosted, under the same link. */
 async function resumeHosting() {
-  const { base, key } = await startServer();
+  const { menu, key } = await startServer();
   for (const until = Date.now() + 10000; Date.now() < until; await new Promise((r) => setTimeout(r, 250))) {
-    const s = await ask(`${base}/api/menu/state`, key).then((r) => r.json(), () => null);
+    const s = await ask(`${menu}/api/menu/state`, key).then((r) => r.json(), () => null);
     if (s?.running) return;
   }
 }
@@ -331,8 +341,8 @@ async function community(path, { method = "GET", body } = {}) {
 }
 /** A menu action on this app's own launcher. */
 async function menu(action, body) {
-  const { base, key } = await startServer();
-  const res = await fetch(`${base}/api/menu/${action}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
+  const own = await startServer();
+  const res = await fetch(`${own.menu}/api/menu/${action}`, { method: "POST", headers: { authorization: `Bearer ${own.key}` }, body: JSON.stringify(body) });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error);
   return data;
@@ -421,7 +431,7 @@ async function unpublishWorld(id) {
   return null;
 }
 /** Only the world this app is hosting and playing may ask to publish itself. */
-const hostState = () => server && ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null);
+const hostState = () => server && ask(`${server.menu}/api/menu/state`, server.key).then((r) => r.json(), () => null);
 async function hostingHere(event, id) {
   return event.sender === game?.view.webContents && (await hostState())?.running?.id === id;
 }
@@ -673,7 +683,7 @@ const ask = (url, key, ms = 1500) => fetch(url, { headers: key ? { authorization
 /** The start screen's worlds: this app's own, each other launcher's whose main menu was opened here, through its relay address when it shares, and the worlds joined; and the one last played. */
 async function games() {
   const own = ownKey();
-  const ownState = server && (await ask(`${server.base}/api/menu/state`, server.key).then((r) => r.json(), () => null));
+  const ownState = server && (await ask(`${server.menu}/api/menu/state`, server.key).then((r) => r.json(), () => null));
   const menus = await Promise.all(
     Object.entries(state.hosts).map(async ([key, base]) => {
       if (key === own) return { key, base, s: null };
@@ -703,16 +713,19 @@ async function games() {
   };
 }
 
+let leaveTimeout = null;
 /** Games closing, which may still send the picture they take as they go. */
 const left = new WeakSet();
 function leave() {
+  clearTimeout(leaveTimeout);
+  leaveTimeout = null;
   clearTimeout(waiting);
   waiting = null;
   stopAgent();
   if (!game) return;
   void beatNow();
   win.contentView.removeChildView(game.view);
-  // Closing as a browser tab would lets the page finish: the game sends its world's picture as it goes.
+  // A game that answered the shell's Leave already sent its picture; any other may still send it as it goes, the way closing a browser tab would let it.
   left.add(game.view.webContents);
   game.view.webContents.close({ waitForBeforeUnload: true });
   game = null;
@@ -892,8 +905,8 @@ app.whenReady().then(() => {
     if (!fromShell(event)) return null;
     const own = String(url).match(/^local:(.+)$/)?.[1];
     if (own) {
-      const { base, key } = await startServer();
-      const res = await fetch(`${base}/api/menu/delete`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ id: own }) });
+      const { menu, key } = await startServer();
+      const res = await fetch(`${menu}/api/menu/delete`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ id: own }) });
       return res.ok ? null : (await res.json()).error;
     }
     state.recents = state.recents.filter((r) => r.url !== url);
@@ -922,7 +935,15 @@ app.whenReady().then(() => {
   });
   // The game joins every world as this name, without asking again.
   ipcMain.on("player-name", (event) => (event.returnValue = event.sender === game?.view.webContents ? (state.name ?? null) : null));
-  ipcMain.on("leave", (event) => (fromShell(event) || event.sender === game?.view.webContents) && leave());
+  ipcMain.on("leave", (event) => {
+    if (!fromShell(event) && event.sender !== game?.view.webContents) return;
+    if (fromShell(event) && game && !/\/menu(?:[?#]|$)/.test(game.view.webContents.getURL())) {
+      // The host's picture travels through its trusted frame, so the game leaves by itself once that frame has saved it; a page that never asked to be told leaves at once (game-preload.cjs), and one that doesn't answer still leaves.
+      game.view.webContents.send("request-leave");
+      clearTimeout(leaveTimeout);
+      leaveTimeout = setTimeout(leave, 4000);
+    } else leave();
+  });
   ipcMain.handle("version", () => app.getVersion());
   ipcMain.handle("update", (event) => (fromShell(event) || event.sender === game?.view.webContents) && install());
   ipcMain.on("quit", (event) => fromShell(event) && app.quit());

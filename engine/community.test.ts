@@ -2,16 +2,16 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { SQL } from "bun";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { unzipSync } from "fflate";
-import { startStack } from "../community/server/stack";
+import { startStack, type CommunityStack } from "../community/server/stack";
 
 const dir = mkdtempSync(join(tmpdir(), "sandbox-community-"));
 const procs: Subprocess[] = [];
-let stack: Awaited<ReturnType<typeof startStack>>;
+let stack: CommunityStack;
 let COMMUNITY: string;
 /** ElevenLabs for both Community's free voice (its key is "community-key") and a host's own key: it says what it heard and who paid. */
 const MP3 = new Uint8Array([0xff, 0xfb, 7, 7]);
@@ -36,7 +36,8 @@ const env = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([
 const COVER = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]).toString("base64");
 const CLIP = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 4, 5, 6]).toString("base64");
 
-type Launcher = { base: string; key: string; data: string };
+/** The main menu answers at 127.0.0.1; the game, where worlds' code runs, at localhost. */
+type Launcher = { base: string; game: string; key: string; data: string };
 const menu = async (l: Launcher, action: string, body?: object) => {
   const res = await fetch(`${l.base}/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${l.key}` }, body: body && JSON.stringify(body) });
   return { status: res.status, ...(await res.json()) };
@@ -48,7 +49,7 @@ async function launcher(name: string): Promise<Launcher> {
   procs.push(Bun.spawn(["bun", join(import.meta.dir, "launcher.ts")], { env: { ...env(), PORT: String(port), SANDBOX_DATA: data }, stdout: "ignore" }));
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 100 && !(await fetch(`${base}/menu`).then(() => true, () => false)); i++) await Bun.sleep(100);
-  return { base, data, key: (await (await fetch(`${base}/api/local-key`)).json()).key };
+  return { base, game: `http://localhost:${port}`, data, key: (await (await fetch(`${base}/api/local-key`)).json()).key };
 }
 
 /** What the desktop app does with its account's session: the launcher stages the pack, the app publishes it and hands the uploads back. */
@@ -168,17 +169,22 @@ test("a shared world goes up as its export, comes down on another computer as a 
 
 test("a host without a voice key gets free voice from Community, counted against their computer, and their own key goes around it", async () => {
   const secrets = join(ana.data, "secrets.json");
+  // The launcher signs up, and the world transcribes after answering, in processes of their own: these polls wait for what they leave behind.
   for (let i = 0; i < 100 && !existsSync(secrets); i++) await Bun.sleep(100);
   const { install } = JSON.parse(readFileSync(secrets, "utf8"));
   expect(install.host).toBe(COMMUNITY);
   expect(await menu(ana, "free-voice")).toEqual({ status: 200, used: 0, of: 1 });
 
   const created = await menu(ana, "create", { name: "Voice Keep", start: "blank" });
-  const player = await (await fetch(`${ana.base}/api/join`, { method: "POST", body: JSON.stringify({ invite: created.running.invite, name: "ana", host: created.running.hostKey }) })).json();
+  const id = created.running.id;
+  // The host's game joins through their controls, which keep the world's host key.
+  const player = await menu(ana, "join", { id, name: "ana" });
   const auth = { authorization: `Bearer ${player.key}` };
-  expect((await (await fetch(`${ana.base}/api/status`, { headers: auth })).json()).voice).toStartWith("on");
+  const status = await (await fetch(`${ana.game}/api/status`, { headers: auth })).json();
+  expect(status.voice).toStartWith("on");
+  expect(JSON.stringify(status)).not.toContain(install.token);
   const speak = async (text: string, headers: Record<string, string> = auth) => {
-    const res = await fetch(`${ana.base}/api/speak`, { method: "POST", headers, body: JSON.stringify({ text }) });
+    const res = await fetch(`${ana.game}/api/speak`, { method: "POST", headers, body: JSON.stringify({ text }) });
     return { status: res.status, ...(res.status === 401 ? {} : await res.json()) };
   };
   const used = async () => (await (await fetch(`${COMMUNITY}/ai/usage`, { headers: { authorization: `Bearer ${install.token}` } })).json()).used;
@@ -188,7 +194,7 @@ test("a host without a voice key gets free voice from Community, counted against
   expect(first.url).toMatch(/^\/speech\/[0-9a-f]{64}\.mp3$/);
   const [a, b, again] = await Promise.all([speak("Lava rises."), speak("Lava rises."), speak("Round two!")]);
   expect([a.url, again.url]).toEqual([b.url, first.url]);
-  const mp3 = await fetch(`${ana.base}${first.url}`);
+  const mp3 = await fetch(`${ana.game}${first.url}`);
   expect(mp3.headers.get("content-type")).toBe("audio/mpeg");
   expect(new Uint8Array(await mp3.arrayBuffer())).toEqual(MP3);
   expect(elevenLabs.spoken).toEqual([{ key: "community-key", text: "Round two!" }, { key: "community-key", text: "Lava rises." }]);
@@ -196,7 +202,7 @@ test("a host without a voice key gets free voice from Community, counted against
   expect((await speak("Hi", {})).status).toBe(401);
 
   // What a player says goes through Community too, counted by how long they spoke.
-  await fetch(`${ana.base}/api/voice`, { method: "POST", headers: auth, body: new Blob([new Uint8Array(2000)], { type: "audio/webm" }) });
+  await fetch(`${ana.game}/api/voice`, { method: "POST", headers: auth, body: new Blob([new Uint8Array(2000)], { type: "audio/webm" }) });
   for (let i = 0; i < 100 && !elevenLabs.heard.length; i++) await Bun.sleep(50);
   expect(elevenLabs.heard).toEqual(["community-key"]);
   for (let i = 0; i < 100 && (await used()) < 0.001; i++) await Bun.sleep(50);
@@ -217,6 +223,18 @@ test("a host without a voice key gets free voice from Community, counted against
   await db.close();
   expect(await speak("One more line.")).toEqual({ status: 400, error: "Free voice is used up on this computer." });
   expect((await menu(ana, "stop", {})).status).toBe(200);
+
+  // The install token stays with the launcher: never in the world's folder, and a world carrying it can't be shared.
+  const folder = join(ana.data, "worlds", id);
+  const files = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(d, e.name)) : e.isFile() ? [join(d, e.name)] : []));
+  expect(files(folder).filter((f) => readFileSync(f).includes(install.token))).toEqual([]);
+  const leak = join(folder, "world", "mods", "leak");
+  mkdirSync(leak, { recursive: true });
+  writeFileSync(join(leak, "client.ts"), `export const token = ${JSON.stringify(install.token)};\n`);
+  const sharing = { id, title: "Voice Keep", visibility: "link", cover: COVER };
+  expect((await menu(ana, "publish-stage", sharing)).error).toBe("This world can't be shared: a world file contains what looks like a key or password.");
+  rmSync(leak, { recursive: true, force: true });
+  expect((await menu(ana, "publish-stage", sharing)).status).toBe(200);
 }, 60_000);
 
 test("the menu page's usage stats land under this computer's install, never its token, and with Share usage stats off nothing reaches Community", async () => {

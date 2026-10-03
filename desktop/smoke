@@ -7,8 +7,10 @@ data="$(mktemp -d)"
 # Git Bash on Windows hands bun a path it can open.
 data="$(cd "$data" && (pwd -W 2>/dev/null || pwd))"
 port=$((20000 + RANDOM % 20000))
+# The main menu answers only at 127.0.0.1; worlds play at localhost.
 base="http://127.0.0.1:$port"
-PORT=$port SANDBOX_DATA="$data" SANDBOX_NO_OPEN=1 SANDBOX_RELAY=http://127.0.0.1:9 "$engine/bun" "$engine/engine/launcher.ts" >"$data/launcher.log" 2>&1 &
+game="http://localhost:$port"
+PORT=$port SANDBOX_DATA="$data" SANDBOX_NO_OPEN=1 SANDBOX_RELAY=http://127.0.0.1:9 SANDBOX_COMMUNITY=http://127.0.0.1:1 "$engine/bun" --no-env-file "$engine/engine/launcher.ts" >"$data/launcher.log" 2>&1 &
 launcher=$!
 fail() {
   echo "$1" >&2
@@ -27,8 +29,8 @@ menu() { curl -sS --fail-with-body -X POST "$base/api/menu/$1" -H "authorization
 
 out=$(menu create '{"name":"Smoke Test","rules":"open","start":"basics"}') || fail "Create failed: $out"
 invite=$(sed -n 's/.*"invite":"\([^"]*\)".*/\1/p' <<<"$out")
-player=$(curl -fsS -X POST "$base/api/join" -d "{\"invite\":\"$invite\",\"name\":\"smoke\"}" | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')
-status=$(curl -fsS "$base/api/status" -H "authorization: Bearer $player")
+player=$(curl -fsS -X POST "$game/api/join" -d "{\"invite\":\"$invite\",\"name\":\"smoke\"}" | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')
+status=$(curl -fsS "$game/api/status" -H "authorization: Bearer $player")
 echo "$status" | head -c 600
 echo
 grep -q '"Smoke Test"' <<<"$status" || fail "/api/status doesn't name the world."

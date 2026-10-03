@@ -27,6 +27,42 @@ Each mod's database goes into the zip from inside the mod sandbox, which can rea
 
 Sharing also refuses known host, player and service credentials, including Community install and owner tokens, and recognizable key formats, in the archive, Git history, details or media bytes. Private Export keeps its full-world behavior; unknown passwords and concealed secrets are not reliably recognizable.
 
+## Origins: the host's computer and the relay
+
+A browser keeps a page's storage, and what its code may read, per origin: scheme, host and port. Every world's mods run in the page of the world being played, so whatever else that origin holds, they can read.
+
+On the host's computer the launcher answers at two origins:
+
+| Origin | Serves | Holds |
+| --- | --- | --- |
+| `http://127.0.0.1:<port>` | The main menu, the host's controls page (`host.html`), the menu's API and the front end's files. Never a world's page, code, files or socket. | The menu's key: `/api/local-key` answers only this origin's own pages, on this computer, without CORS, uncached. |
+| `http://localhost:<port>` | The running world, for the host to play. Its `/menu` sends the host to the menu's origin; its `/api/menu/` and `/api/local-key` refuse even the right key. | The host's player key for the world, like any player's. |
+
+The host's World page (export, stop hosting, rewind), its Share page and their speech key are frames of `host.html` inside their game. The game asks those frames for four things only, each about the world running as they opened: join it as the host, which returns the host's own player key; take a new picture of it; show or focus the controls; and open Share, offering its mods' titles as the default description. The Share frame reads the world's shared state and saved cover itself and asks the game only for media, the current view and the timelapse clip; every other field is typed or picked in the frame, its Share and Stop sharing act only on the world it opened for, and it names no author, so the launcher names the world's host. Stopping, exporting, rewinding, sharing and the speech key go only through the frames' own buttons. Neither the menu's key, a shared world's owner token, the world's host key nor the speech key ever reaches the game's page, and no link the menu opens carries them: the host plays from the world's invite link, and watches the timelapse with a pass that plays once within two minutes.
+
+Origin isolation stops a mod reading the frame's credentials, not UI redressing: the game page and its mods can move or disguise an iframe they contain to trick the host into clicking it. For sensitive host actions, open the top-level main menu instead of trusting how a game page presents the controls.
+
+The first player name that becomes host still comes from the game's realm, where a mod can race the join screen; this does not reveal an admin key or another player's key, but first-host selection is **not** an agent-safe authorization boundary. Once a host name is set, new names joined through the frame cannot replace it.
+
+### The relay: one origin per room
+
+The contract: each room is its own origin, so one world's code can never read what another world's page keeps.
+
+The relay doesn't meet it yet. Every room is a path, `/r/<room>/`, on the relay's one origin, and the page each room serves keeps its player's key in that origin's `localStorage` (`sandbox-key:<world id>`), as the rejoin link the game needs. So the mods of any world played through the relay can read the player keys of every other world that browser has joined through it, and join those worlds as those players: build, chat and drive agents' tools with their rights. The same holds, on a smaller scale, for the worlds one launcher hosts in turn at `localhost:<port>` or at its Wi-Fi address, Community worlds hosted or remixed there included. Moving the keys to `sessionStorage` would not close this: it is per origin too, and another room's page in the same tab reads it the same way. Only a separate origin per room, such as `https://<room>.<relay domain>/`, does.
+
+What meeting it takes, on the relay's side:
+
+- **Cookies and storage.** A room's cookie (the one that sends a page's own requests to its room) is set host-only on the room's origin, with no `Domain`, so no other room ever receives it. `localStorage`, `sessionStorage`, IndexedDB and caches then follow the origin by themselves.
+- **Pages, files, API and socket.** Everything a room serves, its page, `/front.js` and fonts, `/build/` mod code, `/stills/`, `/api/*`, `/cli/*` and the `/ws` socket, answers only at that room's origin, never at the shared one or another room's. A request for one room arriving at another's origin is refused, not forwarded.
+- **Links.** Invite links become `https://<room>.<relay domain>/#invite=…`; the launcher's `running.link` and the game's Invite page give that form.
+- **Moving over.** Players' keys saved under the shared origin stay readable there until it stops serving rooms. The old `/r/<room>/` links answer only with a redirect to the room's origin, carrying the fragment in the browser, never a page; players rejoin once by their invite or name, and the shared origin's storage is left behind.
+
+Until the relay ships this, the exposure above stands.
+
+What the shared relay origin never holds: the menu's key, any world's host key, Community owner tokens, the speech key or the launcher's other secrets. Those stay on the host's computer, at `127.0.0.1`.
+
+A world run on its own with `bun engine/server.ts`, without the launcher, prints its invite link, never its host key: the host plays by the invite and the password like anyone, since a link reaches the page where mods run. Only the launcher, from its own process, joins someone as the host.
+
 ## Service
 
 `community/server/` is a Bun API with Postgres for the rows; zips, covers and clips live in the R2 bucket `sandbox-worlds` and never pass through the server, which hands out presigned URLs signed for each file's exact size and type. `community/site/` is the site, built into `dist/` with the game's own styles by `build-site.sh`.

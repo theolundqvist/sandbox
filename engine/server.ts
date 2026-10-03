@@ -544,6 +544,8 @@ async function speech(text: string, speaker: string | undefined) {
 
 /** Joins waiting for the host to answer whether a new computer may play as a name that's already someone's. */
 const asking = new Map<string, (allow: boolean) => void>();
+/** What the main menu opens the timelapse with, so the host watches without joining and no admin key rides in the game's link: each plays the host's view once, within two minutes. */
+const watchers = new Map<string, number>();
 
 /** The player playing on the host's computer, named when players are told who can turn voice on. */
 function hostIs(body: { host?: string }, name: string) {
@@ -614,6 +616,12 @@ const server = Bun.serve<Conn>({
         case "voice":
           broadcast({ t: "voice", on: !!voiceKey() });
           return Response.json({});
+        case "watch": {
+          for (const [old, until] of watchers) if (until < Date.now()) watchers.delete(old);
+          const watch = token() + token();
+          watchers.set(watch, Date.now() + 120_000);
+          return Response.json({ token: watch });
+        }
         case "activity":
           return Response.json(
             record.activity({
@@ -636,7 +644,10 @@ const server = Bun.serve<Conn>({
     }
     if (path === "/api/timelapse") {
       // The host watches from the main menu without joining, and sees everything.
-      const host = bearer(req) === config.hostKey;
+      const given = bearer(req) ?? "";
+      const watcher = (watchers.get(given) ?? 0) > Date.now();
+      watchers.delete(given);
+      const host = watcher || given === config.hostKey;
       const who = host ? null : (nameByKey(bearer(req)) ?? null);
       if (!host && !who) return new Response(null, { status: 401 });
       try {
@@ -707,15 +718,17 @@ const server = Bun.serve<Conn>({
         hostIs(body, known);
         return Response.json({ key: body.key, name: known, invite: config.invite });
       }
-      if (body.invite !== config.invite && body.invite !== config.hostKey) return Response.json({ error: "You need an invite link from the host." }, { status: 403 });
-      if (config.password && body.invite !== config.hostKey && body.password !== config.password)
+      // The host's launcher joins them as the host with the world's host key, from its own process: no link carries that key, so it never reaches a game's page.
+      const asHost = body.host === config.hostKey;
+      if (!asHost && body.invite !== config.invite) return Response.json({ error: "You need an invite link from the host." }, { status: 403 });
+      if (config.password && !asHost && body.password !== config.password)
         return Response.json({ error: body.password ? "That password isn't right." : "This world has a password. Ask the host for it.", password: true }, { status: 403 });
       const name = String(body.name ?? "").trim().toLowerCase();
       if (!/^[a-z0-9][a-z0-9_-]{1,15}$/.test(name)) return Response.json({ error: "Names are 2–16 letters, digits, - or _." }, { status: 400 });
       if (sockets.has(name) || (claudes.get(name)?.state ?? "offline") !== "offline")
         return Response.json({ error: "Someone is playing as that name right now. If it's you, close the game there first." }, { status: 409 });
       // An offline player's name goes to a new computer only when the host lets it in; the old key then stops working.
-      if (Object.values(keys).includes(name) && body.host !== config.hostKey) {
+      if (Object.values(keys).includes(name) && !asHost) {
         const host = config.host ? sockets.get(config.host) : undefined;
         if (!host) return Response.json({ error: `The host isn't in the game to let you in as ${name}. Pick another name.` }, { status: 409 });
         const id = token();
@@ -740,7 +753,7 @@ const server = Bun.serve<Conn>({
 
     if (path === "/ws") {
       const invite = url.searchParams.get("invite");
-      if (invite === config.invite || invite === config.hostKey) {
+      if (invite === config.invite) {
         if (spectators.size >= 8) return new Response("too many spectators", { status: 503 });
         return server.upgrade(req, { data: { name: `~${token()}`, ua: "", at: Date.now(), spectator: true } }) ? undefined : new Response("upgrade failed", { status: 400 });
       }
@@ -900,6 +913,6 @@ function samplePlayer(name: string, report: any) {
 }
 
 const base = `http://localhost:${server.port}`;
-// The host link carries the host key, so it goes only to a terminal, never into a log file.
-console.log(process.stdout.isTTY ? `\n  ${config.name} is running.\n  Host link (keep private): ${base}/#invite=${config.hostKey}\n` : `${config.name} is running on ${base}`);
+// The invite lets anyone in, so it goes only to a terminal, never into a log file. The host plays by it too: the world's host key never rides in a link, where a page's mods could read it.
+console.log(process.stdout.isTTY ? `\n  ${config.name} is running.\n  Invite link (for your players and you): ${base}/#invite=${config.invite}\n` : `${config.name} is running on ${base}`);
 process.send?.({ port: server.port });

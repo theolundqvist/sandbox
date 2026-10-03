@@ -5,6 +5,7 @@ import { clock, extent, isAvatar, plan, position, type Activity, type Plan, type
 import { PhysicsIndex, sizeOf } from "../physics";
 import { COMPUTERS, computerPick, type Computer } from "./front.js";
 import { mountPicker } from "./games";
+import { hostControls } from "./host-frame";
 import { phrases } from "./phrases";
 
 /** The Tab menu, where players vote on mods, is in a closed shadow root only this file holds, so no mod can reach, hide or remove it; mods' blocks on its pages stay in the page, slotted in. Everything else on screen is the page's, for mods to restyle or remove. */
@@ -41,19 +42,72 @@ const focused = () => uiRoot.activeElement ?? document.activeElement;
 const front = await import(["/front.js"][0]!);
 front.navigateIn(uiRoot);
 const hashParams = new URLSearchParams(location.hash.slice(1));
+// The main menu's key, which older versions kept here, where worlds' code runs; the menu now has an origin of its own.
+localStorage.removeItem("sandbox-menu");
 
 // Through the relay the world lives at /r/<room>/; its own requests reach the room by cookie, but links and Claude need the full address.
 const origin = location.origin + (location.pathname.match(/^\/r\/[a-z0-9-]+/)?.[0] ?? "");
 const info = await (await fetch("/api/info")).json();
 const keyName = `sandbox-key:${info.id}`;
-/** The host watching the timelapse from the main menu, without joining: their world's host key. */
+/** The host watching the timelapse from the main menu, without joining: a pass for one viewing, never a key to the world. */
 const watching = hashParams.get("watch");
 if (watching) history.replaceState(null, "", location.pathname);
 let key = watching ?? hashParams.get("key") ?? localStorage.getItem(keyName);
-/** The host playing a world of theirs can reach its main menu; everyone shares the relay's address, so holding a key isn't enough. */
-const hostKey = localStorage.getItem("sandbox-menu") ?? (await fetch("/api/local-key").then((r) => (r.ok ? r.json() : null)).then((r: { key: string } | null) => r?.key ?? null, () => null));
-const hostMenu = (action: string, body?: object) => fetch(`/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${hostKey}` }, body: body && JSON.stringify(body) });
-const hosting = hostKey ? await hostMenu("state").then((r) => (r.ok ? r.json() : null), () => null) : null;
+/** The host playing their running world on their own computer: their World, Share and voice key controls, in frames from the main menu's origin, which hold every key to it. */
+const controls = watching ? null : await hostControls({
+  world: info.id,
+  worldPage: $("pages").querySelector<HTMLElement>("section[data-tab=world]")!,
+  sharePage: $("pages").querySelector<HTMLElement>("section[data-tab=share]")!,
+  voiceBefore: $("open-mic-field"),
+  toast,
+  key: (code) => (code === "Tab" ? closeMenu() : menuKey(new KeyboardEvent("keydown", { code }))),
+  stopping: () => {
+    leaving = true;
+    void sendCover();
+  },
+  stopped: () => void leave(),
+  share: () => void openShare(),
+  view: () => viewJpeg(),
+  /** Moments of the timelapse, evenly spaced, drawn without trails or name tags as the replay shows them. */
+  async moments() {
+    const res = await fetch("/api/timelapse", { headers: { authorization: `Bearer ${key}` } });
+    const frames: Moment[] = res.ok ? await res.json() : [];
+    if (frames.length < 2) {
+      toast("Nothing to replay yet: the world records a moment every two seconds, so come back in a minute.");
+      return null;
+    }
+    showMenu(false);
+    startReplay(frames);
+    replay!.playing = false;
+    const moments: Uint8Array<ArrayBuffer>[] = [];
+    for (let i = 0; i < 8; i++) {
+      seek(Math.round((i * (frames.length - 1)) / 7));
+      await loading;
+      const drawn = Promise.withResolvers<void>();
+      setTimeout(drawn.resolve, 500);
+      await drawn.promise;
+      replayLayer.visible = false;
+      moments.push(viewJpeg());
+      replayLayer.visible = true;
+    }
+    await openMenu();
+    void openShare();
+    return moments;
+  },
+  async clip() {
+    showMenu(false);
+    toast("Recording a clip of the timelapse…");
+    const clip = await recordClip().catch(() => null);
+    await openMenu();
+    void openShare();
+    return clip;
+  },
+  // Only the app publishes, through its account, once the player confirms in its own dialog.
+  publish: async () => (desktop?.publish ? desktop.publish(info.id) : "Publish from the Sandbox app."),
+  unpublish: async () => (desktop?.unpublish ? desktop.unpublish(info.id) : "Stop sharing from the Sandbox app."),
+});
+/** Where the host's main menu is, on this computer. */
+const mainMenu = `http://127.0.0.1:${location.port}/menu`;
 let me = "";
 /** When the next picture of the world is due: 20 s after first joining, then every few minutes. */
 let coverAt = Infinity;
@@ -64,19 +118,25 @@ let link: string | null = null;
 let wifiOnly = false;
 
 /** A name that belongs to an offline player waits for the host to let this computer in, for up to a minute. */
-async function join(body: object) {
-  const asking = "name" in body && setTimeout(() => {
+async function join(body: { key: string | null } | { invite: string | null; name: string; password?: string }) {
+  const asking = "name" in body ? setTimeout(() => {
     $("join-world").textContent = info.name;
     $("join-error").textContent = "Asking the host…";
     $("join-form").classList.add("asking");
     $("join").hidden = false;
-  }, 500);
-  const res = await fetch("/api/join", { method: "POST", body: JSON.stringify({ ...body, host: hosting?.running?.hostKey }) }).finally(() => {
-    if (asking) clearTimeout(asking);
+  }, 500) : undefined;
+  // The host's controls join them on their own computer, as the host, keeping the world's host key out of this page.
+  const data: { key: string; name: string } = await (controls
+    ? controls.join("key" in body ? { key: body.key ?? "" } : { name: body.name, password: body.password })
+    : fetch("/api/join", { method: "POST", body: JSON.stringify(body) }).then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw Object.assign(new Error(data.error), { password: !!data.password });
+        return data;
+      })
+  ).finally(() => {
+    clearTimeout(asking);
     $("join-form").classList.remove("asking");
   });
-  const data = await res.json();
-  if (!res.ok) throw Object.assign(new Error(data.error), { password: !!data.password });
   localStorage.setItem(keyName, data.key);
   localStorage.setItem("sandbox-name", data.name);
   key = data.key;
@@ -1006,7 +1066,7 @@ function connect() {
         voiceAvailable = msg.on;
         return listen();
       case "voice-failed":
-        return toast(msg.reason ?? (hosting && msg.refused ? `${msg.provider} refused the voice key. Add it again in Settings.` : "Voice didn't go through. Try again."), "error");
+        return toast(msg.reason ?? (controls && msg.refused ? `${msg.provider} refused the voice key. Add it again in Settings.` : "Voice didn't go through. Try again."), "error");
       case "let-in":
         return letIn(msg.id, msg.name);
       case "public":
@@ -1201,7 +1261,7 @@ function middle() {
 function frameInto(out: HTMLCanvasElement) {
   out.getContext("2d")!.drawImage(renderer.domElement, ...middle(), 0, 0, out.width, out.height);
 }
-/** The host's own view as a 960×540 JPEG in base64, without the HUD or name tags, for Share's Current view. */
+/** The host's own view as a 960×540 JPEG, without the HUD or name tags: Share's Current view and a shared mod's preview. */
 function viewJpeg() {
   const out = Object.assign(document.createElement("canvas"), { width: 960, height: 540 });
   untagged(() => {
@@ -1210,21 +1270,21 @@ function viewJpeg() {
   });
   let jpeg = "";
   for (const quality of [0.8, 0.6, 0.4]) if ((jpeg = out.toDataURL("image/jpeg", quality)).length < 80_000) break;
-  return jpeg.split(",")[1]!;
+  return Uint8Array.from(atob(jpeg.split(",")[1]!), (c) => c.charCodeAt(0));
 }
 
 /**
- * The player's own view, without the HUD or name tags, is the world's picture in Worlds: the host's goes to their launcher, a joined world's stays in the desktop app.
+ * The player's own view, without the HUD or name tags, is the world's picture in Worlds: the host's goes through their controls to their launcher, a joined world's stays in the desktop app.
  * It is a frame the game draws anyway, 20 s after joining and then every 5 minutes, encoded off the main thread; and one more as the player leaves, encoded at once since the page is going.
  */
-const hostsThisWorld = hosting?.running?.id === info.id;
 const appCover = (window as { sandboxDesktop?: { cover?(jpeg: Uint8Array): void } }).sandboxDesktop?.cover;
 const COVER_EVERY = 5 * 60_000;
-function keepCover(jpeg: Uint8Array<ArrayBuffer>, leaving: boolean) {
-  if (hostsThisWorld) fetch(`/api/menu/cover?id=${info.id}`, { method: "POST", keepalive: leaving, headers: { authorization: `Bearer ${hostKey}` }, body: jpeg }).catch(() => {});
+/** Settles once the host's controls saved it, which save it only for the world running now, or at once for a joined world's picture in the app. */
+async function keepCover(jpeg: Uint8Array<ArrayBuffer>) {
+  if (controls) await controls.cover(jpeg);
   else appCover?.(jpeg);
 }
-const coverable = () => (hostsThisWorld || !!appCover) && !!me && !replay && screen.scene !== false;
+const coverable = () => (!!controls || !!appCover) && !!me && !replay && screen.scene !== false;
 /** Whether this frame is the picture: never one right after a slow frame, so it can't add to a hitch. */
 const coverDue = (now: number, dt: number) => now >= coverAt && dt < 1 / 30 && !document.hidden && coverable();
 /** Right after the frame is drawn without name tags: a copy of it the GPU scales, so nothing waits on reading its pixels back. */
@@ -1237,16 +1297,20 @@ function takeCover() {
       frame.close();
       return out.convertToBlob({ type: "image/jpeg", quality: 0.7 });
     })
-    .then(async (jpeg) => keepCover(new Uint8Array(await jpeg.arrayBuffer()), false), () => {});
+    .then(async (jpeg) => keepCover(new Uint8Array(await jpeg.arrayBuffer())), () => {});
 }
-addEventListener("beforeunload", () => {
+/** The picture as the player leaves, drawn and encoded at once. Leave and Stop hosting send it and wait for it before the page goes; a page closed any other way sends it as it goes. */
+function sendCover() {
   if (!coverable()) return;
   const out = Object.assign(document.createElement("canvas"), { width: 480, height: 270 });
   untagged(() => {
     draw(0);
     frameInto(out);
   });
-  keepCover(Uint8Array.from(atob(out.toDataURL("image/jpeg", 0.7).split(",")[1]!), (c) => c.charCodeAt(0)), true);
+  return keepCover(Uint8Array.from(atob(out.toDataURL("image/jpeg", 0.7).split(",")[1]!), (c) => c.charCodeAt(0)));
+}
+addEventListener("beforeunload", () => {
+  if (!leaving) void sendCover();
 });
 
 // ---------- HUD ----------
@@ -1395,7 +1459,7 @@ function startReplay(frames: Moment[]) {
 function leaveReplay() {
   const r = replay;
   if (!r) return;
-  if (watching) return location.assign("menu");
+  if (watching) return location.assign(mainMenu);
   replay = null;
   director.shot = null;
   replayKeys.clear();
@@ -2154,16 +2218,15 @@ $<HTMLInputElement>("open-mic").checked = openMic;
 $("open-mic").onchange = () => setOpenMic($<HTMLInputElement>("open-mic").checked);
 
 function showMic() {
-  $("mic").textContent = !voiceAvailable ? (hosting ? "Turn on voice" : `Voice off: ask ${voiceHost ?? "the host"} to turn it on`) : listening ? "Mic on" : talking ? "Talking" : "Hold T to talk";
-  $("mic").dataset.state = !voiceAvailable ? (hosting ? "setup" : "none") : listening || talking ? "on" : "off";
+  $("mic").textContent = !voiceAvailable ? (controls ? "Turn on voice" : `Voice off: ask ${voiceHost ?? "the host"} to turn it on`) : listening ? "Mic on" : talking ? "Talking" : "Hold T to talk";
+  $("mic").dataset.state = !voiceAvailable ? (controls ? "setup" : "none") : listening || talking ? "on" : "off";
   $("open-mic-field").hidden = !voiceAvailable;
   for (const row of [...document.querySelectorAll<HTMLElement>(".talk-key"), ...uiRoot.querySelectorAll<HTMLElement>(".talk-key")]) row.hidden = !voiceAvailable;
 }
 $("mic").onclick = () => {
-  if (voiceAvailable || !hosting) return;
+  if (voiceAvailable || !controls) return;
   openMenu();
-  showTab("settings");
-  $("voice-key").focus();
+  openPage("settings");
 };
 $("mic").onpointerdown = startTalking;
 $("mic").onpointerup = $("mic").onpointerleave = () => stopTalking(true);
@@ -2320,14 +2383,15 @@ function showTab(tab: string | null) {
   menu.classList.toggle("paging", !!tab);
   $("page-title").textContent = button?.textContent ?? "";
   if (tab === "mods") refreshMenu();
-  if (tab === "world") void showWorld();
+  if (tab === "world") controls?.show();
 }
 /** Opens a page and moves the keyboard into it. */
 function openPage(tab: string) {
   showTab(tab);
   $("pages").scrollTop = 0;
-  const first = onPage($("pages").querySelector("section:not([hidden])")!, "button, input, select, textarea, a[href], [tabindex='0']").find((el) => el.getClientRects().length);
-  (first ?? $("pages")).focus({ preventScroll: true });
+  const first = onPage($("pages").querySelector("section:not([hidden])")!, "button, input, select, textarea, a[href], [tabindex='0'], iframe").find((el) => el.getClientRects().length);
+  // The host's controls take the keyboard once their frame shows them.
+  if (!(first instanceof HTMLIFrameElement && controls?.focus(first))) (first ?? $("pages")).focus({ preventScroll: true });
 }
 function closePage() {
   const tab = $("rail").querySelector<HTMLElement>(".active");
@@ -2441,9 +2505,24 @@ palette.onclick = (e) => e.target === palette && closePalette();
 for (const keysList of $("howto").querySelectorAll(".keys")) $("help-keys").append(keysList.cloneNode(true));
 /** Leaving closes this world: the host goes back to their main menu, anyone else to this world's join screen. */
 let leaving = false;
-/** The desktop app says when a newer release is out, and installs it when asked. */
+/** The Electron preload installs this API on window; a browser leaves it absent. The app says when a newer release is out and how its download goes, installs it when asked, starts agents beside the game, publishes the world it hosts or one of its mods through the app's account once the player confirms, and asks the game to leave. */
 type Updating = { downloaded?: number; installing?: boolean } | null;
-const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void; onUpdating?(fn: (progress: Updating) => void): void; leave(): void; agents: { id: string; name: string }[]; build(id: string, key: string | null): Promise<boolean | string>; publish?(id: string): Promise<string | null>; unpublish?(id: string): Promise<string | null>; publishMod?(id: string, name: string): Promise<string | null> } }).sandboxDesktop;
+const desktop = (
+  window as Window & {
+    sandboxDesktop?: {
+      update(): Promise<string | null>;
+      onUpdate(fn: (version: string | null) => void): void;
+      onUpdating?(fn: (progress: Updating) => void): void;
+      onLeave?(fn: () => void): void;
+      leave(): void;
+      agents: { id: string; name: string }[];
+      build(id: string, key: string | null): Promise<boolean | string>;
+      publish?(id: string): Promise<string | null>;
+      unpublish?(id: string): Promise<string | null>;
+      publishMod?(id: string, name: string): Promise<string | null>;
+    };
+  }
+).sandboxDesktop;
 desktop?.onUpdate((version) => ($("menu-update").hidden = !version));
 // Apps before 0.2.9 don't tell how the update goes.
 desktop?.onUpdating?.((progress) => {
@@ -2459,194 +2538,31 @@ $("menu-update").onclick = async () => {
   const error = await desktop?.update();
   if (error) updateFailed = toast(error, "error");
 };
-/** In the app everyone leaves to its title screen; in a browser the host goes to their main menu. */
-function leave() {
+/** In the app everyone leaves to its title screen; in a browser the host goes to their main menu. The host's last view becomes the world's picture first, unless Stop hosting already sent it. */
+async function leave() {
+  const covered = leaving;
   leaving = true;
+  if (!covered) await sendCover();
   socket?.close();
   if (desktop) return desktop.leave();
-  if (hosting) return location.assign("menu");
+  if (controls) return location.assign(mainMenu);
   history.replaceState(null, "", `${origin}/#left`);
   location.reload();
 }
-$("leave").onclick = leave;
+desktop?.onLeave?.(() => void leave());
+$("leave").onclick = () => void leave();
 
-/** The host's own world: rewind it to a saved moment, export it, or stop hosting it. */
-if (hostsThisWorld) $("rail").querySelector<HTMLElement>("[data-tab=world]")!.hidden = false;
-async function showWorld() {
-  $("world-stop").textContent = "Stop hosting";
-  void hostMenu("free-voice")
-    .then((res) => res.json())
-    .then((free: { used: number; of: number } | null) => {
-      $("world-voice").hidden = !free;
-      if (free) $("world-voice").textContent = `Free voice: $${free.used.toFixed(2)} of $${free.of} used`;
-    });
-  const s = await (await hostMenu("state")).json();
-  const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  $("world-snapshots").replaceChildren(
-    ...(s.running?.snapshots ?? []).map((at: number) => {
-      const rewind = Object.assign(document.createElement("button"), { textContent: "Rewind" });
-      rewind.onclick = async () => {
-        if (rewind.textContent === "Rewind") return void (rewind.textContent = `Rewind to ${time(at)}?`);
-        const res = await hostMenu("rewind", { at });
-        if (!res.ok) toast((await res.json()).error, "error");
-      };
-      const row = Object.assign(document.createElement("div"), { className: "copy-row" });
-      row.append(Object.assign(document.createElement("span"), { textContent: time(at) }), Object.assign(document.createElement("code"), { textContent: "Saved moment" }), rewind);
-      return row;
-    }),
-  );
-}
-$("world-export").onclick = async () => {
-  $("world-export").textContent = "Exporting…";
-  const res = await hostMenu("export", { id: info.id });
-  $("world-export").textContent = "Export";
-  if (!res.ok) return toast((await res.json()).error, "error");
-  const link = Object.assign(document.createElement("a"), { href: URL.createObjectURL(await res.blob()), download: res.headers.get("content-disposition")?.match(/filename="(.+)"/)?.[1] ?? "world.zip" });
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
-};
-/** Share: the world to Community, as a link for friends or for everyone, with its picture and a clip of its timelapse. Sharing again updates it. */
-const blobBase64 = (blob: Blob) =>
-  new Promise<string>((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(",")[1]!);
-    reader.readAsDataURL(blob);
-  });
-/**
- * The pictures Share can send, all world-only: the view right now, the world's picture and the views its game kept, and moments of its timelapse.
- * The first picked is the cover and up to 8 more make its gallery; a shared world nobody re-picks for keeps the ones Community has.
- */
-let shots: { name: string; jpeg: string }[] = [];
-let picks: string[] = [];
-let repicked = false;
-async function loadShots(fresh: boolean) {
-  const res = await hostMenu("shots", { id: info.id });
-  const kept: typeof shots = res.ok ? await res.json() : [];
-  const view = fresh || !shots[0] ? { name: "view", jpeg: viewJpeg() } : shots[0];
-  shots = [view, ...kept];
-  picks = picks.filter((p) => shots.some((s) => s.name === p));
-  showShots();
-}
-function showShots() {
-  $("share-shots").replaceChildren(
-    ...shots.map((shot) => {
-      const n = picks.indexOf(shot.name);
-      const button = Object.assign(document.createElement("button"), { type: "button", title: shot.name === "view" ? "Current view" : shot.name === "cover" ? "World picture" : "" });
-      if (n >= 0) button.dataset.n = n ? String(n) : "Cover";
-      button.append(Object.assign(document.createElement("img"), { src: `data:image/jpeg;base64,${shot.jpeg}`, alt: "" }));
-      button.onclick = () => {
-        repicked = true;
-        picks = n >= 0 ? picks.filter((p) => p !== shot.name) : picks.length < 9 ? [...picks, shot.name] : picks;
-        showShots();
-      };
-      return button;
-    }),
-  );
-  const shared = $("share-go").textContent === "Update";
-  $("share-pick-note").textContent = !picks.length && shared ? "Pick none to keep the pictures it has." : "The first you pick is the cover; up to 8 more go on its page.";
-}
-const jpegOf = (name: string) => shots.find((s) => s.name === name)!.jpeg;
-/** Moments of the timelapse, evenly spaced, drawn without trails or name tags as the replay shows them. */
-$("share-moments").onclick = async () => {
-  const res = await fetch("/api/timelapse", { headers: { authorization: `Bearer ${key}` } });
-  const frames: Moment[] = res.ok ? await res.json() : [];
-  if (frames.length < 2) return toast("Nothing to replay yet: the world records a moment every two seconds, so come back in a minute.");
-  showMenu(false);
-  startReplay(frames);
-  replay!.playing = false;
-  const moments: string[] = [];
-  for (let i = 0; i < 8; i++) {
-    seek(Math.round((i * (frames.length - 1)) / 7));
-    await loading;
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    replayLayer.visible = false;
-    moments.push(viewJpeg());
-    replayLayer.visible = true;
-  }
-  await openMenu();
-  await hostMenu("timelapse-shots", { id: info.id, frames: moments });
-  await openShare("", true);
-};
-const showNames = (value: string) => ($("share-names").hidden = value !== "public");
-const visibility = front.pick($("share-visibility"), showNames);
-const timelapsePick = front.pick($("share-timelapse"), () => {});
-async function openShare(status = "", keepPicks = false) {
-  const s = await (await hostMenu("state")).json();
-  const w = s.worlds.find((x: { id: string }) => x.id === info.id);
-  const shared = w?.shared;
-  const live = await (await fetch("/api/status", { headers: { authorization: `Bearer ${key}` } })).json();
-  const titles: string[] = live.mods.map((m: { about?: { title?: string } }) => m.about?.title).filter(Boolean);
-  $<HTMLInputElement>("share-title").value = shared?.title ?? info.name;
-  $<HTMLInputElement>("share-description").value = shared?.description ?? (titles.length > 3 ? `${titles.slice(0, 3).join(", ")} and ${titles.length - 3} more` : titles.join(", "));
-  visibility.set(shared?.visibility ?? "link");
-  showNames(visibility.dataset.value!);
-  if (!status && !keepPicks) timelapsePick.set(shared?.timelapse === false ? "off" : "on");
-  $("share-shared").hidden = !shared?.link;
-  $("share-link").textContent = shared?.link ?? "";
-  $("share-stop").textContent = "Stop sharing";
-  $("share-go").textContent = shared?.link ? "Update" : "Share";
-  $("share-changes-field").hidden = !shared?.link;
-  if (!status && !keepPicks) {
-    $<HTMLInputElement>("share-changes").value = "";
-    picks = shared?.link ? [] : [w?.cover ? "cover" : "view"];
-    repicked = false;
-  }
-  $("share-status").textContent = status || "Chat stays on this computer.";
+/** The host's own world: rewind it to a saved moment, export it, or stop hosting it, all inside their World frame. */
+if (controls) $("rail").querySelector<HTMLElement>("[data-tab=world]")!.hidden = false;
+/** Share: the world to Community, as a link for friends or for everyone, with its picture and a clip of its timelapse. Everything it sends is chosen in the host's Share frame; this page only offers an About from its mods' titles, its view and the clip. */
+async function openShare() {
+  if (!controls) return;
   openPage("share");
   $("page-title").textContent = "Share";
-  await loadShots(!status);
+  const live = await fetch("/api/status", { headers: { authorization: `Bearer ${key}` } }).then((r) => (r.ok ? r.json() : { mods: [] }), () => ({ mods: [] }));
+  const titles: string[] = live.mods.map((m: { about?: { title?: string } }) => m.about?.title).filter(Boolean);
+  controls.showShare(titles.length > 3 ? `${titles.slice(0, 3).join(", ")} and ${titles.length - 3} more` : titles.join(", "));
 }
-$("world-share").onclick = () => openShare();
-$("share-go").onclick = async () => {
-  // The world's picture is already its cover, so only another pick replaces it.
-  const cover = picks[0] && picks[0] !== "cover" ? jpegOf(picks[0]) : undefined;
-  const gallery = repicked ? picks.slice(1).map(jpegOf) : undefined;
-  const timelapse = $("share-timelapse").dataset.value !== "off";
-  const form = { id: info.id, title: $<HTMLInputElement>("share-title").value, description: $<HTMLInputElement>("share-description").value, changelog: $<HTMLInputElement>("share-changes").value, visibility: $("share-visibility").dataset.value, cover, gallery, timelapse };
-  showMenu(false);
-  if (timelapse) toast("Recording a clip of the timelapse…");
-  const clip = timelapse ? await recordClip().catch(() => null) : null;
-  await openMenu();
-  if (!desktop?.publish) return void (await openShare("Publish from the Sandbox app."));
-  await openShare("Uploading…");
-  const res = await hostMenu("publish-stage", { ...form, clip: clip && (await blobBase64(clip)) });
-  await openShare(res.ok ? ((await desktop.publish(info.id)) ?? "") : (await res.json()).error);
-};
-$("share-stop").onclick = async () => {
-  if ($("share-stop").textContent === "Stop sharing") return void ($("share-stop").textContent = "Remove from Community?");
-  if (desktop?.unpublish) return void (await openShare((await desktop.unpublish(info.id)) ?? ""));
-  const res = await hostMenu("unshare", { id: info.id });
-  await openShare(res.ok ? "" : (await res.json()).error);
-};
-$("world-stop").onclick = async () => {
-  if ($("world-stop").textContent === "Stop hosting") return void ($("world-stop").textContent = "Stop for everyone?");
-  leaving = true;
-  await hostMenu("stop", {});
-  leave();
-};
-
-/** The host's speech key, kept by their launcher and shown only by its provider and last characters. */
-$("voice-field").hidden = $("voice-where").hidden = !hosting;
-$<HTMLInputElement>("voice-key").placeholder = hosting?.voiceKey ?? "Paste a speech key";
-if (hosting)
-  $("voice-where").replaceChildren(
-    "Paste a speech key from ",
-    ...hosting.voiceProviders.flatMap((p: { name: string; keys: string; free: boolean }, i: number, all: unknown[]) => [
-      i ? (i === all.length - 1 ? " or " : ", ") : "",
-      Object.assign(document.createElement("a"), { href: p.keys, target: "_blank", rel: "noreferrer", textContent: p.name }),
-      p.free ? " (free)" : "",
-    ]),
-    ".",
-  );
-$("voice-key").onchange = async () => {
-  const field = $<HTMLInputElement>("voice-key");
-  const res = await hostMenu("voice", { key: field.value });
-  const data = await res.json().catch(() => ({ error: "The voice key wasn't saved. Try again." }));
-  if (!res.ok) return toast(data.error, "error");
-  field.value = "";
-  field.placeholder = data.voiceKey ?? "Paste a speech key";
-  toast(data.voiceKey ? "Voice is on" : "Voice is off");
-};
 
 /** Master volume, remembered on this device. */
 function setVolume(percent: number) {
@@ -2814,7 +2730,7 @@ async function openMenu() {
   $("menu-world").textContent = world;
   if (info.agents !== false) void loadJoin();
   showBuilders();
-  if (hostsThisWorld) void loadAccess();
+  if (controls) void loadAccess();
   await refreshMenu();
 }
 
@@ -2838,7 +2754,7 @@ async function refreshMenu() {
           const [love, undo] = li.querySelectorAll("button");
           love!.textContent += m.love ? ` ${m.love}` : "";
           undo!.textContent += ` ${m.undo}/${status.undoNeeded}`;
-          if (hostsThisWorld && desktop?.publishMod) {
+          if (controls && desktop?.publishMod) {
             const share = Object.assign(document.createElement("button"), { textContent: "Share" });
             share.onclick = () => shareMod(m, share);
             li.querySelector(".votes")!.append(share);
@@ -2858,12 +2774,12 @@ async function refreshMenu() {
   if (voting >= 0 || landing) $("menu-mods").querySelectorAll("button")[Math.max(voting, 0)]?.focus();
 }
 
-/** Shares one mod to Community from the desktop app, with the current view as its preview. */
+/** Shares one mod to Community from the desktop app, with the current view as its preview: the host's World frame stages it, and the app publishes it once the player confirms. */
 async function shareMod(m: { name: string; about?: { title?: string; text?: string } }, button: HTMLButtonElement) {
   button.disabled = true;
   button.textContent = "Sharing…";
-  const res = await hostMenu("mod-stage", { id: info.id, name: m.name, title: m.about?.title ?? m.name, description: m.about?.text ?? "", cover: viewJpeg() });
-  const said = res.ok ? await desktop!.publishMod!(info.id, m.name) : (await res.json()).error;
+  const error = await controls!.stageMod({ name: m.name, title: m.about?.title ?? m.name, description: m.about?.text ?? "" }, viewJpeg());
+  const said = error ?? (await desktop!.publishMod!(info.id, m.name));
   if (said) toast(said);
   button.disabled = false;
   button.textContent = "Share";
@@ -3057,7 +2973,7 @@ if (!/Mac|iPhone|iPad/.test(navigator.platform)) for (const k of all(".cmd")) k.
 if (watching) {
   $("hud").hidden = false;
   $("status").hidden = true;
-  if (!(await playTimelapse())) setTimeout(() => location.assign("menu"), 4000);
+  if (!(await playTimelapse())) setTimeout(() => location.assign(mainMenu), 4000);
 } else {
   await start();
   $("hud").hidden = false;
@@ -3068,5 +2984,5 @@ if (watching) {
   stopSpectating();
   connect();
   // The main menu's Share opens the world straight on its Share page.
-  if (hashParams.has("share") && hostsThisWorld) void openMenu().then(() => openShare());
+  if (hashParams.has("share") && controls) void openMenu().then(() => openShare());
 }

@@ -129,3 +129,4 @@ A world can hold several games. Each runs in its own process with its own save, 
 
 Server mods, builds and package installs run in OS sandboxes with access only to their declared code, packages, mod databases and scratch space. Private host files and credentials stay outside; mods' HTTP(S) and WebSocket traffic goes through a checked broker instead of raw sockets.
 
+Client mods control the game page. Use the top-level main menu for sensitive host actions; [the relay's per-world origin isolation remains pending](docs/community.md#the-relay-one-origin-per-room).

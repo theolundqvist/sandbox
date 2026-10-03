@@ -250,16 +250,26 @@ async function unpackWorld(zip: Uint8Array, forkOf?: string) {
 const RELAYED = "x-sandbox-relayed";
 const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 
+/** Forwarding headers: proxies on this machine (the relay tunnel, cloudflared, nginx) arrive on loopback too, so any of them disqualifies. */
+const FORWARDED = [RELAYED, "forwarded", "x-forwarded-for", "x-real-ip", "cf-connecting-ip", "via"];
+/** Whoever sits at this machine is the host, including through an SSH port forward, which also arrives on loopback. */
+const local = (req: Request, server: Server<Pipe>) => LOOPBACK.has(server.requestIP(req)?.address ?? "") && !FORWARDED.some((h) => req.headers.has(h));
+
 /**
- * Whoever sits at this machine is the host, including through an SSH port forward, which also arrives on loopback.
- * Proxies on this machine (the relay tunnel, cloudflared, nginx) arrive on loopback too, so any forwarding header disqualifies,
- * and the Host header must name localhost so a page rebound to 127.0.0.1 by DNS can't read the key.
+ * The main menu has an origin of its own, 127.0.0.1, which serves only the menu, the host's in-game controls and their files: never a world's page, code, files or socket.
+ * Worlds play at localhost, so no mod's code ever runs where the menu's key is readable. A page rebound to 127.0.0.1 by DNS names its own host, so it lands on the game side.
  */
-function local(req: Request, server: Server<Pipe>) {
-  if (!LOOPBACK.has(server.requestIP(req)?.address ?? "")) return false;
-  if ([RELAYED, "forwarded", "x-forwarded-for", "x-real-ip", "cf-connecting-ip", "via"].some((h) => req.headers.has(h))) return false;
-  return /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(req.headers.get("host") ?? "");
+const MENU = `http://127.0.0.1:${PORT}`;
+const GAME = `http://localhost:${PORT}`;
+/** Asked by the menu's own pages, or by no browser at all: never by another site's page, nor a frame of one. */
+function ownPage(req: Request) {
+  const site = req.headers.get("sec-fetch-site");
+  const from = req.headers.get("origin");
+  return (site === null || site === "same-origin" || site === "none") && (from === null || from === MENU);
 }
+/** Answers holding the menu's key, or what it alone may read: never cached, and never readable by a page elsewhere. */
+const PRIVATE = { "cache-control": "no-store", "cross-origin-resource-policy": "same-origin" };
+const redirect = (to: string) => new Response(null, { status: 302, headers: { location: to, "cache-control": "no-store" } });
 
 const RELAY = process.env.SANDBOX_RELAY ?? "https://sandbox-relay.lundqvistliss.com";
 
@@ -442,7 +452,7 @@ async function menuState() {
     worlds: worlds(),
     running:
       running && live
-        ? { id: running.id, name: live.name, invite: live.invite, ...invite(running.id), access: accessOf(running.id)?.mode ?? null, locked: accessOf(running.id)?.mode === "password", hostKey: live.hostKey, players: await world("players"), snapshots: await world("snapshots") }
+        ? { id: running.id, name: live.name, invite: live.invite, ...invite(running.id), access: accessOf(running.id)?.mode ?? null, locked: accessOf(running.id)?.mode === "password", players: await world("players"), snapshots: await world("snapshots") }
         : null,
     relay: RELAY,
     voiceKey: voice ? `${voice.provider} ••••${voice.key.slice(-4)}` : null,
@@ -452,13 +462,14 @@ async function menuState() {
 }
 
 /**
- * A world's picture: its host's game sends a frame of their own view every few minutes, and Worlds shows it. A picture the host picked when sharing stays, marked by cover.picked.
+ * A world's picture: its host's game sends a frame of their own view while it runs, and Worlds shows it. A picture the host picked when sharing stays, marked by cover.picked.
  * Each frame is also kept in shots/, the newest 12, for Share to pick a cover and gallery from.
  */
 async function cover(req: Request, id: string) {
   const path = join(WORLDS, id, "cover.jpg");
   if (!exists(id)) return Response.json({ error: "That world doesn't exist." }, { status: 404 });
   if (req.method !== "POST") return existsSync(path) ? new Response(Bun.file(path), { headers: { "content-type": "image/jpeg", "cache-control": "no-cache" } }) : new Response(null, { status: 404 });
+  if (running?.id !== id) return Response.json({ error: "Only the running world gets a new picture." }, { status: 409 });
   const jpeg = new Uint8Array(await req.arrayBuffer());
   if (!isJpeg(jpeg)) return Response.json({ error: "A cover is a JPEG under 2 MB." }, { status: 400 });
   keepShots(id, "view", [jpeg], 12);
@@ -514,11 +525,34 @@ async function rename(id: unknown, raw: unknown) {
   else writeFileSync(join(WORLDS, id, "config.json"), JSON.stringify({ ...config(id), name }, null, 2));
 }
 
+/**
+ * The host joining their running world from its game, through their controls frame: without the password, and under their own name taken back from another computer without asking.
+ * The world's host key stays here. Someone else's name still asks whoever plays on the host's computer, so a mod in the host's game never gets another player's key.
+ * A new name becomes the host only while the world has none yet: once one is, a mod in the host's game can't hand the role to a name of its own.
+ */
+async function hostJoin(body: { id?: unknown; key?: unknown; name?: unknown; password?: unknown }) {
+  if (!running || running.id !== body.id) throw new Error("That world isn't running any more.");
+  const live = config(running.id);
+  const names: Record<string, string> = readJson(join(WORLDS, running.id, "keys.json"));
+  const name = String(body.name ?? "").trim().toLowerCase();
+  const asked =
+    typeof body.key === "string"
+      ? { key: body.key, host: !live.host || names[body.key] === live.host ? live.hostKey : undefined }
+      : name === live.host || (!live.host && !Object.values(names).includes(name))
+        ? { name, host: live.hostKey }
+        : { invite: live.invite, name, password: body.password };
+  const res = await fetch(`http://127.0.0.1:${running.port}/api/join`, { method: "POST", body: JSON.stringify(asked) });
+  const data = (await res.json()) as { key?: string; name?: string; error?: string; password?: boolean };
+  return res.ok ? Response.json({ key: data.key, name: data.name }) : Response.json({ error: data.error, password: !!data.password }, { status: res.status });
+}
+
 async function menuApi(req: Request, action: string) {
   if (req.headers.get("authorization") !== `Bearer ${state.hostKey}`) return Response.json({ error: "Only the host can open this menu, on their own computer." }, { status: 401 });
   if (action === "cover") return cover(req, new URL(req.url).searchParams.get("id") ?? "");
   const body = req.method === "POST" && action !== "import" ? await req.json() : {};
   try {
+    // The host's in-game controls name the world they were opened for, which must still be the one running; the main menu names none.
+    if (["watch", "stop", "remove", "rewind"].includes(action) && body.id !== undefined && running?.id !== body.id) throw new Error("That world isn't running any more.");
     if (action === "events") {
       report(body.events);
       return new Response(null, { status: 204 });
@@ -547,6 +581,8 @@ async function menuApi(req: Request, action: string) {
     else if (action === "community-claimed") forgetOwnerTokens(body.ids);
     else if (action === "export") return await packWorld(body.id);
     else if (action === "import") await unpackWorld(await req.bytes());
+    else if (action === "join") return await hostJoin(body);
+    else if (action === "watch") return Response.json(await world("watch", {}));
     else if (action === "host") {
       // A world hosted with new settings starts again under them.
       if (exists(body.id) && configure(body.id, body) && running?.id === body.id) await stop();
@@ -788,7 +824,24 @@ async function unshareWorld(id: unknown) {
   saveShared(id as string, shared.from ? { from: shared.from } : null);
 }
 
-const page = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });
+/** A page of the menu's: its own inline scripts and this launcher's files run, nothing a world or a link adds; `ancestors` may frame it, by default no one. */
+async function page(file: string, ancestors = "'none'") {
+  const html = await Bun.file(join(ENGINE, "client", file)).text();
+  const scripts = [...html.matchAll(/<script type="module">([\s\S]*?)<\/script>/g)].map(([, code]) => `'sha256-${new Bun.CryptoHasher("sha256").update(code!).digest("base64")}'`);
+  const policy = [
+    "default-src 'self'",
+    `script-src 'self' ${scripts.join(" ")}`,
+    "style-src 'self' 'unsafe-inline'",
+    // Worlds' pictures and clips: this computer's as blobs, Community's from where it keeps them.
+    `img-src 'self' data: blob: ${new URL(COMMUNITY).origin}`,
+    `media-src 'self' blob: ${new URL(COMMUNITY).origin}`,
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    `frame-ancestors ${ancestors}`,
+  ];
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": policy.join("; "), "x-content-type-options": "nosniff", ...PRIVATE } });
+}
 
 Bun.serve<Pipe>({
   port: PORT,
@@ -797,16 +850,32 @@ Bun.serve<Pipe>({
   maxRequestBodySize: 2 ** 30,
   async fetch(req, server) {
     const url = new URL(req.url);
-    if (url.pathname === "/menu") return page("menu.html");
-    if (url.pathname === "/api/local-key") return local(req, server) ? Response.json({ key: state.hostKey }) : Response.json({ error: "Only on the host's own computer." }, { status: 401 });
-    if (url.pathname.startsWith("/api/menu/")) return menuApi(req, url.pathname.slice("/api/menu/".length));
+    if (req.headers.get("host") === `127.0.0.1:${PORT}` && !FORWARDED.some((h) => req.headers.has(h))) {
+      if (url.pathname === "/") return redirect("/menu");
+      if (url.pathname === "/menu") return page("menu.html");
+      // The host's controls inside their own game, in a frame only that game may hold.
+      if (url.pathname === "/host") return page("host.html", GAME);
+      if (url.pathname === "/api/local-key")
+        return local(req, server) && ownPage(req) ? Response.json({ key: state.hostKey }, { headers: PRIVATE }) : Response.json({ error: "Only on the host's own computer." }, { status: 401, headers: PRIVATE });
+      if (url.pathname.startsWith("/api/menu/")) {
+        if (!ownPage(req)) return Response.json({ error: "Only the main menu's own pages ask this." }, { status: 403, headers: PRIVATE });
+        const res = await menuApi(req, url.pathname.slice("/api/menu/".length));
+        for (const [name, value] of Object.entries(PRIVATE)) res.headers.set(name, value);
+        return res;
+      }
+      return (await frontFile(url.pathname)) ?? new Response("not found", { status: 404 });
+    }
+    // Everything else is the game's side, where worlds' code runs: it may send the host to their menu, never answer as it.
+    if (url.pathname === "/menu") return local(req, server) ? redirect(`${MENU}/menu`) : page("menu.html");
+    if (url.pathname === "/api/local-key") return Response.json({ error: "Only on the host's own computer." }, { status: 401, headers: PRIVATE });
+    if (url.pathname.startsWith("/api/menu/")) return Response.json({ error: `The main menu answers only at ${MENU}, on the host's own computer.` }, { status: 403, headers: PRIVATE });
     const front = await frontFile(url.pathname);
     if (front) return front;
     if (url.pathname.startsWith("/vendor/three/")) {
       const file = Bun.file(join(ENGINE, "../node_modules/three", url.pathname.slice("/vendor/three/".length).replaceAll("..", "")));
       return (await file.exists()) ? new Response(file) : new Response("not found", { status: 404 });
     }
-    if (!running) return url.pathname === "/" ? page("menu.html") : Response.json({ error: "No world is running right now." }, { status: 503 });
+    if (!running) return url.pathname !== "/" ? Response.json({ error: "No world is running right now." }, { status: 503 }) : local(req, server) ? redirect(`${MENU}/menu`) : page("menu.html");
     if (req.headers.get("upgrade") === "websocket")
       return server.upgrade(req, { data: { target: `ws://127.0.0.1:${running.port}${url.pathname}${url.search}`, queue: [] } }) ? undefined : new Response("upgrade failed", { status: 400 });
     // Pass compressed bodies through as they are: decompressing here would leave a gzip header on plain bytes.
@@ -855,9 +924,9 @@ if (process.env.SANDBOX_EXIT_WITH_STDIN) void Bun.stdin.stream().pipeTo(new Writ
 
 if (state.hosting && existsSync(join(WORLDS, state.hosting))) await host(state.hosting).catch((e) => console.error(e.message));
 void signUp();
-const menuLink = `http://localhost:${PORT}/menu#key=${state.hostKey}`;
+const menuLink = `${MENU}/menu#key=${state.hostKey}`;
 // The link carries the host key, so it goes only to a terminal, never into a log file; on this computer the menu finds the key by itself.
-console.log(process.stdout.isTTY ? `\n  Main menu (keep private): ${menuLink}\n` : `Main menu: http://localhost:${PORT}/menu`);
+console.log(process.stdout.isTTY ? `\n  Main menu (keep private): ${menuLink}\n` : `Main menu: ${MENU}/menu`);
 /** How a desktop opens a link in the browser; a Linux launcher is usually a server, so it only prints the link. */
 const BROWSER: Partial<Record<NodeJS.Platform, string[]>> = { darwin: ["open"], win32: ["rundll32", "url.dll,FileProtocolHandler"] };
 const opener = BROWSER[process.platform];
