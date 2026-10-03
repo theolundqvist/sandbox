@@ -729,6 +729,22 @@ async function dropCredit(req: Request, id: string) {
   return new Response(null, { status: 204, headers: cors });
 }
 
+/** Its owner, or a builder who accepted their credit. */
+const isBuilder = async (world: { id: string; account: string | null }, account: string) =>
+  world.account === account || (await sql`select 1 from credits where world = ${world.id} and account = ${account} and state = 'accepted'`).length > 0;
+
+/** What agents used building a world, under its Community id or the id its host's computer keeps for it, by model and by whether a subscription paid. Only its builders see it. */
+async function worldUsage(req: Request, id: string) {
+  const account = await signedIn(req);
+  const [world] = await sql`select id, account, origin from worlds where id = ${id} and zip_key is not null and removed_at is null`;
+  if (!world) throw new Refusal("There is no such world.", 404);
+  if (!(await isBuilder(world, account.id))) throw new Refusal("Only the world's builders see what building it used.", 403);
+  const rows = await sql`select provider, model, subscription, sum(input_tokens)::float8 as input, sum(output_tokens)::float8 as output, sum(cache_read)::float8 as cache_read,
+      sum(cache_write)::float8 as cache_write, sum(cost_usd)::float8 as cost, sum(requests)::float8 as requests
+    from agent_usage where world_key in (${world.id}, ${world.origin ?? world.id}) group by provider, model, subscription order by cost desc, model, subscription`;
+  return json(rows.map((r: any) => ({ provider: r.provider, model: r.model, subscription: r.subscription, inputTokens: r.input, outputTokens: r.output, cacheRead: r.cache_read, cacheWrite: r.cache_write, costUsd: r.cost, requests: r.requests })));
+}
+
 export const builders = async (world: string) =>
   (await sql`select a.username from credits c join accounts a on a.id = c.account where c.world = ${world} and c.state = 'accepted' and a.banned_at is null order by c.accepted_at`).map((r: any) => r.username as string);
 
@@ -1083,8 +1099,10 @@ async function route(req: Request, ip: string) {
       if (row.removed_at) throw new Refusal("This world was taken down.", 410);
       const [{ forks }] = await sql`select count(*)::int as forks from worlds w left join accounts a on a.id = w.account where w.remix_of = ${id} and ${listed()}`;
       const history = (await sql`select version, changelog, at from versions where world = ${id} order by version desc limit 20`).map(shownVersion);
-      return json({ ...(await shown(row, account)), parent: await parentOf(row.remix_of, row.parent_version), forks, builders: [row.username ?? row.author, ...(await builders(id!))], history });
+      return json({ ...(await shown(row, account)), parent: await parentOf(row.remix_of, row.parent_version), forks, builders: [row.username ?? row.author, ...(await builders(id!))], history, builder: !!account && (await isBuilder(row, account.id)) });
     }
+    case "GET :id/usage":
+      return worldUsage(req, id!);
     case "GET :id/forks": {
       // Newest first, 50 at a time, going on from ?after=<id>.
       await live(id!);

@@ -535,6 +535,7 @@ const COMMUNITY_ACTIONS = {
   world: ({ id }) => community(`/worlds/${worldId(id)}`),
   mods: ({ q, sort, after }) => community(`/mods?sort=${sort === "new" ? "new" : "top"}&q=${encodeURIComponent(String(q ?? "").slice(0, 100))}${after ? `&after=${worldId(after)}` : ""}`),
   mod: ({ id }) => community(`/mods/${worldId(id)}`),
+  usage: ({ id }) => community(`/worlds/${worldId(id)}/usage`),
   forks: ({ id, after }) => community(`/worlds/${worldId(id)}/forks${after ? `?after=${worldId(after)}` : ""}`),
   vote: ({ id, up }) => community(`/worlds/${worldId(id)}/vote`, { method: "PUT", body: { up: up === true } }),
   report: ({ id }) => community(`/worlds/${worldId(id)}/report`, { method: "POST" }),

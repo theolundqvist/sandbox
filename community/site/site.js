@@ -56,6 +56,19 @@ async function copyFor(w, tip) {
 }
 
 const counted = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
+/** What agents used building a world, for its builders only. */
+async function showUsage(w) {
+  $("usage-part").hidden = !w.builder;
+  if (!w.builder) return;
+  const rows = await api(`/worlds/${w.id}/usage`);
+  $("usage-none").hidden = rows.length > 0;
+  $("usage-list").replaceChildren(
+    ...rows.map((u) =>
+      el("div", { className: "world" }, el("span", { className: "what" }, el("b", { textContent: u.model }), el("small", { textContent: `${tokens(u.inputTokens + u.cacheRead + u.cacheWrite)} in · ${tokens(u.outputTokens)} out · ${u.subscription ? "Subscription" : "API key"}` })), el("span", { className: "when", textContent: `$${u.costUsd.toFixed(2)}` })),
+    ),
+  );
+}
+const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n)) + " tokens";
 const day = (ms) => new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(new Date(ms).getFullYear() !== new Date().getFullYear() && { year: "numeric" }) }).replaceAll(" ", "\u00a0");
 const ago = (ms) => {
   const m = Math.round((Date.now() - ms) / 60000);
@@ -204,7 +217,7 @@ async function showWorld(id, kind = "world") {
   $("version-list").replaceChildren(
     ...(w.history ?? []).map((v) => el("div", { className: "world" }, el("span", { className: "what" }, el("b", { textContent: `Version ${v.version}` }), el("small", { textContent: v.changelog })), el("span", { className: "when", textContent: day(v.at) }))),
   );
-  await Promise.all([showForks(id, w.forks), showComments(id, false, here)]);
+  await Promise.all([showForks(id, w.forks), showComments(id, false, here), showUsage(w)]);
 }
 
 /** The listed worlds forked from this one, newest first. */

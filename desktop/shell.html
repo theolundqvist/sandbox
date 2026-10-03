@@ -134,6 +134,7 @@
       <button class="item" id="cworld-parent" hidden>Forked from<span class="value" id="cworld-parent-name"></span></button>
       <button class="item" id="cworld-forks" hidden>Forks<span class="value" id="cworld-fork-count"></span></button>
       <button class="item" id="cworld-versions" hidden>Versions<span class="value" id="cworld-version"></span></button>
+      <button class="item" id="cworld-usage" hidden>Agent usage</button>
       <button class="item danger" id="cworld-down" hidden>Take down</button>
       <button class="item" id="cworld-report" hidden>Report</button>
     </div>
@@ -151,6 +152,12 @@
     <div id="credits-part" hidden><h2 class="status">Credits waiting</h2><div class="items" id="credit-list"></div></div>
     <div class="items" id="profile-worlds"></div>
     <p class="status" id="profile-none" hidden>No worlds yet</p>
+  </section>
+
+  <section id="usage" class="screen" data-nav hidden>
+    <h1>Agent usage</h1>
+    <div class="items" id="usage-list"></div>
+    <p class="status" id="usage-none" hidden>No agent has reported building here yet</p>
   </section>
 
   <section id="versions" class="screen" data-nav hidden>
@@ -374,6 +381,13 @@
   for (const b of document.querySelectorAll("[data-to]")) b.onclick = () => show(b.dataset.to);
   $("back").onclick = back;
 
+  /** One model's use: its tokens in and out, who paid, and what it cost or would have at API prices. */
+  const usageRow = (u) => {
+    const row = el("div", { className: "item pictured" }, el("span", { className: "what", textContent: u.model }, el("small", { textContent: `${tokens(u.inputTokens + u.cacheRead + u.cacheWrite)} in · ${tokens(u.outputTokens)} out · ${u.subscription ? "Subscription" : "API key"}` })), el("span", { className: "value", textContent: `$${u.costUsd.toFixed(2)}` }));
+    row.dataset.key = `usage-${u.provider}-${u.model}-${u.subscription}`;
+    return row;
+  };
+  const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n)) + " tokens";
   const day = (ms) => new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(new Date(ms).getFullYear() !== new Date().getFullYear() && { year: "numeric" }) }).replaceAll(" ", "\u00a0");
   const ago = (ms) => {
     const m = Math.round((Date.now() - ms) / 60000);
@@ -681,6 +695,7 @@
       ? `The original was updated ${day(parent.updated.at)}${parent.updated.changelog ? `: ${parent.updated.changelog}` : ""}`
       : `Forked from ${parent?.removed ? "a removed" : "an unlisted"} ${mod ? "mod" : "world"}`;
     $("cworld-versions").hidden = !(w.history?.length > 1);
+    $("cworld-usage").hidden = !w.builder;
     $("cworld-version").textContent = String(w.version ?? "");
     $("cworld-forks").hidden = !w.forks;
     $("cworld-fork-count").textContent = String(w.forks ?? "");
@@ -717,6 +732,18 @@
     loadForks();
   };
   $("forks-more").onclick = () => loadForks(true);
+  $("cworld-usage").onclick = async () => {
+    show("usage");
+    let rows = [];
+    try {
+      rows = await communityCall("usage", { id: opened.id });
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+    $("usage-none").hidden = rows.length > 0;
+    $("usage-list").replaceChildren(...rows.map(usageRow));
+    enter();
+  };
   $("cworld-versions").onclick = () => {
     $("version-list").replaceChildren(
       ...opened.history.map((v) => {
