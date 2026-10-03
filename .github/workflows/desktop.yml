@@ -43,6 +43,8 @@ jobs:
             nice -n 19 timeout --signal=KILL 60s bun --no-env-file test engine/box/box.test.ts
       - run: bun install --frozen-lockfile
       - run: bunx playwright-core install --with-deps chromium
+      - name: Install native stack debugger
+        run: sudo apt-get install -y --no-install-recommends gdb
       - run: nice -n 19 xvfb-run -a node --test --test-name-pattern="$TEST_PATTERN" app.test.mjs
         timeout-minutes: ${{ inputs.tests && 3 || 25 }}
         env:
