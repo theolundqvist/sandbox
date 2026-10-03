@@ -59,6 +59,7 @@ function worlds() {
         played: statSync(saved).mtimeMs,
         cover: existsSync(join(dir, "cover.jpg")) ? statSync(join(dir, "cover.jpg")).mtimeMs : null,
         shared: shared[id]?.link ? { id: shared[id].id, link: shared[id].link, visibility: shared[id].visibility, title: shared[id].title, description: shared[id].description } : null,
+        from: shared[id]?.from ?? null,
       };
     })
     .sort((a, b) => b.played - a.played);

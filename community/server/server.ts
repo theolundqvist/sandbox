@@ -25,6 +25,9 @@ const RATE = {
   "auth-hour": [20, "1 hour"],
   "auth-email": [5, "1 minute"],
   vote: [60, "1 minute"],
+  play: [30, "1 hour"],
+  heartbeat: [10, "1 minute"],
+  comment: [1, "20 seconds"],
 } as const;
 const ID = /^[a-z0-9]{12}$/;
 
@@ -114,7 +117,9 @@ async function sessionOf(req: Request): Promise<Account | null> {
     token = cookie(req);
     if (token && req.method !== "GET" && (req.headers.get("origin") !== SITE || req.headers.get("x-sandbox") !== "1")) return null;
   }
-  if (!token) return null;
+  return token ? accountOfToken(token) : null;
+}
+async function accountOfToken(token: string): Promise<Account | null> {
   const [account] = await sql`with s as (
       update sessions set last_seen = now() where token_hash = ${sha256(token)} and last_seen > now() - ${`${SESSION_DAYS} days`}::interval returning account
     ) select a.id, a.email, a.username, a.created_at, a.username_changed_at, a.banned_at from accounts a join s on s.account = a.id`;
@@ -203,6 +208,7 @@ async function deleteAccount(req: Request) {
 }
 export async function removeAccount(id: string) {
   for (const world of await sql`select * from worlds where account = ${id} and removed_at is null`) await takeDown(world, "account", false);
+  await sql`delete from reports where reporter = ${id}`;
   await sql`delete from accounts where id = ${id}`;
 }
 
@@ -381,6 +387,8 @@ async function shown(row: any, account?: Account | null) {
     clip: row.clip_key ? presign(worlds, row.clip_key) : null,
     votes: row.votes ?? 0,
     voted: !!row.voted,
+    plays: row.plays ?? 0,
+    players: row.players ?? 0,
     mine: !!account && row.account === account.id,
   };
 }
@@ -539,6 +547,92 @@ async function vote(req: Request, id: string) {
   return json({ votes, voted: up });
 }
 
+// ---------- plays ----------
+
+/** A play starts for an install (and the account signed in on it, if the app says) in a live world. From then on the install's earlier plays take no more time. */
+async function startPlay(req: Request) {
+  const install = await installOf(req);
+  await limit(install.id, "play", "Too many plays from this computer this hour.");
+  const world = String((await req.json()).world ?? "");
+  const session = req.headers.get("x-session");
+  const account = session ? await accountOfToken(session) : null;
+  const [live] = ID.test(world) ? await sql`select id from worlds where id = ${world} and zip_key is not null and removed_at is null` : [];
+  if (!live) throw new Refusal("There is no such world.", 404);
+  const [play] = await sql`insert into plays (world, install, account) values (${world}, ${install.id}, ${account?.id ?? null}) returning id`;
+  return json({ play: play.id }, 201);
+}
+
+/**
+ * The app sends how long its play has lasted so far. It counts up to the time since the play started on this server, never less than before; a play that went past a minute updates its world's counts.
+ * Replays, a second app on the same install, or a clock running fast credit nothing extra: only the install's newest play counts up.
+ */
+async function beat(req: Request, id: string) {
+  const install = await installOf(req);
+  await limit(install.id, "heartbeat", "Too many heartbeats from this computer.");
+  const seconds = Math.max(0, Math.floor(Number((await req.json()).seconds) || 0));
+  const [play] = UUID.test(id)
+    ? await sql`update plays set seconds = greatest(seconds, least(${seconds}, extract(epoch from now() - started_at)::int)) where id = ${id} and install = ${install.id}
+        and id = (select id from plays where install = ${install.id} order by started_at desc, id desc limit 1) returning world, seconds`
+    : [];
+  if (!play) throw new Refusal("That play has ended. Start another.", 409);
+  if (play.seconds >= 60)
+    await sql`update worlds set plays = c.plays, players = c.players from (select count(*)::int as plays, count(distinct install)::int as players from plays where world = ${play.world} and seconds >= 60) c where id = ${play.world}`;
+  return json({ seconds: play.seconds });
+}
+
+// ---------- comments ----------
+
+const shownComment = (c: any, account: Account | null) => ({
+  id: String(c.id),
+  author: c.username,
+  body: c.removed_at ? "" : c.body,
+  at: new Date(c.at).getTime(),
+  removed: !!c.removed_at,
+  mine: !!account && c.account === account.id,
+  canRemove: !!account && !c.removed_at && (c.account === account.id || c.owner === account.id),
+});
+const COMMENT_ROWS = sql`select c.*, a.username, w.account as owner from comments c join accounts a on a.id = c.account join worlds w on w.id = c.world`;
+
+/** A world's comments, oldest first, 100 at a time; ?after=<id> goes on from there. */
+async function comments(req: Request, world: string) {
+  const account = await sessionOf(req);
+  const after = Number(new URL(req.url).searchParams.get("after")) || 0;
+  const rows = await sql`${COMMENT_ROWS} where c.world = ${world} and c.id > ${after} and a.banned_at is null order by c.id limit 100`;
+  return json(rows.map((c: any) => shownComment(c, account)));
+}
+
+async function comment(req: Request, world: string) {
+  const account = allowed(await signedIn(req));
+  const body = String((await req.json()).body ?? "").trim();
+  if (!body || body.length > 1000) throw new Refusal("A comment is 1 to 1,000 characters.");
+  const [live] = await sql`select id from worlds where id = ${world} and zip_key is not null and removed_at is null`;
+  if (!live) throw new Refusal("There is no such world.", 404);
+  await limit(account.id, "comment", "One comment every 20 seconds.");
+  const [row] = await sql`insert into comments (world, account, body) values (${world}, ${account.id}, ${body}) returning id`;
+  const [c] = await sql`${COMMENT_ROWS} where c.id = ${row.id}`;
+  return json(shownComment(c, account), 201);
+}
+
+/** Its author or the owner of its world removes a comment; its words go, the row stays so the thread keeps its shape. */
+async function uncomment(req: Request, id: string) {
+  const account = await signedIn(req);
+  const [c] = /^\d{1,18}$/.test(id) ? await sql`${COMMENT_ROWS} where c.id = ${id} and c.removed_at is null` : [];
+  if (!c) throw new Refusal("There is no such comment.", 404);
+  if (c.account !== account.id && c.owner !== account.id) throw new Refusal("Only its author or the world's owner removes a comment.", 403);
+  await sql`update comments set removed_at = now(), removed_by = ${c.account === account.id ? "author" : "owner"}, body = '' where id = ${id}`;
+  return new Response(null, { status: 204, headers: cors });
+}
+
+/** A report from one account, or one IP when signed out, counts once. */
+async function report(req: Request, ip: string, kind: "comment", target: string) {
+  await limit(client(req, ip), "report", "Thanks, we have your reports.");
+  const [c] = /^\d{1,18}$/.test(target) ? await sql`select id from comments where id = ${target} and removed_at is null` : [];
+  if (!c) throw new Refusal("There is no such comment.", 404);
+  const reporter = (await sessionOf(req))?.id ?? client(req, ip);
+  await sql`insert into reports (kind, target, reporter) values (${kind}, ${target}, ${reporter}) on conflict do nothing`;
+  return json({ reported: true });
+}
+
 async function route(req: Request, ip: string) {
   const url = new URL(req.url);
   const at = `${req.method} ${url.pathname}`;
@@ -553,6 +647,11 @@ async function route(req: Request, ip: string) {
   if (at === "GET /account") return json({ account: me(await signedIn(req)) });
   if (at === "PATCH /account") return rename(req);
   if (at === "DELETE /account") return deleteAccount(req);
+  if (at === "POST /plays") return startPlay(req);
+  const [, part, part2, part3] = url.pathname.split("/");
+  if (req.method === "PUT" && part === "plays" && part2 && !part3) return beat(req, part2);
+  if (req.method === "DELETE" && part === "comments" && part2 && !part3) return uncomment(req, part2);
+  if (req.method === "POST" && part === "comments" && part2 && part3 === "report") return report(req, ip, "comment", part2);
   if (at === "GET /account/worlds") {
     const account = await signedIn(req);
     const rows = await sql`${worldRows(account)} where w.account = ${account.id} and w.zip_key is not null and w.removed_at is null order by w.created_at desc, w.id desc`;
@@ -568,8 +667,15 @@ async function route(req: Request, ip: string) {
       const account = await sessionOf(req);
       const after = url.searchParams.get("after") ?? "";
       // Compared in Postgres: its timestamps are finer than a JavaScript Date.
+      // Most played first (by installs that played at least a minute), or newest first with ?sort=new.
+      const top = url.searchParams.get("sort") !== "new";
+      const cursor = !ID.test(after)
+        ? sql``
+        : top
+          ? sql`and (w.players, w.created_at, w.id) < (select players, created_at, id from worlds where id = ${after})`
+          : sql`and (w.created_at, w.id) < (select created_at, id from worlds where id = ${after})`;
       const rows = await sql`${worldRows(account)} where w.visibility = 'public' and w.zip_key is not null and w.removed_at is null and a.banned_at is null
-        ${ID.test(after) ? sql`and (w.created_at, w.id) < (select created_at, id from worlds where id = ${after})` : sql``} order by w.created_at desc, w.id desc limit ${PAGE}`;
+        ${cursor} order by ${top ? sql`w.players desc,` : sql``} w.created_at desc, w.id desc limit ${PAGE}`;
       return json(await Promise.all(rows.map((row: any) => shown(row, account))));
     }
     case "POST ":
@@ -591,6 +697,10 @@ async function route(req: Request, ip: string) {
       return remove(req, id!);
     case "PUT :id/vote":
       return vote(req, id!);
+    case "GET :id/comments":
+      return comments(req, id!);
+    case "POST :id/comments":
+      return comment(req, id!);
     case "POST :id/report": {
       await limit(client(req, ip), "report", "Thanks, we have your reports.");
       const [row] = await sql`update worlds set reports = reports + 1 where id = ${id} and zip_key is not null returning id`;

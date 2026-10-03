@@ -269,7 +269,9 @@ function startServer() {
 async function hostGame(target) {
   const { base, key } = await startServer();
   const screen = { new: "screen=create", community: "screen=community" }[target] ?? `world=${target}`;
-  return play(`${base}/menu#key=${key}&${screen}`);
+  const opened = play(`${base}/menu#key=${key}&${screen}`);
+  setTimeout(beatNow, 5000);
+  return opened;
 }
 
 /** Starts this app's server again after a restart: the launcher brings back the world it hosted, under the same link. */
@@ -406,18 +408,59 @@ async function hostingHere(event, id) {
   return event.sender === game?.view.webContents && (await hostState())?.running?.id === id;
 }
 
+/** Plays of Community worlds hosted here: focused time as a running total each minute, rechecking the hosted world since the in-game menu can switch it. */
+let focusedMs = 0;
+let focusedSince = null;
+const focusedNow = () => focusedMs + (focusedSince === null ? 0 : Date.now() - focusedSince);
+/** @type {{ local: string, id: string, to: { token: string, host: string }, from: number } | null} */ let playing = null;
+async function beat() {
+  const s = game && usage.sharing() ? await hostState() : null;
+  const local = s?.running?.id ?? null;
+  if (playing && playing.local !== local) await sendBeat(playing).then(() => (playing = null));
+  if (playing) return sendBeat(playing);
+  const world = local && s.worlds.find((w) => w.id === local);
+  const id = world?.shared?.id ?? world?.from;
+  const to = id && (await usage.install());
+  if (!to) return;
+  const token = to.host === COMMUNITY && sessionToken();
+  const res = await fetch(`${to.host}/plays`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${to.token}`, "content-type": "application/json", ...(token && { "x-session": token }) },
+    body: JSON.stringify({ world: id }),
+    signal: AbortSignal.timeout(10000),
+  }).catch(() => null);
+  if (res?.ok) playing = { local, id: (await res.json()).play, to, from: focusedNow() };
+}
+const sendBeat = (p) =>
+  fetch(`${p.to.host}/plays/${p.id}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${p.to.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ seconds: Math.round((focusedNow() - p.from) / 1000) }),
+    signal: AbortSignal.timeout(10000),
+  }).catch(() => null);
+let beating = Promise.resolve();
+const beatNow = () => (beating = beating.then(beat, beat));
+
 /** Community from the launch screen, as the signed-in account. Ids are checked here, since they go into the API's paths. */
 const worldId = (id) => {
   if (!/^[a-z0-9]{12}$/.test(String(id))) throw new Error("That world isn't in Community.");
   return String(id);
 };
+const commentId = (id) => {
+  if (!/^[0-9]{1,18}$/.test(String(id))) throw new Error("That comment isn't there any more.");
+  return String(id);
+};
 /** The local world a community world was published from, if it was from here. */
 const publishedFrom = async (id) => (await startServer(), await hostState())?.worlds.find((w) => w.shared?.id === id)?.id;
 const COMMUNITY_ACTIONS = {
-  list: ({ after, mine }) => (mine ? community("/account/worlds") : community(`/worlds${after ? `?after=${worldId(after)}` : ""}`)),
+  list: ({ after, mine, sort }) => (mine ? community("/account/worlds") : community(`/worlds?sort=${sort === "new" ? "new" : "top"}${after ? `&after=${worldId(after)}` : ""}`)),
   world: ({ id }) => community(`/worlds/${worldId(id)}`),
   vote: ({ id, up }) => community(`/worlds/${worldId(id)}/vote`, { method: "PUT", body: { up: up === true } }),
   report: ({ id }) => community(`/worlds/${worldId(id)}/report`, { method: "POST" }),
+  comments: ({ id, after }) => community(`/worlds/${worldId(id)}/comments${after ? `?after=${commentId(after)}` : ""}`),
+  comment: ({ id, body }) => community(`/worlds/${worldId(id)}/comments`, { method: "POST", body: { body: String(body ?? "") } }),
+  "remove-comment": ({ id }) => community(`/comments/${commentId(id)}`, { method: "DELETE" }),
+  "report-comment": ({ id }) => community(`/comments/${commentId(id)}/report`, { method: "POST" }),
   "take-down": async ({ id }) => {
     const local = await publishedFrom(worldId(id));
     await community(`/worlds/${id}`, { method: "DELETE" });
@@ -518,6 +561,7 @@ function leave() {
   waiting = null;
   stopAgent();
   if (!game) return;
+  void beatNow();
   win.contentView.removeChildView(game.view);
   // Closing as a browser tab would lets the page finish: the host's game sends its world's picture as it goes.
   game.view.webContents.close({ waitForBeforeUnload: true });
@@ -648,7 +692,16 @@ function createWindow() {
       save();
       layout();
     });
-  win.on("focus", () => (game ? game.view : shell).webContents.focus());
+  win.on("focus", () => {
+    focusedSince ??= Date.now();
+    (game ? game.view : shell).webContents.focus();
+  });
+  win.on("blur", () => {
+    focusedMs = focusedNow();
+    focusedSince = null;
+  });
+  if (win.isFocused()) focusedSince = Date.now();
+  setInterval(beatNow, 60000);
   win.on("close", (event) => {
     if (quitting) return;
     event.preventDefault();
@@ -850,7 +903,8 @@ async function install() {
   state.updatedTo = update;
   quitting = true;
   stopAgent();
-  await Promise.all([stopServer(), usage.drain()]);
+  await Promise.all([beatNow(), usage.drain()]);
+  await stopServer();
   save();
   app.quit();
   return null;
@@ -868,7 +922,8 @@ function quit() {
     }
     quitting = true;
     stopAgent();
-    await Promise.all([stopServer(), usage.drain()]);
+    await Promise.all([beatNow(), usage.drain()]);
+    await stopServer();
     app.quit();
   })().finally(() => (confirming = null));
   return confirming;

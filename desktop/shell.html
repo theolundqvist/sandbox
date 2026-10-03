@@ -23,6 +23,13 @@
   #cworld .stage :is(img, video) { display: block; width: 100%; height: 100%; object-fit: cover; }
   #cworld-by { margin: -16px 0 8px; }
   #cworld-about { margin: 0 0 24px; color: var(--dim); max-width: 640px; }
+  .comment { max-width: 720px; padding: 14px 0 14px 32px; border-bottom: 1px solid var(--line); user-select: text; }
+  .comment p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .comment.removed p { color: var(--dim); }
+  .comment small { color: var(--dim); font-size: 13px; }
+  .comment button { margin-left: 16px; padding: 0; background: none; border: 0; color: var(--dim); font: 700 12px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; cursor: pointer; outline: none; }
+  .comment button:is(:hover, :focus-visible) { color: var(--text); }
+  #comment-list { margin-top: 16px; }
   .cover video { display: block; width: 100%; height: 100%; object-fit: cover; }
   @media (max-width: 1000px), (max-height: 640px) {
     .front { bottom: 64px; padding: 28px 48px 0; }
@@ -85,7 +92,7 @@
 
   <section id="community" class="screen" data-nav hidden>
     <h1>Community</h1>
-    <div class="field"><span>Show</span><div class="pick" id="community-tab" data-options="new:Newest,mine:My worlds"></div></div>
+    <div class="field"><span>Show</span><div class="pick" id="community-tab" data-options="top:Most played,new:Newest,mine:My worlds"></div></div>
     <div class="items"><button class="item" id="go-publish">Publish a world</button></div>
     <div class="items" id="community-list"></div>
     <p id="community-status" class="status" hidden></p>
@@ -101,9 +108,19 @@
       <button class="item" id="cworld-play">Play</button>
       <button class="item" id="cworld-fork">Fork<span class="value">Copy to Worlds</span></button>
       <button class="item" id="cworld-vote">Upvote<span class="value" id="cworld-votes"></span></button>
+      <button class="item" id="cworld-comments">Comments</button>
       <button class="item danger" id="cworld-down" hidden>Take down</button>
       <button class="item" id="cworld-report" hidden>Report</button>
     </div>
+  </section>
+
+  <section id="comments" class="screen" data-nav hidden>
+    <h1 id="comments-title"></h1>
+    <label class="item entry"><input type="text" id="comment-text" maxlength="1000" placeholder="Write a comment" autocomplete="off"></label>
+    <div class="items"><button class="item" id="comment-go">Post</button></div>
+    <div id="comment-list"></div>
+    <p id="comments-status" class="status" hidden></p>
+    <div class="items"><button class="item" id="comments-more" hidden>More</button></div>
   </section>
 
   <section id="trust" class="screen" data-nav hidden>
@@ -259,7 +276,7 @@
       e.preventDefault();
       if (current()?.id === "join") join();
       else if (current()?.id === "name") $("name-go").click();
-      else if (["signin", "signup", "delete-account", "publish"].includes(current()?.id)) $({ signin: "signin-go", signup: "signup-go", "delete-account": "delete-yes", publish: "publish-go" }[current().id]).click();
+      else if (["signin", "signup", "delete-account", "publish", "comments"].includes(current()?.id)) $({ signin: "signin-go", signup: "signup-go", "delete-account": "delete-yes", publish: "publish-go", comments: "comment-go" }[current().id]).click();
       else document.activeElement.blur();
     }
   });
@@ -454,6 +471,7 @@
     tile.append(w.clip ? el("video", { src: w.clip, poster: w.cover, muted: true, loop: true, autoplay: true, playsInline: true }) : el("img", { src: w.cover, alt: "", onerror: (e) => e.target.remove() }));
     return tile;
   };
+  const counted = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
   let listed = [];
   async function loadCommunity(more = false) {
     const mine = $("community-tab").dataset.value === "mine";
@@ -461,7 +479,7 @@
     if (!more) listed = [];
     communityStatus(listed.length ? "" : "Loading");
     try {
-      const page = await communityCall("list", { mine, after: more ? listed.at(-1)?.id : undefined });
+      const page = await communityCall("list", { mine, sort: $("community-tab").dataset.value, after: more ? listed.at(-1)?.id : undefined });
       listed.push(...page);
       $("community-more").hidden = mine || page.length < 50;
     } catch (e) {
@@ -470,7 +488,7 @@
     communityStatus(listed.length ? "" : mine ? "Worlds you publish show up here" : "No worlds shared yet");
     $("community-list").replaceChildren(
       ...listed.map((w) => {
-        const b = el("button", { className: "item pictured", onclick: () => openWorld(w) }, clipOf(w, "cover"), el("span", { className: "what", textContent: w.title }, el("small", { textContent: `by ${w.author}` })), el("span", { className: "value", textContent: w.visibility === "link" ? "Link only" : w.votes === 1 ? "1 vote" : `${w.votes} votes` }));
+        const b = el("button", { className: "item pictured", onclick: () => openWorld(w) }, clipOf(w, "cover"), el("span", { className: "what", textContent: w.title }, el("small", { textContent: `by ${w.author} · ${counted(w.plays, "play")} · ${counted(w.votes, "vote")}` })), el("span", { className: "value", textContent: w.visibility === "link" ? "Link only" : counted(w.players, "player") }));
         b.dataset.key = w.id;
         return b;
       }),
@@ -485,7 +503,7 @@
     const w = opened;
     $("cworld-stage").replaceChildren(clipOf(w, "stage-art"));
     $("cworld-title").textContent = w.title;
-    $("cworld-by").textContent = `by ${w.author}`;
+    $("cworld-by").textContent = `by ${w.author} · ${counted(w.players, "player")} · ${counted(w.plays, "play")}`;
     $("cworld-about").textContent = w.description;
     $("cworld-votes").textContent = String(w.votes);
     $("cworld-vote").firstChild.textContent = w.voted ? "Upvoted" : "Upvote";
@@ -534,6 +552,64 @@
       } catch (e) {
         $("error").textContent = e.message;
       }
+    });
+  /** Comments, oldest first, 100 at a time. Their author and the world's owner remove them; anyone reports them. */
+  let thread = [];
+  async function loadComments(more = false) {
+    if (!more) thread = [];
+    try {
+      const page = await communityCall("comments", { id: opened.id, after: more ? thread.at(-1)?.id : undefined });
+      thread.push(...page);
+      $("comments-more").hidden = page.length < 100;
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+    $("comments-status").textContent = "No comments yet";
+    $("comments-status").hidden = thread.length > 0;
+    $("comment-list").replaceChildren(...thread.map(commentRow));
+  }
+  function commentRow(c) {
+    const act = (text, run) => el("button", { textContent: text, onclick: run });
+    const head = el("small", { textContent: `${c.author} · ${ago(c.at)}` });
+    if (c.canRemove)
+      head.append(
+        act("Remove", () =>
+          commentAction("remove-comment", c, () => {
+            Object.assign(c, { removed: true, body: "", canRemove: false });
+            $("comment-list").replaceChildren(...thread.map(commentRow));
+          }),
+        ),
+      );
+    if (!c.mine && !c.removed) head.append(act("Report", (e) => commentAction("report-comment", c, () => ((e.target.textContent = "Reported"), (e.target.disabled = true)))));
+    return el("div", { className: c.removed ? "comment removed" : "comment" }, head, el("p", { textContent: c.removed ? "Removed" : c.body }));
+  }
+  async function commentAction(action, c, done) {
+    try {
+      await communityCall(action, { id: c.id });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    done();
+  }
+  $("cworld-comments").onclick = () => {
+    $("comments-title").textContent = opened.title;
+    $("comment-text").value = "";
+    show("comments");
+    loadComments();
+  };
+  $("comments-more").onclick = () => loadComments(true);
+  $("comment-go").onclick = () =>
+    needAccount(async () => {
+      const body = $("comment-text").value.trim();
+      if (!body) return $("comment-text").focus();
+      try {
+        thread.push(await communityCall("comment", { id: opened.id, body }));
+      } catch (e) {
+        return void ($("error").textContent = e.message);
+      }
+      $("comment-text").value = "";
+      $("comments-status").hidden = true;
+      $("comment-list").replaceChildren(...thread.map(commentRow));
     });
   $("cworld-report").onclick = async () => {
     try {

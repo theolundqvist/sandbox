@@ -96,3 +96,33 @@ end $$;
 -- Upvotes: one per account and world.
 create table if not exists votes (world text not null references worlds (id) on delete cascade, account uuid not null references accounts (id) on delete cascade, at timestamptz not null default now(), primary key (world, account));
 create index if not exists votes_account on votes (account);
+
+-- A play is a server-issued session of one install in one Community world. Its seconds only grow, never past the time since it started, and only an install's newest play takes more, so one install is credited for one world at a time.
+create table if not exists plays (
+  id uuid primary key default gen_random_uuid(),
+  world text not null references worlds (id) on delete cascade,
+  install text not null references installs (id) on delete cascade,
+  account uuid references accounts (id) on delete set null,
+  started_at timestamptz not null default now(),
+  seconds integer not null default 0
+);
+create index if not exists plays_world on plays (world, install) where seconds >= 60;
+create index if not exists plays_install on plays (install, started_at desc);
+-- Plays of at least a minute and the installs behind them, kept on the world for the list's order.
+alter table worlds add column if not exists plays integer not null default 0;
+alter table worlds add column if not exists players integer not null default 0;
+create index if not exists worlds_top on worlds (players desc, created_at desc, id desc) where removed_at is null and zip_key is not null and visibility = 'public';
+
+-- Comments are plain text. Their author or the world's owner removes one; it stays as a row without its words.
+create table if not exists comments (
+  id bigserial primary key,
+  world text not null references worlds (id) on delete cascade,
+  account uuid not null references accounts (id) on delete cascade,
+  body text not null,
+  at timestamptz not null default now(),
+  removed_at timestamptz,
+  removed_by text check (removed_by in ('author', 'owner', 'moderator'))
+);
+create index if not exists comments_world on comments (world, id);
+-- Reports of anything people post besides worlds, one per reporter and thing.
+create table if not exists reports (kind text not null, target text not null, reporter text not null, at timestamptz not null default now(), primary key (kind, target, reporter));

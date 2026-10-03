@@ -1,5 +1,5 @@
 // The public face of Sandbox: join a friend's world, browse Community worlds, get the app. Every screen has its own address; a world's is /w/<id>.
-import { COMPUTERS, backdrop, computer, computerPick, joinLink, logo, usage } from "/front.js";
+import { COMPUTERS, backdrop, computer, computerPick, joinLink, logo, pick, usage } from "/front.js";
 
 const API = "https://sandbox.api.lundqvistliss.com";
 
@@ -55,11 +55,17 @@ async function copyFor(w, tip) {
   tip.hidden = false;
 }
 
+const counted = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
+const ago = (ms) => {
+  const m = Math.round((Date.now() - ms) / 60000);
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+};
+
 /** A world as a row: its clip, its name, who made it, and the link to play or fork it in the app. */
 function worldRow(w) {
   const get = el("button", { className: "quiet", textContent: "Play or fork it in the app" });
   get.dataset.event = "world-get";
-  const about = w.visibility === "link" ? "link only" : w.votes === 1 ? "1 vote" : `${w.votes} votes`;
+  const about = w.visibility === "link" ? "link only" : `${counted(w.players, "player")} · ${counted(w.plays, "play")} · ${counted(w.votes, "vote")}`;
   const row = el("a", { className: "world", href: `/w/${w.id}` }, el("span", { className: "cover" }, media(w)), el("span", { className: "what" }, el("b", { textContent: w.title }), el("small", { textContent: `by ${w.author} · ${about}` }), get));
   get.onclick = (e) => {
     e.preventDefault();
@@ -74,13 +80,14 @@ async function showWorlds(more = false) {
   if (!more) listed = [];
   $("empty").hidden = !!listed.length;
   $("empty").textContent = "Loading";
-  const page = await api(`/worlds${more && listed.length ? `?after=${listed.at(-1).id}` : ""}`);
+  const page = await api(`/worlds?sort=${$("world-sort").dataset.value}${more && listed.length ? `&after=${listed.at(-1).id}` : ""}`);
   listed.push(...page);
   $("empty").textContent = "No worlds shared yet";
   $("empty").hidden = !!listed.length;
   $("more").hidden = page.length < 50;
   $("world-list").replaceChildren(...listed.map(worldRow));
 }
+pick($("world-sort"), () => showWorlds().catch((e) => ($("error").textContent = e.message)));
 $("more").onclick = () => showWorlds(true).catch((e) => ($("error").textContent = e.message));
 
 async function showWorld(id) {
@@ -88,7 +95,7 @@ async function showWorld(id) {
   document.title = `${w.title} · Sandbox`;
   $("world-stage").replaceChildren(media(w));
   $("world-title").textContent = w.title;
-  $("world-by").textContent = [`by ${w.author}`, w.mods ? `${w.mods} mods` : ""].filter(Boolean).join(" · ");
+  $("world-by").textContent = [`by ${w.author}`, counted(w.players, "player"), counted(w.plays, "play"), w.mods ? `${w.mods} mods` : ""].filter(Boolean).join(" · ");
   $("world-about").textContent = w.description;
   $("world-tip").hidden = true;
   $("world-get").onclick = () => copyFor(w, $("world-tip"));
@@ -126,6 +133,60 @@ async function showWorld(id) {
     }
     go("/account");
   };
+  await showComments(id);
+}
+
+/** A world's comments, oldest first, 100 at a time. Their author and the world's owner remove them; anyone reports them. */
+let thread = [];
+async function showComments(id, more = false) {
+  if (!more) thread = [];
+  const signedIn = !!(await whoAmI());
+  $("comment-form").hidden = !signedIn;
+  $("comment-signin").hidden = signedIn;
+  $("comment-signin").href = `/signin?then=/w/${id}`;
+  const page = await api(`/worlds/${id}/comments${more && thread.length ? `?after=${thread.at(-1).id}` : ""}`);
+  thread.push(...page);
+  $("comments-more").hidden = page.length < 100;
+  $("comments-more").onclick = () => showComments(id, true).catch((e) => ($("error").textContent = e.message));
+  $("comment-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const body = $("comment-text").value.trim();
+    if (!body) return;
+    try {
+      thread.push(await api(`/worlds/${id}/comments`, { method: "POST", body: JSON.stringify({ body }) }));
+    } catch (err) {
+      return void ($("error").textContent = err.message);
+    }
+    $("comment-text").value = "";
+    renderComments();
+  };
+  renderComments();
+}
+function renderComments() {
+  $("comments-none").hidden = thread.length > 0;
+  $("comment-list").replaceChildren(
+    ...thread.map((c) => {
+      const head = el("small", { textContent: `${c.author} · ${ago(c.at)}` });
+      const act = (text, run) => head.appendChild(el("button", { className: "quiet", textContent: text, onclick: run }));
+      if (c.canRemove)
+        act("Remove", async () => {
+          try {
+            await api(`/comments/${c.id}`, { method: "DELETE" });
+          } catch (e) {
+            return void ($("error").textContent = e.message);
+          }
+          Object.assign(c, { removed: true, body: "", canRemove: false });
+          renderComments();
+        });
+      if (!c.mine && !c.removed)
+        act("Report", async (e) => {
+          e.target.disabled = true;
+          await api(`/comments/${c.id}/report`, { method: "POST" }).catch(() => {});
+          e.target.textContent = "Reported";
+        });
+      return el("div", { className: c.removed ? "comment removed" : "comment" }, head, el("p", { textContent: c.removed ? "Removed" : c.body }));
+    }),
+  );
 }
 
 /** Who is signed in, asked once per page load and after signing in or out. */

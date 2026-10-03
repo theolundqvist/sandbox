@@ -1,6 +1,6 @@
 # Community worlds
 
-A host shares a world from the game (Tab, World, Share; the desktop app asks in its own dialog) or from Worlds, Community, Publish a world in the app, as the Community account signed in under Settings, Account. Community in the app lists public worlds and the account's own, and each world's screen plays, forks, upvotes, reports or, for its owner, takes it down. The site lists the public ones, gives each world its own page with an upvote, and hands Play and Fork to the app by copying the world's link.
+A host shares a world from the game (Tab, World, Share; the desktop app asks in its own dialog) or from Worlds, Community, Publish a world in the app, as the Community account signed in under Settings, Account. Community in the app lists public worlds, most played first or newest first, and the account's own; each world's screen plays, forks, upvotes, comments, reports or, for its owner, takes it down. The site lists the public ones the same two ways, gives each world its own page with upvotes and comments, and hands Play and Fork to the app by copying the world's link.
 
 ## What goes up
 
@@ -38,12 +38,18 @@ Deleting an account needs its password. Its sessions end at once and its worlds 
 | `POST /worlds/:id/done` | Its account only, after the uploads. Checks each file landed at its size and is the kind it claims, then the world goes live; an update replaces the old files only now. |
 | `POST /worlds/:id/claim` | Signed in, `{ ownerToken }`: moves a world shared before accounts to this account. |
 | `DELETE /worlds/:id` | Its account, or the owner token of an unclaimed world. Leaves a tombstone (`410 Gone`) and deletes its files. |
-| `GET /worlds` | Public live worlds, newest first, 50 at a time; `?after=<id>` goes on from that world, ties broken by id. Worlds of banned accounts are left out. |
+| `GET /worlds` | Public live worlds, 50 at a time: by players, or newest first with `?sort=new`; `?after=<id>` goes on from that world, ties broken by id. Worlds of banned accounts are left out. |
 | `GET /worlds/:id` | One world, link-only included, `410` once removed, with `zip`, `cover` and `clip` URLs that last the hour. |
 | `PUT /worlds/:id/vote` | Signed in, `{ up: true }` or `{ up: false }`: the vote the account wants, so sending it twice changes nothing. Answers `{ votes, voted }`. 60 a minute. |
 | `POST /worlds/:id/report` | Counts a report. 10 per IP an hour. |
+| `POST /plays`, `PUT /plays/:id` | The install's token, `{ world }`, and the session in `x-session` when signed in: starts a play. Then `{ seconds }`, the play's focused time so far, every minute. |
+| `GET /worlds/:id/comments` | Oldest first, 100 at a time, `?after=<id>`. Comments of banned accounts are left out; removed ones show as removed. |
+| `POST /worlds/:id/comments` | Signed in, `{ body }`, 1 to 1,000 characters of plain text. One every 20 s. |
+| `DELETE /comments/:id`, `POST /comments/:id/report` | Removal by its author or the world's owner, which also wipes its text; a report, once per account or IP. |
 
-The app authenticates with `Authorization: Bearer <session>`. Rate limits are counter rows, each bumped in one statement, so requests at the same moment can't slip past them. Shares never finished are swept after a day. The site's origin is the only one browsers may read the API from.
+The app authenticates with `Authorization: Bearer <session>`. Rate limits are counter rows, each bumped in one statement, so requests at the same moment can't slip past them. Shares never finished are swept after a day.
+
+A play is time in a Community world hosted by the desktop app, only while its window has focus, and only with Share usage stats on; joining players aren't counted yet. The server credits no more than the time since the play started on its own clock, a play's seconds never go down, and only an install's newest play counts, so two at once can't both add up. Plays are the plays of a minute or more; players are the installs with at least one. Installs are free to make, so a determined player can still inflate these. The site's origin is the only one browsers may read the API from.
 
 ## Free voice
 
@@ -68,4 +74,4 @@ Backups: every hour `pg_dump | zstd` to `sandbox-backups/pg/<time>.sql.zst`, the
 
 ## Takedown
 
-On the box, `cd /opt/sandbox-api && docker compose exec app bun takedown.ts` lists the most reported worlds; `bun takedown.ts <id>` takes one down, and a world with the same local id can't be published again; `bun takedown.ts ban <username>` stops an account publishing and takes its worlds out of the list. That id is chosen by the app, so a determined author can still get around it.
+On the box, `cd /opt/sandbox-api && docker compose exec app bun takedown.ts` lists the most reported worlds; `bun takedown.ts <id>` takes one down, and a world with the same local id can't be published again; `bun takedown.ts ban <username>` stops an account publishing, voting and commenting and takes its worlds and comments out of the lists; `bun takedown.ts comments` lists the most reported comments and `bun takedown.ts comment <id>` removes one. That id is chosen by the app, so a determined author can still get around it.
