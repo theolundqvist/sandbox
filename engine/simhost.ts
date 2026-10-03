@@ -134,8 +134,6 @@ export class SimHost {
       log(mod: string, level: string, text: string): void;
       fault(mod: string, error: string): void;
       unavailable?(reason: string): void;
-      /** The simulation's process loaded its mods and is running, after each start. */
-      ready?(): void;
       /** A mod asked with world.enter to move a player. */
       enter?(player: string, game: string | null): void;
       /** A mod to blame when the process dies with none running, like one reloaded just before. */
@@ -290,10 +288,8 @@ export class SimHost {
       this.on.tick(msg.outs, d);
     } else if (msg.t === "log") this.on.log(msg.mod, msg.level, msg.text);
     else if (msg.t === "perf") this.perf = msg;
-    else if (msg.t === "ready") {
-      this.ready = true;
-      this.on.ready?.();
-    } else if (msg.t === "fault") this.on.fault(msg.mod, msg.error);
+    else if (msg.t === "ready") this.ready = true;
+    else if (msg.t === "fault") this.on.fault(msg.mod, msg.error);
     else if (msg.t === "applied") this.applying.get(msg.name)?.(msg.error);
     else if (msg.t === "enter") this.on.enter?.(msg.player, msg.game);
     else if (msg.t === "correction") {

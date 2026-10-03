@@ -313,8 +313,9 @@ describe("hosting and joining", () => {
     if (unhosted) throw new Error(`No hosted world: ${unhosted}`);
   });
   after(async () => {
-    await close(app);
+    // Kept before closing: closing the app has hung until CI cancelled the run, and the logs then never came.
     keepLogs("host");
+    await close(app);
   });
 
   test("first launch asks the player's name once, starting from this computer's user name", async () => {

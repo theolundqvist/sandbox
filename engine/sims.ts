@@ -28,8 +28,6 @@ export type SimsEvents = {
   reloadedJustBefore(game: string): string | undefined;
   /** The hub's changes, which the world's own save and timelapse record. */
   hubTick(diff: Diff): void;
-  /** The hub's process loaded its mods and is running, after each start. */
-  hubReady?(): void;
   /** The games, or who is in which, changed. */
   changed(): void;
 };
@@ -83,7 +81,6 @@ export class Sims {
         log: (mod, level, text) => this.on.log(mod, level, text),
         fault: (mod, error) => this.on.fault(mod, error),
         unavailable: (reason) => this.on.unavailable(reason),
-        ready: game === null ? () => this.on.hubReady?.() : undefined,
         // A mod's request from a game the player already left is stale: they are elsewhere now.
         enter: (player, to) => void (this.at.has(player) && this.at.get(player) === game && this.enter(player, to)),
         crashSuspect: () => (game === null ? undefined : this.on.reloadedJustBefore(game)),

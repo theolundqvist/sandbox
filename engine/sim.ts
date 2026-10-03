@@ -448,7 +448,8 @@ function stream(p: Player, d: Diff, full: boolean, eye: Vec | undefined, catchUp
   return out;
 }
 
-function flush() {
+/** A start's first tick goes out even when nothing changed: the world process starts the typecheck's warm-up on the hub's first tick, idle or not. */
+function flush(initial: boolean) {
   const d = world.delta();
   for (const id in d.set) physics.update(+id, world.entities.get(+id));
   for (const id in d.unset) physics.update(+id, world.entities.get(+id));
@@ -469,7 +470,7 @@ function flush() {
   events = [];
   movedBy.clear();
   for (const id in made) if (!world.entities.has(+id)) creators.delete(+id);
-  if (Object.keys(d.set).length || Object.keys(d.unset).length || d.removed.length || Object.keys(outs).length) post({ t: "tick", diff: d, nextId: world.nextId, outs, made });
+  if (initial || Object.keys(d.set).length || Object.keys(d.unset).length || d.removed.length || Object.keys(outs).length) post({ t: "tick", diff: d, nextId: world.nextId, outs, made });
   made = {};
 }
 
@@ -521,6 +522,7 @@ const receive = async (msg: any) => {
         }
       }
       if (trial) return runTrial();
+      let firstTick = true;
       let last = performance.now();
       let times: number[] = [];
       let engine: number[] = [];
@@ -530,7 +532,8 @@ const receive = async (msg: any) => {
         const before = modMs();
         tick(Math.min((now - last) / 1000, 0.25));
         last = now;
-        flush();
+        flush(firstTick);
+        firstTick = false;
         for (const w of walks.splice(0)) post({ t: "answer", id: w.id, value: walk(w.from, w.to, w.body ?? {}) });
         times.push(performance.now() - now);
         engine.push(times.at(-1)! - (modMs() - before));
@@ -701,7 +704,7 @@ function runTrial() {
   arrive(bot, false, undefined);
   for (let i = 0; i < 20; i++) {
     tick(0.05);
-    flush();
+    flush(false);
   }
   depart(bot, false);
   try {

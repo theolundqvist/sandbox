@@ -35,9 +35,16 @@ jobs:
           node-version: 22
       - run: bun install --frozen-lockfile
         working-directory: .
+      - name: Verify sandbox on the runner
+        working-directory: .
+        run: |
+          mkdir -p "$RUNNER_TEMP/box-home" "$RUNNER_TEMP/box-tmp"
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/box-home" TMPDIR="$RUNNER_TEMP/box-tmp" \
+            nice -n 19 timeout --signal=KILL 60s bun --no-env-file test engine/box/box.test.ts
       - run: bun install --frozen-lockfile
       - run: bunx playwright-core install --with-deps chromium
       - run: nice -n 19 xvfb-run -a node --test --test-name-pattern="$TEST_PATTERN" app.test.mjs
+        timeout-minutes: ${{ inputs.tests && 3 || 25 }}
         env:
           SANDBOX_CAPTURES: ${{ runner.temp }}/captures
           TEST_PATTERN: ${{ inputs.tests || '.*' }}

@@ -1,9 +1,11 @@
+// First, so the sandbox's probe runs while the other modules load; the world awaits it only where it first asks whether mods can run: a needed install, then loading the mods.
+import { boxPrepared } from "./box/start";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { frontFile } from "./front";
 import { createCli, joinCodes, joinCommand, joinScript, type Task } from "./cli";
-import { boxRefusal, prepareBox } from "./box";
+import { boxRefusal } from "./box";
 import { install, sanitizeManifest } from "./box/packages";
 import { assetType } from "./egress";
 import { ENGINE_KEYS, GIT, GIT_ENV, hasGit, Mods } from "./mods";
@@ -29,8 +31,6 @@ const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 const readJson = <T>(file: string, fallback: T): T => (existsSync(join(DATA, file)) ? JSON.parse(readFileSync(join(DATA, file), "utf8")) : fallback);
 const writeJson = (file: string, value: unknown) => writeFileSync(join(DATA, file), JSON.stringify(value, null, 2));
 
-// The sandbox's probe runs while the world starts up; it is awaited only where the world first asks whether mods can run: a needed install, then loading the mods.
-const boxPrepared = prepareBox();
 mkdirSync(DB, { recursive: true });
 const config = readJson<Config>("config.json", { name: "Sandbox", rules: "open", start: "basics", invite: token(), hostKey: token() });
 writeJson("config.json", config);
@@ -279,9 +279,11 @@ const sims = new Sims(DATA, DB, () => mods.list(), {
   },
   unavailable: (reason) => feed(reason, "error"),
   reloadedJustBefore: (game) => mods.reloadedJustBefore(game),
-  hubTick: (diff) => store.track(diff),
-  // The typecheck warms up once the hub has loaded its mods, so it never competes with the hub's own start.
-  hubReady: () => mods.startWarmUp(),
+  // The typecheck warms up at the hub's first tick, which goes out even when nothing changed: after the hub's first state, and in a world nobody joins too.
+  hubTick: (diff) => {
+    mods.startWarmUp();
+    store.track(diff);
+  },
   changed: () => broadcast(gamesMessage()),
 });
 mods.sims = sims;

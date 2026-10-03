@@ -151,7 +151,7 @@ export class Mods {
    * Restores exactly the builds that were live at shutdown; a fresh world builds its seed mods.
    * A saved build is used only when its server file is a plain file inside build/; any other (an imported world with doctored state) is built again from the mod's files.
    * Without the sandbox only the engine's unchanged seed mods load, built afresh from the engine's own files, since the saved builds are the world's.
-   * Neither waits for the typecheck: the world opens and players join at once, its warm-up starts when the hub is ready (startWarmUp), and the first reload waits for the warm-up and says so.
+   * Neither waits for the typecheck: the world opens and players join at once, its warm-up starts when the hub first ticks (startWarmUp), and the first reload waits for the warm-up and says so.
    */
   async loadAll(owners: Record<string, string>) {
     const refusal = this.refusal;
