@@ -76,10 +76,15 @@ const controls = watching ? null : await hostControls({
     void openShare();
     return clip;
   },
+  // Only the app publishes, through its account, once the player confirms in its own dialog.
+  publish: async () => (desktop?.publish ? desktop.publish(info.id) : "Publish from the Sandbox app."),
+  unpublish: async () => (desktop?.unpublish ? desktop.unpublish(info.id) : "Stop sharing from the Sandbox app."),
 });
 /** Where the host's main menu is, on this computer. */
 const mainMenu = `http://127.0.0.1:${location.port}/menu`;
 let me = "";
+/** When the next picture of the world is due: 20 s after first joining, then every few minutes. */
+let coverAt = Infinity;
 let world = "";
 let invite = "";
 /** The world's one invite link from the host, which works only on the host's Wi-Fi while the relay can't be reached. */
@@ -111,6 +116,16 @@ async function join(body: { key: string | null } | { invite: string | null; name
   key = data.key;
   me = data.name;
   history.replaceState(null, "", location.pathname);
+  void creditToken(data.key);
+}
+
+/** The desktop app keeps a token made from this player's key for each world they play in, so they can later accept a credit for building it on Community; the key stays here. */
+async function creditToken(playerKey: string) {
+  const app = (window as { sandboxDesktop?: { credit?(token: string): void } }).sandboxDesktop;
+  if (!app?.credit) return;
+  const hmac = await crypto.subtle.importKey("raw", new TextEncoder().encode(playerKey), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", hmac, new TextEncoder().encode(`sandbox-credit:${info.id}`)));
+  app.credit(btoa(String.fromCharCode(...mac)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""));
 }
 
 /** The join screen, over the game itself when the link holds an invite. A player who left the world comes back to it and rejoins as themselves. */
@@ -169,6 +184,9 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.info.autoReset = false;
 document.body.prepend(renderer.domElement);
+/** `#still` draws the world alone, for the menus' backdrop stills: no HUD, menus, chat or name tags. */
+const still = hashParams.has("still");
+if (still) document.head.append(Object.assign(document.createElement("style"), { textContent: "body > :not(canvas) { visibility: hidden !important }" }));
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
@@ -979,6 +997,7 @@ function connect() {
         voiceHost = msg.host;
         listen();
         me = msg.playerId;
+        coverAt = Math.min(coverAt, performance.now() + 20_000);
         $("world-name").textContent = world;
         $("rules").textContent = "Add only";
         $("rules").hidden = msg.rules !== "additive";
@@ -1171,14 +1190,18 @@ function untagged(render: () => void) {
   render();
   for (const tag of tags) tag.visible = true;
 }
-/** Draws the middle 16:9 of the game's view into a canvas of this size; call it right after the frame is drawn, while it is still in the drawing buffer. */
-function frameInto(out: HTMLCanvasElement) {
+/** The middle 16:9 of the game's view, as x, y, width and height. */
+function middle() {
   const from = renderer.domElement;
   const h = Math.min(from.height, (from.width * 9) / 16);
   const w = (h * 16) / 9;
-  out.getContext("2d")!.drawImage(from, (from.width - w) / 2, (from.height - h) / 2, w, h, 0, 0, out.width, out.height);
+  return [(from.width - w) / 2, (from.height - h) / 2, w, h] as const;
 }
-/** The host's own view as a 960×540 JPEG, without the HUD or name tags; small enough for the controls' keepalive request (64 KB). Encoded synchronously, since the page may be going away. */
+/** Draws the middle 16:9 of the game's view into a canvas of this size; call it right after the frame is drawn, while it is still in the drawing buffer. */
+function frameInto(out: HTMLCanvasElement) {
+  out.getContext("2d")!.drawImage(renderer.domElement, ...middle(), 0, 0, out.width, out.height);
+}
+/** The host's own view as a 960×540 JPEG, without the HUD or name tags: Share's Current view and a shared mod's preview. */
 function viewJpeg() {
   const out = Object.assign(document.createElement("canvas"), { width: 960, height: 540 });
   untagged(() => {
@@ -1190,12 +1213,42 @@ function viewJpeg() {
   return Uint8Array.from(atob(jpeg.split(",")[1]!), (c) => c.charCodeAt(0));
 }
 
-/** The host's own view of their world is its picture in Worlds and Community: sent every few minutes and as they leave, through their controls, which save it only for the world running now. */
-function sendCover() {
-  if (!controls || !me || replay || screen.scene === false) return;
-  return controls.cover(viewJpeg());
+/**
+ * The player's own view, without the HUD or name tags, is the world's picture in Worlds: the host's goes through their controls to their launcher, a joined world's stays in the desktop app.
+ * It is a frame the game draws anyway, 20 s after joining and then every 5 minutes, encoded off the main thread; and one more as the player leaves, encoded at once since the page is going.
+ */
+const appCover = (window as { sandboxDesktop?: { cover?(jpeg: Uint8Array): void } }).sandboxDesktop?.cover;
+const COVER_EVERY = 5 * 60_000;
+/** Settles once the host's controls saved it, which save it only for the world running now, or at once for a joined world's picture in the app. */
+async function keepCover(jpeg: Uint8Array<ArrayBuffer>) {
+  if (controls) await controls.cover(jpeg);
+  else appCover?.(jpeg);
 }
-setInterval(() => document.hidden || sendCover(), 3 * 60_000);
+const coverable = () => (!!controls || !!appCover) && !!me && !replay && screen.scene !== false;
+/** Whether this frame is the picture: never one right after a slow frame, so it can't add to a hitch. */
+const coverDue = (now: number, dt: number) => now >= coverAt && dt < 1 / 30 && !document.hidden && coverable();
+/** Right after the frame is drawn without name tags: a copy of it the GPU scales, so nothing waits on reading its pixels back. */
+function takeCover() {
+  coverAt = performance.now() + COVER_EVERY;
+  createImageBitmap(renderer.domElement, ...middle(), { resizeWidth: 480, resizeHeight: 270, resizeQuality: "medium" })
+    .then((frame) => {
+      const out = new OffscreenCanvas(480, 270);
+      out.getContext("2d")!.drawImage(frame, 0, 0);
+      frame.close();
+      return out.convertToBlob({ type: "image/jpeg", quality: 0.7 });
+    })
+    .then(async (jpeg) => keepCover(new Uint8Array(await jpeg.arrayBuffer())), () => {});
+}
+/** The picture as the player leaves, drawn and encoded at once. Leave and Stop hosting send it and wait for it before the page goes; a page closed any other way sends it as it goes. */
+function sendCover() {
+  if (!coverable()) return;
+  const out = Object.assign(document.createElement("canvas"), { width: 480, height: 270 });
+  untagged(() => {
+    draw(0);
+    frameInto(out);
+  });
+  return keepCover(Uint8Array.from(atob(out.toDataURL("image/jpeg", 0.7).split(",")[1]!), (c) => c.charCodeAt(0)));
+}
 addEventListener("beforeunload", () => {
   if (!leaving) void sendCover();
 });
@@ -1892,6 +1945,7 @@ function toast(text: string, kind = "info") {
   $("toasts").append(el);
   toTop($("toasts"));
   setTimeout(() => el.remove(), 5000);
+  return el;
 }
 
 /** The host answers whether a new computer may play as an offline player's name; no answer in a minute means no. */
@@ -2391,15 +2445,38 @@ palette.onclick = (e) => e.target === palette && closePalette();
 for (const keysList of $("howto").querySelectorAll(".keys")) $("help-keys").append(keysList.cloneNode(true));
 /** Leaving closes this world: the host goes back to their main menu, anyone else to this world's join screen. */
 let leaving = false;
-/** The Electron preload installs this API on window; a browser leaves it absent. The app says when a newer release is out and installs it when asked, starts agents beside the game, and asks the game to leave. */
-const desktopWindow = window as Window & {
-  sandboxDesktop?: { update(): Promise<string | null>; onUpdate(fn: (version: string | null) => void): void; onLeave?(fn: () => void): void; leave(): void; agents: { id: string; name: string }[]; build(id: string, key: string | null): Promise<boolean | string> };
-};
-const desktop = desktopWindow.sandboxDesktop;
+/** The Electron preload installs this API on window; a browser leaves it absent. The app says when a newer release is out and how its download goes, installs it when asked, starts agents beside the game, publishes the world it hosts or one of its mods through the app's account once the player confirms, and asks the game to leave. */
+type Updating = { downloaded?: number; installing?: boolean } | null;
+const desktop = (
+  window as Window & {
+    sandboxDesktop?: {
+      update(): Promise<string | null>;
+      onUpdate(fn: (version: string | null) => void): void;
+      onUpdating?(fn: (progress: Updating) => void): void;
+      onLeave?(fn: () => void): void;
+      leave(): void;
+      agents: { id: string; name: string }[];
+      build(id: string, key: string | null): Promise<boolean | string>;
+      publish?(id: string): Promise<string | null>;
+      unpublish?(id: string): Promise<string | null>;
+      publishMod?(id: string, name: string): Promise<string | null>;
+    };
+  }
+).sandboxDesktop;
 desktop?.onUpdate((version) => ($("menu-update").hidden = !version));
+// Apps before 0.2.9 don't tell how the update goes.
+desktop?.onUpdating?.((progress) => {
+  $("menu-update").querySelector("span")!.textContent = progress?.installing ? "Installing…" : progress ? "Updating…" : "Update";
+  const bar = $("menu-update").querySelector<HTMLElement>(".bar")!;
+  bar.hidden = !progress;
+  bar.querySelector("i")!.style.width = `${(progress?.installing ? 1 : (progress?.downloaded ?? 0)) * 100}%`;
+});
+/** The last attempt's failure, which a new attempt takes away. */
+let updateFailed: HTMLElement | undefined;
 $("menu-update").onclick = async () => {
+  updateFailed?.remove();
   const error = await desktop?.update();
-  if (error) toast(error, "error");
+  if (error) updateFailed = toast(error, "error");
 };
 /** In the app everyone leaves to its title screen; in a browser the host goes to their main menu. The host's last view becomes the world's picture first, unless Stop hosting already sent it. */
 async function leave() {
@@ -2444,34 +2521,30 @@ setVolume(savedVolume);
 $("volume").oninput = () => setVolume(Number($<HTMLInputElement>("volume").value));
 $("volume-exact").onchange = () => setVolume(Number($<HTMLInputElement>("volume-exact").value));
 
-/** One prompt for any coding agent with a shell, from the world, which signs it with this player's key. */
-let prompt = "";
-async function loadPrompt() {
-  const res = await fetch(`/api/prompt?base=${encodeURIComponent(origin)}`, { headers: { authorization: `Bearer ${key}` } });
+/** The install command that sets up this world's folder on the player's computer, behind a single-use code, and that folder. */
+let joinFolder = "~/Sandbox";
+async function loadJoin() {
+  const res = await fetch(`/api/join-code?base=${encodeURIComponent(origin)}`, { method: "POST", headers: { authorization: `Bearer ${key}` } });
   if (!res.ok) return;
-  prompt = await res.text();
-  $("claude-prompt").textContent = prompt;
-  if (agentGuide?.open) $<HTMLAnchorElement>("agent-open").href = agentGuide.open.url(prompt);
+  const { command, folder, prompt } = await res.json();
+  $("agent-connect").textContent = command;
+  $("agent-prompt").textContent = prompt;
+  joinFolder = folder;
+  if (agentGuide) showAgentGuide(agentGuide);
 }
 
-/** The coding agents that can run this world's command, each with its own install, its own way to stop asking before every command, and a documented link that opens it with the prompt typed in. Evidence: ~/.config/journal/2026-10-01/coding-agents-shell-access.md. */
-type AgentGuide = { id: string; name: string; open?: { label: string; url: (prompt: string) => string } } & ({ install: { unix: string; windows: string }; run: string } | { download: string; setup: string });
+/** The coding agents that can run this world's command, each with its own install and its own way to open the world's folder, where its allow rule for that one command already sits. Evidence: ~/.config/journal/2026-10-01/coding-agents-shell-access.md. */
+type AgentGuide = { id: string; name: string } & ({ install: { unix: string; windows: string }; run: string } | { download: string; open: string });
 const AGENT_GUIDES: AgentGuide[] = [
-  { id: "claude-code", name: "Claude Code", install: { unix: "curl -fsSL https://claude.ai/install.sh | bash", windows: "irm https://claude.ai/install.ps1 | iex" }, run: "claude --dangerously-skip-permissions" },
-  { id: "claude", name: "Claude app", download: "https://claude.com/download", setup: "In Settings, Claude Code, turn on Allow bypass permissions mode. Then open the Code tab and pick Bypass permissions next to Send." },
-  { id: "codex", name: "Codex", install: { unix: "curl -fsSL https://chatgpt.com/codex/install.sh | sh", windows: `powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"` }, run: "codex --yolo" },
-  {
-    id: "chatgpt",
-    name: "ChatGPT app",
-    download: "https://chatgpt.com/download",
-    setup: "In Settings, General, Permissions, turn on Full access. Then open Codex, start a New chat and pick Full access below the message box.",
-    open: { label: "Open in ChatGPT", url: (prompt) => `codex://new?prompt=${encodeURIComponent(prompt)}` },
-  },
-  { id: "cursor", name: "Cursor", install: { unix: "curl https://cursor.com/install -fsS | bash", windows: "irm 'https://cursor.com/install?win32=true' | iex" }, run: "agent --force" },
-  { id: "copilot", name: "GitHub Copilot", install: { unix: "curl -fsSL https://gh.io/copilot-install | bash", windows: "winget install GitHub.Copilot" }, run: "copilot --allow-all-tools" },
-  { id: "omp", name: "OMP", install: { unix: "curl -fsSL https://omp.sh/install | sh", windows: "irm https://omp.sh/install.ps1 | iex" }, run: "omp --approval-mode=yolo" },
+  { id: "claude-code", name: "Claude Code", install: { unix: "curl -fsSL https://claude.ai/install.sh | bash", windows: "irm https://claude.ai/install.ps1 | iex" }, run: "claude" },
+  { id: "claude", name: "Claude app", download: "https://claude.com/download", open: "Open the Code tab and choose that folder" },
+  { id: "codex", name: "Codex", install: { unix: "curl -fsSL https://chatgpt.com/codex/install.sh | sh", windows: `powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"` }, run: "codex" },
+  { id: "chatgpt", name: "ChatGPT app", download: "https://chatgpt.com/download", open: "Open Codex and choose that folder as the project" },
+  { id: "cursor", name: "Cursor", install: { unix: "curl https://cursor.com/install -fsS | bash", windows: "irm 'https://cursor.com/install?win32=true' | iex" }, run: "agent" },
+  { id: "copilot", name: "GitHub Copilot", install: { unix: "curl -fsSL https://gh.io/copilot-install | bash", windows: "winget install GitHub.Copilot" }, run: "copilot --allow-tool 'shell(./world)'" },
+  { id: "omp", name: "OMP", install: { unix: "curl -fsSL https://omp.sh/install | sh", windows: "irm https://omp.sh/install.ps1 | iex" }, run: "omp" },
   { id: "pi", name: "Pi", install: { unix: "curl -fsSL https://pi.dev/install.sh | sh", windows: "npm install -g --ignore-scripts @earendil-works/pi-coding-agent" }, run: "pi" },
-  { id: "opencode", name: "opencode", install: { unix: "curl -fsSL https://opencode.ai/install | bash", windows: "npm install -g opencode-ai" }, run: "opencode --auto" },
+  { id: "opencode", name: "opencode", install: { unix: "curl -fsSL https://opencode.ai/install | bash", windows: "npm install -g opencode-ai" }, run: "opencode" },
 ];
 const small = (text: string) => Object.assign(document.createElement("small"), { textContent: text });
 let agentGuide: AgentGuide | null = null;
@@ -2480,7 +2553,7 @@ try {
   agentGuide = AGENT_GUIDES.find((g) => g.id === localStorage.getItem("sandbox-agent")) ?? null;
 } catch {}
 
-/** Connect to build: the player picks the agent they have, then gets its three steps, the last one the prompt. */
+/** Connect to build: the player picks the agent they have, then gets its three steps: install it, connect this computer, and paste the prompt in the world's folder. */
 function showAgentGuide(guide: AgentGuide | null) {
   agentGuide = guide ?? agentGuide;
   try {
@@ -2495,16 +2568,15 @@ function showAgentGuide(guide: AgentGuide | null) {
   const app = "download" in guide;
   $("agent-install-what").replaceChildren(...(app ? [`Get the ${guide.name}`, small("Download it, open it and sign in.")] : [`Install ${guide.name}`]));
   $("agent-terminal").textContent = `${COMPUTERS[agentComputer].open} Paste this line and press Enter.`;
-  $("agent-start-what").replaceChildren("Turn permissions off", small(app ? guide.setup : "Start it like this, so it can run the game's command without asking each time."));
+  $("agent-connect-how").textContent = `${COMPUTERS[agentComputer].open} Paste this line and press Enter. It works once, for ten minutes.`;
+  $("agent-start-what").replaceChildren(app ? `Open ${joinFolder} in it and paste this prompt` : `Start it in ${joinFolder} and paste this prompt`, small(`${app ? `${guide.open}. ` : ""}Say yes when it asks whether you trust the folder.`));
   $("agent-os-row").hidden = $("agent-terminal").hidden = $("agent-install-row").hidden = $("agent-start-row").hidden = app;
   $("agent-download").hidden = !app;
   if (app) Object.assign($<HTMLAnchorElement>("agent-download"), { href: guide.download, textContent: `Download the ${guide.name}` });
   else {
     $("agent-install").textContent = agentComputer === "windows" ? guide.install.windows : guide.install.unix;
-    $("agent-start").textContent = guide.run;
+    $("agent-start").textContent = `cd ${joinFolder} && ${guide.run}`;
   }
-  $("agent-open").hidden = !guide.open;
-  if (guide.open) Object.assign($<HTMLAnchorElement>("agent-open"), { textContent: guide.open.label, href: guide.open.url(prompt) });
 }
 /** In the app, one click starts an agent in a terminal beside the game, installing it first when it is missing. */
 const buildRows = (desktop?.agents ?? []).map(({ id, name }) => {
@@ -2543,6 +2615,39 @@ computerPick($("agent-os"), (os) => {
 });
 showAgentGuide(agentGuide);
 
+/** Who can join, picked by a signed-in host in the app: listed in Community for their friends, for anyone, or with a password the relay checks. The invite link always works. */
+type Access = { mode: string; locked: boolean; signedIn: boolean };
+const accessApp = () => (window as { sandboxDesktop?: { access?(id: string, mode?: string, password?: string): Promise<Access | string> } }).sandboxDesktop?.access;
+let accessLocked = false;
+/** Only the newest answer shows, so stepping through the choices quickly lands on the last one. */
+let accessAsked = 0;
+const accessPick = front.pick($("access"), (mode: string) => {
+  $("access-password-field").hidden = mode !== "password";
+  if (mode === "password" && !accessLocked) {
+    accessAsked++;
+    return $<HTMLInputElement>("access-password").focus();
+  }
+  void setAccess(mode);
+});
+async function setAccess(mode?: string, password?: string) {
+  const asked = ++accessAsked;
+  const got = await accessApp()?.(info.id, mode, password);
+  if (asked !== accessAsked) return;
+  if (typeof got === "string") return toast(got, "error");
+  if (!got) return;
+  accessLocked = got.locked;
+  accessPick.set(got.mode);
+  $("access-field").hidden = !got.signedIn;
+  $("access-password-field").hidden = !got.signedIn || got.mode !== "password";
+  $<HTMLInputElement>("access-password").placeholder = got.locked ? "Change" : "Pick one";
+}
+const loadAccess = () => setAccess();
+$<HTMLInputElement>("access-password").addEventListener("keydown", (e) => {
+  const input = e.target as HTMLInputElement;
+  if (e.key !== "Enter" || !input.value) return;
+  void setAccess("password", input.value).then(() => (input.value = ""));
+});
+
 function showInvite() {
   $("invite-link").textContent = link ?? `${origin}/#invite=${invite}`;
   $("invite-wifi").hidden = !wifiOnly;
@@ -2563,8 +2668,9 @@ async function openMenu() {
   }
   if (document.pointerLockElement) document.exitPointerLock();
   $("menu-world").textContent = world;
-  if (info.agents !== false) void loadPrompt();
+  if (info.agents !== false) void loadJoin();
   showBuilders();
+  if (controls) void loadAccess();
   await refreshMenu();
 }
 
@@ -2588,6 +2694,11 @@ async function refreshMenu() {
           const [love, undo] = li.querySelectorAll("button");
           love!.textContent += m.love ? ` ${m.love}` : "";
           undo!.textContent += ` ${m.undo}/${status.undoNeeded}`;
+          if (controls && desktop?.publishMod) {
+            const share = Object.assign(document.createElement("button"), { textContent: "Share" });
+            share.onclick = () => shareMod(m, share);
+            li.querySelector(".votes")!.append(share);
+          }
           for (const b of [love!, undo!]) {
             b.disabled = m.author === me;
             b.classList.toggle("picked", myVotes.get(m.name) === `${m.version}:${b.dataset.kind}`);
@@ -2601,6 +2712,17 @@ async function refreshMenu() {
       : [Object.assign(document.createElement("li"), { textContent: "No mods yet" })]),
   );
   if (voting >= 0 || landing) $("menu-mods").querySelectorAll("button")[Math.max(voting, 0)]?.focus();
+}
+
+/** Shares one mod to Community from the desktop app, with the current view as its preview: the host's World frame stages it, and the app publishes it once the player confirms. */
+async function shareMod(m: { name: string; about?: { title?: string; text?: string } }, button: HTMLButtonElement) {
+  button.disabled = true;
+  button.textContent = "Sharing…";
+  const error = await controls!.stageMod({ name: m.name, title: m.about?.title ?? m.name, description: m.about?.text ?? "" }, viewJpeg());
+  const said = error ?? (await desktop!.publishMod!(info.id, m.name));
+  if (said) toast(said);
+  button.disabled = false;
+  button.textContent = "Share";
 }
 
 for (const button of all<HTMLButtonElement>("[data-copy]"))
@@ -2646,6 +2768,8 @@ renderer.setAnimationLoop(() => {
   updateColliders(now);
   const drawStart = performance.now();
   if (screen.scene !== false && filming) untagged(() => (draw(dt), frameInto(filming!)));
+  else if (coverDue(now, dt)) untagged(() => (draw(dt), takeCover()));
+  else if (screen.scene !== false && still) untagged(() => draw(dt));
   else if (screen.scene !== false) draw(dt);
   view.position.sub(shakeOffset);
   if (heldMaterials) for (const m of heldMaterials.splice(0)) disposeMaterial.call(m);

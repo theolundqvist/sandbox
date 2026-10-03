@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' https:; media-src 'self' https:">
 <title>Sandbox</title>
 <link rel="stylesheet" href="/front.css">
 <style>
@@ -11,16 +11,47 @@
   html, body { margin: 0; height: 100%; background: #1b1b1d; color: var(--text); font: 15px/1.45 system-ui, sans-serif; overflow: hidden; user-select: none; }
   #title .logo { margin-bottom: 64px; }
   .front { top: 36px; bottom: 96px; padding-top: 60px; padding-bottom: 0; }
+  .bell { width: .8em; height: .9em; margin-right: .45em; vertical-align: -.05em; fill: currentColor; }
+  .lock { width: 12px; height: 14px; margin-left: 10px; vertical-align: -1px; fill: currentColor; }
   .status { margin: 0; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .16em; text-transform: uppercase; }
   #down .lead, #waiting .status { margin: -16px 0 32px; }
+  #progress { width: 360px; max-width: 100%; height: 3px; margin-top: 16px; background: rgba(255,255,255,.2); }
+  #progress i { display: block; height: 100%; background: var(--accent); }
+  #settings .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
   .hints span { white-space: nowrap; }
+  /* A community world's own screen: its clip over its picture, who made it, and what to do with it. */
+  #cworld:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 420px); column-gap: 48px; align-content: start; width: min(1080px, 100%); }
+  #cworld > * { grid-column: 1; }
+  #cworld .stage { grid-column: 2; grid-row: 1 / span 4; align-self: start; width: 100%; aspect-ratio: 16 / 9; background: #1b1c1f; }
+  #cworld .stage > span { display: block; width: 100%; height: 100%; }
+  #cworld .stage :is(img, video) { display: block; width: 100%; height: 100%; object-fit: cover; }
+  #cworld-by { margin: -16px 0 8px; }
+  #cworld-about { margin: 0 0 24px; color: var(--dim); max-width: 640px; }
+  #cworld-lineage { margin: -12px 0 20px; }
+  #cworld-mod pre { margin: 0 0 24px; max-width: 640px; max-height: 360px; overflow: auto; padding: 16px; background: #1b1c1f; color: var(--text); font: 13px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
+  #cworld-mod h2 { margin: 0 0 8px; }
+  .comment { max-width: 720px; padding: 14px 0 14px 32px; border-bottom: 1px solid var(--line); user-select: text; }
+  .comment p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .comment.removed p { color: var(--dim); }
+  .comment small { color: var(--dim); font-size: 13px; }
+  .comment button { margin-left: 16px; padding: 0; background: none; border: 0; color: var(--dim); font: 700 12px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; cursor: pointer; outline: none; }
+  .comment button:is(:hover, :focus-visible) { color: var(--text); }
+  #comment-list { margin-top: 16px; }
+  #message-list { max-width: 720px; margin-bottom: 16px; }
+  .comment.mine small { color: var(--accent); }
+  #cworld-by button { padding: 0; background: none; border: 0; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; outline: none; }
+  #cworld-by button:is(:hover, :focus-visible) { color: var(--text); }
+  #credits-part h2 { margin: 24px 0 8px; font-size: 12px; }
+  #profile-about { margin: -16px 0 20px; }
+  .cover video { display: block; width: 100%; height: 100%; object-fit: cover; }
   @media (max-width: 1000px), (max-height: 640px) {
     .front { bottom: 64px; padding: 28px 48px 0; }
     .screen > h1 { font-size: 40px; margin-bottom: 20px; }
     #title .logo { height: 44px; margin-bottom: 32px; }
     .item { font-size: 26px; }
-    .hints { left: 48px; bottom: 22px; }
+    .hints { left: 48px; right: 48px; bottom: 22px; }
     #fullscreen-hint, #reload-hint { display: none; }
+    #cworld:not([hidden]) { grid-template-columns: minmax(0, 1fr) minmax(0, 280px); column-gap: 24px; }
   }
 
   /* The title bar: drags the window, and while in a game names it and offers the way out. */
@@ -35,6 +66,7 @@
   #leave { height: 36px; padding: 0 12px; background: none; border: 0; color: var(--text); font: inherit; letter-spacing: inherit; text-transform: uppercase; cursor: pointer; outline: none; }
   #leave:hover, #leave:focus-visible { background: var(--accent); color: #0b0b0c; }
   body:not(.playing) :is(#world, #bar-hint, #leave) { display: none; }
+  body.playing #version { display: none; }
   body.playing :is(.backdrop, .front, .hints) { display: none; }
   body.starting :is(#title .items, .hints) { visibility: hidden; }
 </style>
@@ -43,6 +75,7 @@
 <div id="backdrop" class="backdrop"></div>
 <div id="top">
   <span id="world"></span>
+  <span id="version"></span>
   <span class="spacer"></span>
   <span id="bar-hint"><kbd>F11</kbd>Full screen</span>
   <button id="leave">Leave game</button>
@@ -53,7 +86,7 @@
   <section id="title" class="screen title" data-nav hidden>
     <svg class="logo" id="logo"></svg>
     <div class="items">
-      <button class="item" id="go-last" hidden>Continue<span class="value" id="last-name"></span></button>
+      <button class="item" id="go-last" hidden>Continue</button>
       <button class="item" data-to="saved">Worlds</button>
       <button class="item" data-to="join">Join world</button>
       <button class="item" id="go-new">Host world</button>
@@ -68,6 +101,144 @@
     <div class="items"><button class="item" id="go-community">Community</button></div>
     <div class="items" id="games"></div>
     <p id="no-games" class="status" hidden>Worlds you host or join show up here</p>
+  </section>
+
+  <section id="community" class="screen" data-nav hidden>
+    <h1>Community</h1>
+    <div class="items" id="live-list"></div>
+    <div class="field"><span>Show</span><div class="pick" id="community-tab" data-options="top:Most played,new:Newest,mine:My worlds,mods:Mods"></div></div>
+    <div class="items"><button class="item" id="go-notices"><span><svg class="bell" viewBox="0 0 14 16" aria-hidden="true"><path d="M7 0a1.2 1.2 0 0 1 1.2 1.3A5 5 0 0 1 12 6.2V11l2 2v1H0v-1l2-2V6.2a5 5 0 0 1 3.8-4.9A1.2 1.2 0 0 1 7 0zm-2 15h4a2 2 0 0 1-4 0z"/></svg>Notifications</span><span class="value live" id="notice-count"></span></button><button class="item" id="go-publish">Publish a world</button><button class="item" id="go-inbox">Messages<span class="value" id="unread"></span></button><button class="item" id="go-friends">Friends<span class="value" id="friend-requests"></span></button><button class="item" id="go-me">Your profile</button></div>
+    <div class="items" id="mods-search-row" hidden><label class="item entry"><input type="text" id="mods-search" maxlength="100" placeholder="Search mods" autocomplete="off"></label></div>
+    <div class="items" id="community-list"></div>
+    <p id="community-status" class="status" hidden></p>
+    <div class="items"><button class="item" id="community-more" hidden>More</button></div>
+  </section>
+
+  <section id="cworld" class="screen" data-nav hidden>
+    <div class="stage" id="cworld-stage"></div>
+    <h1 id="cworld-title"></h1>
+    <p class="status" id="cworld-by"></p>
+    <p id="cworld-about"></p>
+    <p class="status" id="cworld-lineage" hidden></p>
+    <div id="cworld-mod" hidden>
+      <div class="items"><button class="item" id="cworld-add">Add to a world<span class="value">Copy for your agent</span></button></div>
+      <pre id="cworld-add-line"></pre>
+      <pre id="cworld-readme"></pre>
+      <h2 class="status">API</h2>
+      <pre id="cworld-api"></pre>
+    </div>
+    <div class="items">
+      <button class="item" id="cworld-play">Play</button>
+      <button class="item" id="cworld-fork">Fork<span class="value">Copy to Worlds</span></button>
+      <button class="item" id="cworld-vote">Upvote<span class="value" id="cworld-votes"></span></button>
+      <button class="item" id="cworld-comments">Comments</button>
+      <button class="item" id="cworld-parent" hidden>Forked from<span class="value" id="cworld-parent-name"></span></button>
+      <button class="item" id="cworld-forks" hidden>Forks<span class="value" id="cworld-fork-count"></span></button>
+      <button class="item" id="cworld-versions" hidden>Versions<span class="value" id="cworld-version"></span></button>
+      <button class="item" id="cworld-usage" hidden>Agent usage</button>
+      <button class="item danger" id="cworld-down" hidden>Take down</button>
+      <button class="item" id="cworld-report" hidden>Report</button>
+    </div>
+  </section>
+
+  <section id="profile" class="screen" data-nav hidden>
+    <h1 id="profile-name"></h1>
+    <p class="status" id="profile-about"></p>
+    <div class="items">
+      <button class="item" id="profile-friend" hidden>Add friend<span class="value"></span></button>
+      <button class="item" id="profile-decline" hidden>Decline</button>
+      <button class="item" id="profile-message" hidden>Message</button>
+      <button class="item" id="profile-block" hidden>Block</button>
+    </div>
+    <div id="credits-part" hidden><h2 class="status">Credits waiting</h2><div class="items" id="credit-list"></div></div>
+    <div class="items" id="profile-worlds"></div>
+    <p class="status" id="profile-none" hidden>No worlds yet</p>
+  </section>
+
+  <section id="usage" class="screen" data-nav hidden>
+    <h1>Agent usage</h1>
+    <div class="items" id="usage-list"></div>
+    <p class="status" id="usage-none" hidden>No agent has reported building here yet</p>
+  </section>
+
+  <section id="versions" class="screen" data-nav hidden>
+    <h1>Versions</h1>
+    <div class="items" id="version-list"></div>
+  </section>
+
+  <section id="notices" class="screen" data-nav hidden>
+    <h1>Notifications</h1>
+    <div class="items" id="notice-list"></div>
+    <p class="status" id="notices-none" hidden>Nothing yet</p>
+  </section>
+
+  <section id="friends" class="screen" data-nav hidden>
+    <h1>Friends</h1>
+    <div class="items" id="friend-list"></div>
+    <p class="status" id="friends-none" hidden>No friends yet. Add one from their profile.</p>
+  </section>
+
+  <section id="inbox" class="screen" data-nav hidden>
+    <h1>Messages</h1>
+    <div class="items" id="thread-list"></div>
+    <p class="status" id="inbox-none" hidden>No messages yet. Message a builder from their profile.</p>
+  </section>
+
+  <section id="unlock" class="screen" data-nav hidden>
+    <h1 id="unlock-title"></h1>
+    <label class="item entry"><input type="password" id="unlock-password" maxlength="40" placeholder="Password" autocomplete="off" spellcheck="false"></label>
+    <div class="items"><button class="item" id="unlock-go">Join</button></div>
+  </section>
+
+  <section id="thread" class="screen" data-nav hidden>
+    <h1 id="thread-name"></h1>
+    <div id="message-list"></div>
+    <label class="item entry" id="message-entry"><input type="text" id="message-text" maxlength="2000" placeholder="Write a message" autocomplete="off"></label>
+    <div class="items"><button class="item" id="message-go">Send</button><button class="item" id="thread-profile">Profile</button></div>
+    <p class="status" id="thread-blocked" hidden>You blocked them. Unblock them on their profile to hear from them again.</p>
+  </section>
+
+  <section id="forks" class="screen" data-nav hidden>
+    <h1 id="forks-title"></h1>
+    <div class="items" id="fork-list"></div>
+    <div class="items"><button class="item" id="forks-more" hidden>More</button></div>
+  </section>
+
+  <section id="comments" class="screen" data-nav hidden>
+    <h1 id="comments-title"></h1>
+    <label class="item entry"><input type="text" id="comment-text" maxlength="1000" placeholder="Write a comment" autocomplete="off"></label>
+    <div class="items"><button class="item" id="comment-go">Post</button></div>
+    <div id="comment-list"></div>
+    <p id="comments-status" class="status" hidden></p>
+    <div class="items"><button class="item" id="comments-more" hidden>More</button></div>
+  </section>
+
+  <section id="trust" class="screen" data-nav hidden>
+    <h1 id="trust-title"></h1>
+    <p class="lead" id="trust-text"></p>
+    <div class="items"><button class="item" id="trust-yes"></button><button class="item" id="trust-no">Cancel</button></div>
+  </section>
+
+  <section id="take-down" class="screen" data-nav hidden>
+    <h1 id="take-down-title"></h1>
+    <p class="lead">Its link stops working for everyone.</p>
+    <div class="items"><button class="item danger" id="take-down-yes">Take down</button><button class="item" id="take-down-no">Cancel</button></div>
+  </section>
+
+  <section id="publish-pick" class="screen" data-nav hidden>
+    <h1>Publish</h1>
+    <div class="items" id="publish-list"></div>
+    <p id="publish-none" class="status" hidden>Worlds you host show up here</p>
+  </section>
+
+  <section id="publish" class="screen" data-nav hidden>
+    <h1 id="publish-name"></h1>
+    <label class="field"><span>Title</span><input type="text" id="publish-title" maxlength="60" autocomplete="off" spellcheck="false"></label>
+    <label class="field"><span>Description</span><input type="text" id="publish-description" maxlength="200" autocomplete="off"></label>
+    <label class="field" id="publish-changes-field" hidden><span>What changed</span><input type="text" id="publish-changes" maxlength="280" autocomplete="off"></label>
+    <div class="field"><span>Who can play</span><div class="pick" id="publish-visibility" data-options="public:Everyone,link:Anyone with the link"></div></div>
+    <div id="publish-builders"></div>
+    <div class="items"><button class="item" id="publish-go">Publish</button></div>
   </section>
 
   <section id="forget" class="screen" data-nav hidden>
@@ -94,6 +265,37 @@
   <section id="settings" class="screen" data-nav hidden>
     <h1>Settings</h1>
     <label class="field"><span>Name</span><input type="text" id="name-field" maxlength="16" autocomplete="off" spellcheck="false"></label>
+    <div class="field"><span>Share usage stats</span><div class="pick" id="share-usage" data-options="on:On,off:Off"></div></div>
+    <p class="note">Sends which screens and buttons you use, never what you type.</p>
+    <div class="items"><button class="item" id="go-account">Account<span class="value" id="account-value">Sign in</span></button></div>
+  </section>
+
+  <section id="signin" class="screen" data-nav hidden>
+    <h1>Sign in</h1>
+    <label class="item entry"><input type="email" id="signin-email" placeholder="Email" autocomplete="email" spellcheck="false"></label>
+    <label class="item entry"><input type="password" id="signin-password" placeholder="Password" autocomplete="current-password"></label>
+    <div class="items"><button class="item" id="signin-go">Sign in</button><button class="item" id="go-signup">Create account</button></div>
+  </section>
+
+  <section id="signup" class="screen" data-nav hidden>
+    <h1>Create account</h1>
+    <label class="item entry"><input type="text" id="signup-username" placeholder="Username" maxlength="20" autocomplete="username" spellcheck="false"></label>
+    <label class="item entry"><input type="email" id="signup-email" placeholder="Email" autocomplete="email" spellcheck="false"></label>
+    <label class="item entry"><input type="password" id="signup-password" placeholder="Password" autocomplete="new-password"></label>
+    <div class="items"><button class="item" id="signup-go">Create account</button></div>
+  </section>
+
+  <section id="account" class="screen" data-nav hidden>
+    <h1>Account</h1>
+    <label class="field"><span>Username</span><input type="text" id="account-username" maxlength="20" autocomplete="off" spellcheck="false"></label>
+    <div class="items"><button class="item" id="sign-out">Sign out</button><button class="item danger" id="go-delete">Delete account</button></div>
+  </section>
+
+  <section id="delete-account" class="screen" data-nav hidden>
+    <h1>Delete account?</h1>
+    <p class="lead">Your published worlds, votes and comments go with it.</p>
+    <label class="item entry"><input type="password" id="delete-password" placeholder="Password" autocomplete="current-password"></label>
+    <div class="items"><button class="item danger" id="delete-yes">Delete account</button><button class="item" id="delete-no">Cancel</button></div>
   </section>
 
   <section id="down" class="screen" data-nav hidden>
@@ -112,13 +314,16 @@
   </section>
 
   <p id="busy" class="status" hidden></p>
+  <div id="progress" hidden><i></i></div>
   <div id="error" class="error"></div>
 </main>
-<div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span><kbd>Esc</kbd>Back</span><span id="forget-hint"><kbd>Del</kbd>Remove</span><span id="fullscreen-hint"><kbd>F11</kbd>Full screen</span><span id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span></div>
+<div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span id="rename-hint"><kbd>F2</kbd>Rename</span><span id="forget-hint"><kbd>Del</kbd>Remove</span><span id="fullscreen-hint"><kbd>F11</kbd>Full screen</span><span id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span></div>
 
 <script type="module">
-  import { backdrop, joinLink, joinable, logo } from "/front.js";
+  import { backdrop, joinLink, joinable, logo, pick, renameInPlace, usage } from "/front.js";
   const $ = (id) => document.getElementById(id);
+  // The app batches them, and sends what's left when it quits.
+  const stats = usage("app", shell.events, 0);
   backdrop($("backdrop"));
   logo($("logo"));
   if (shell.platform === "darwin") {
@@ -130,11 +335,13 @@
   // ---------- screens: a stack, Esc goes back one ----------
   const stack = [];
   const current = () => stack.at(-1);
+  /** The community world the screen is about; each screen keeps the one it opened with, so Back returns to it. */
+  let opened = null;
   function show(id, { reset = false } = {}) {
     if (reset) stack.length = 0;
     const from = current();
     if (from) from.focus = document.activeElement?.closest(".screen") === $(from.id) ? document.activeElement : null;
-    stack.push({ id });
+    stack.push({ id, world: opened });
     enter();
   }
   function back() {
@@ -142,19 +349,24 @@
     // Leaving the waiting screen stops waiting for that world.
     if (current().id === "waiting") shell.leave();
     stack.pop();
+    if (current().world && current().world !== opened) {
+      opened = current().world;
+      renderWorld();
+    }
     enter();
   }
   function enter() {
     const { id, focus } = current();
     for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== id;
+    stats.screen(id);
     $("error").textContent = "";
     $("back").hidden = stack.length < 2;
-    $("forget-hint").hidden = id !== "saved";
+    $("forget-hint").hidden = $("rename-hint").hidden = id !== "saved";
     const target = focus?.isConnected && focus.getClientRects().length ? focus : $(id).querySelector(".item:not([hidden]) input, .item:not([hidden])");
     target?.focus();
   }
   addEventListener("keydown", (e) => {
-    const typing = document.activeElement?.matches("input[type=text]");
+    const typing = document.activeElement?.matches("input");
     if (e.key === "Escape" || (e.key === "Backspace" && !typing)) {
       e.preventDefault();
       back();
@@ -163,15 +375,24 @@
       e.preventDefault();
       if (current()?.id === "join") join();
       else if (current()?.id === "name") $("name-go").click();
+      else if (["signin", "signup", "delete-account", "publish", "comments", "thread"].includes(current()?.id)) $({ signin: "signin-go", signup: "signup-go", "delete-account": "delete-yes", publish: "publish-go", comments: "comment-go", thread: "message-go" }[current().id]).click();
       else document.activeElement.blur();
     }
   });
   for (const b of document.querySelectorAll("[data-to]")) b.onclick = () => show(b.dataset.to);
   $("back").onclick = back;
 
+  /** One model's use: its tokens in and out, who paid, and what it cost or would have at API prices. */
+  const usageRow = (u) => {
+    const row = el("div", { className: "item pictured" }, el("span", { className: "what", textContent: u.model }, el("small", { textContent: `${tokens(u.inputTokens + u.cacheRead + u.cacheWrite)} in · ${tokens(u.outputTokens)} out · ${u.subscription ? "Subscription" : "API key"}` })), el("span", { className: "value", textContent: `$${u.costUsd.toFixed(2)}` }));
+    row.dataset.key = `usage-${u.provider}-${u.model}-${u.subscription}`;
+    return row;
+  };
+  const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n)) + " tokens";
+  const day = (ms) => new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(new Date(ms).getFullYear() !== new Date().getFullYear() && { year: "numeric" }) }).replaceAll(" ", "\u00a0");
   const ago = (ms) => {
     const m = Math.round((Date.now() - ms) / 60000);
-    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : Math.round(m / 1440) === 1 ? "yesterday" : `${Math.round(m / 1440)} days ago`;
   };
   const el = (tag, props, ...children) => {
     const node = Object.assign(document.createElement(tag), props);
@@ -189,13 +410,14 @@
   }
   const open = (url) => busy(url.startsWith("local:") ? "Starting your server…" : "", () => shell.open(url));
   $("go-new").onclick = () => open("local:new");
-  $("go-community").onclick = () => open("local:community");
+  $("go-community").onclick = () => show("community");
 
   // ---------- saved worlds: the ones this computer hosts and the ones joined, most recent first; each opens its game ----------
   let games = [];
   let selected = null;
   async function refresh() {
     const s = await shell.state();
+    if ($("games").querySelector(".renaming")) return;
     games = [...s.hosted.map((g) => ({ ...g, value: g.live ? "Live" : ago(g.at), kind: "Hosted" })), ...s.joined.map((g) => ({ ...g, value: ago(g.at), kind: "Joined" }))].sort(
       (a, b) => (b.live ? Infinity : b.at) - (a.live ? Infinity : a.at),
     );
@@ -206,6 +428,7 @@
         if (g.cover) cover.append(el("img", { src: g.cover, alt: "", onerror: (e) => e.target.remove() }));
         const b = el("button", { className: "item pictured", onclick: () => open(g.url) }, cover, el("span", { className: "what", textContent: g.name }), el("span", { className: g.live ? "value live" : "value", textContent: g.value }), el("span", { className: "value", textContent: g.kind }));
         b.dataset.key = g.url;
+        b.dataset.event = g.kind === "Hosted" ? "hosted-world" : "joined-world";
         return b;
       }),
     );
@@ -216,11 +439,23 @@
     const last = games.find((g) => g.url === s.last);
     const appeared = !!last && $("go-last").hidden;
     $("go-last").hidden = !last;
-    $("last-name").textContent = last?.name ?? "";
     $("go-last").onclick = () => last && open(last.url);
     if (appeared && current()?.id === "title") $("go-last").focus();
     if (current()?.id === "title" && !document.activeElement?.closest("#title .item:not([hidden])")) enter();
   }
+  /** F2 on a world renames it: a hosted one for everyone, a joined one only on this computer. */
+  $("games").addEventListener("keydown", (e) => {
+    if (e.key !== "F2") return;
+    const g = games.find((g) => g.url === document.activeElement?.dataset.key);
+    if (!g) return;
+    e.preventDefault();
+    renameInPlace(document.activeElement, async (name) => {
+      const error = await shell.rename(g.url, name);
+      $("error").textContent = error ?? "";
+      if (!error) stats.step("renamed", { kind: g.kind.toLowerCase() });
+      await refresh();
+    });
+  });
   /** Del on a world: a joined one is forgotten here, a hosted one deleted from this computer, after asking. */
   $("games").addEventListener("keydown", (e) => {
     if (e.key !== "Delete") return;
@@ -240,7 +475,9 @@
 
   async function join() {
     try {
-      await open(joinLink($("join-link").value));
+      const link = joinLink($("join-link").value);
+      stats.step("join");
+      await open(link);
     } catch (e) {
       $("error").textContent = e.message;
     }
@@ -252,12 +489,653 @@
     $("error").textContent = error ?? "";
     return !error;
   }
-  $("name-go").onclick = async () => (await saveName($("name-first"))) && show("title", { reset: true });
+  $("name-go").onclick = async () => {
+    if (!(await saveName($("name-first")))) return;
+    stats.step("named");
+    show("title", { reset: true });
+  };
   $("name-field").onchange = async () => (await saveName($("name-field"))) || ($("name-field").value = (await shell.name()).name);
-  document.querySelector("[data-to=settings]").addEventListener("click", async () => ($("name-field").value = (await shell.name()).name));
+  document.querySelector("[data-to=settings]").addEventListener("click", async () => {
+    $("name-field").value = (await shell.name()).name;
+    $("share-usage").set((await shell.shareUsage()) ? "on" : "off");
+  });
+  pick($("share-usage"), (value) => shell.shareUsage(value === "on"));
+
+  // ---------- the Community account: the app keeps its session, this page only asks for what to do ----------
+  let account = null;
+  let afterSignIn = null;
+  async function accountCall(action, body) {
+    const r = await shell.account(action, body);
+    if (r.error) throw new Error(r.error);
+    return r.account;
+  }
+  const showAccount = () => {
+    $("account-value").textContent = account?.username ?? "Sign in";
+    showUnread();
+    showRequests();
+  };
+  async function refreshAccount() {
+    account = await accountCall("account").catch(() => account);
+    showAccount();
+  }
+  /** What needs an account signs in first, then carries on. */
+  function needAccount(then) {
+    if (account) return then();
+    afterSignIn = then;
+    show("signin");
+  }
+  async function enterAccount(action, body) {
+    try {
+      account = await accountCall(action, body);
+    } catch (e) {
+      $("error").textContent = e.message;
+      return;
+    }
+    $("signin-password").value = $("signup-password").value = "";
+    while (["signin", "signup"].includes(current().id)) stack.pop();
+    showAccount();
+    const then = afterSignIn;
+    afterSignIn = null;
+    enter();
+    then?.();
+  }
+  $("signin-go").onclick = () => enterAccount("sign-in", { email: $("signin-email").value, password: $("signin-password").value });
+  $("go-signup").onclick = async () => {
+    $("signup-email").value ||= $("signin-email").value;
+    $("signup-username").value ||= (await shell.name()).name ?? "";
+    show("signup");
+  };
+  $("signup-go").onclick = () => enterAccount("sign-up", { username: $("signup-username").value, email: $("signup-email").value, password: $("signup-password").value });
+  $("go-account").onclick = () =>
+    needAccount(() => {
+      $("account-username").value = account.username;
+      show("account");
+    });
+  $("account-username").onchange = async () => {
+    try {
+      account = await accountCall("rename", { username: $("account-username").value });
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+    $("account-username").value = account.username;
+    showAccount();
+  };
+  $("sign-out").onclick = async () => {
+    account = await accountCall("sign-out");
+    showAccount();
+    back();
+  };
+  $("go-delete").onclick = () => show("delete-account");
+  $("delete-no").onclick = back;
+  $("delete-yes").onclick = async () => {
+    try {
+      account = await accountCall("delete-account", { password: $("delete-password").value });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    $("delete-password").value = "";
+    showAccount();
+    while (current().id !== "settings") stack.pop();
+    enter();
+  };
+  document.querySelector("[data-to=settings]").addEventListener("click", refreshAccount);
+  $("go-community").addEventListener("click", refreshAccount);
+
+  // ---------- Community: the list, a world's screen, and publishing one of this computer's worlds ----------
+  async function communityCall(action, body) {
+    const r = await shell.community(action, body);
+    if (r.error) throw Object.assign(new Error(r.error), { status: r.status });
+    return r.result;
+  }
+  const communityStatus = (text) => {
+    $("community-status").textContent = text;
+    $("community-status").hidden = !text;
+  };
+  /** A world's clip looping over its picture, or the picture alone. */
+  const clipOf = (w, cls) => {
+    const tile = el("span", { className: cls });
+    if (w.clip) tile.append(el("video", { src: w.clip, poster: w.cover, muted: true, loop: true, autoplay: true, playsInline: true }));
+    else if (w.cover) tile.append(el("img", { src: w.cover, alt: "", onerror: (e) => e.target.remove() }));
+    return tile;
+  };
+  const counted = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
+/** How many worlds added a mod. */
+const usedBy = (n = 0) => `${counted(n, "world")} use${n === 1 ? "s" : ""} it`;
+  let listed = [];
+  async function loadCommunity(more = false) {
+    const mine = $("community-tab").dataset.value === "mine";
+    const mods = $("community-tab").dataset.value === "mods";
+    $("mods-search-row").hidden = !mods;
+    if (mine && !account) return needAccount(() => loadCommunity());
+    if (!more) listed = [];
+    communityStatus(listed.length ? "" : "Loading");
+    try {
+      const after = more ? listed.at(-1)?.id : undefined;
+      const page = mods ? await communityCall("mods", { q: $("mods-search").value, after }) : await communityCall("list", { mine, sort: $("community-tab").dataset.value, after });
+      listed.push(...page);
+      $("community-more").hidden = mine || page.length < 50;
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+    communityStatus(listed.length ? "" : mods ? ($("mods-search").value.trim() ? "No mods match" : "No mods shared yet") : mine ? "Worlds you publish show up here" : "No worlds shared yet");
+    $("community-list").replaceChildren(...listed.map(worldRow));
+  }
+  function worldRow(w) {
+    const mod = w.kind === "mod";
+    const b = el("button", { className: "item pictured", onclick: () => openWorld(w) }, clipOf(w, "cover"), el("span", { className: "what", textContent: w.title }, el("small", { textContent: `by ${w.author} · ${mod ? w.description : counted(w.plays, "play")} · ${counted(w.votes, "vote")}` })), el("span", { className: "value", textContent: mod ? `${usedBy(w.uses)}` : w.visibility === "link" ? "Link only" : counted(w.players, "player") }));
+    b.dataset.key = w.id;
+    return b;
+  }
+  /** Worlds hosted right now, for anyone to join, for the host's friends, or behind a password the world's relay checks. */
+  const LOCK = '<svg class="lock" viewBox="0 0 12 14" aria-label="Password"><path d="M3 6V4a3 3 0 0 1 6 0v2h1.5v8h-9V6zm1.5 0h3V4a1.5 1.5 0 0 0-3 0z"/></svg>';
+  async function loadLive() {
+    const rows = await communityCall("live").catch(() => []);
+    $("live-list").replaceChildren(...rows.map((w) => {
+      const value = el("span", { className: "value live", textContent: `${w.players} playing` });
+      if (w.access === "password") value.insertAdjacentHTML("beforeend", LOCK);
+      const b = el("button", { className: "item pictured", onclick: () => joinLive(w) }, el("span", { className: "what", textContent: w.title }, el("small", { textContent: `${w.access === "friends" ? "Friends · " : ""}hosted by ${w.host}` })), value);
+      b.dataset.key = `live-${w.room}`;
+      return b;
+    }));
+  }
+  let unlocking = null;
+  function joinLive(w) {
+    if (w.access !== "password") return open(w.link);
+    unlocking = w;
+    $("unlock-title").textContent = w.title;
+    $("unlock-password").value = "";
+    show("unlock");
+  }
+  async function unlock() {
+    try {
+      const { link } = await communityCall("unlock", { room: unlocking.room, password: $("unlock-password").value });
+      $("error").textContent = "";
+      await open(link);
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+  }
+  $("unlock-go").onclick = unlock;
+  $("unlock-password").addEventListener("keydown", (e) => e.key === "Enter" && unlock());
+  $("go-community").addEventListener("click", () => loadLive());
+
+  pick($("community-tab"), () => loadCommunity());
+  $("go-community").addEventListener("click", () => loadCommunity());
+  $("community-more").onclick = () => loadCommunity(true);
+  let searching;
+  $("mods-search").addEventListener("input", () => {
+    clearTimeout(searching);
+    searching = setTimeout(() => loadCommunity(), 250);
+  });
+
+  function renderWorld() {
+    const w = opened;
+    $("cworld-stage").replaceChildren(clipOf(w, "stage-art"));
+    $("cworld-title").textContent = w.title;
+    const names = w.builders ?? [w.author];
+    const mod = w.kind === "mod";
+    $("cworld-by").replaceChildren("by ", ...names.flatMap((n, i) => [i ? ", " : "", el("button", { textContent: n, onclick: () => openProfile(n) })]), mod ? ` · ${usedBy(w.uses)}` : ` · ${counted(w.players, "player")} · ${counted(w.plays, "play")}${w.version > 1 ? ` · Updated ${day(w.updatedAt)}` : ""}`);
+    $("cworld-play").hidden = $("cworld-fork").hidden = mod;
+    $("cworld-mod").hidden = !mod;
+    $("cworld-add-line").textContent = `./world add_mod id=${w.id}`;
+    $("cworld-add").lastChild.textContent = "Copy for your agent";
+    $("cworld-readme").textContent = w.readme ?? "";
+    $("cworld-readme").hidden = !w.readme;
+    $("cworld-api").textContent = w.api || "Exports nothing to other mods";
+    $("cworld-about").textContent = w.description;
+    $("cworld-votes").textContent = String(w.votes);
+    $("cworld-vote").firstChild.textContent = w.voted ? "Upvoted" : "Upvote";
+    $("cworld-down").hidden = !w.mine;
+    $("cworld-report").hidden = w.mine;
+    $("cworld-report").disabled = false;
+    $("cworld-report").firstChild.textContent = "Report";
+    $("cworld-fork").firstChild.textContent = "Fork";
+    const parent = w.parent;
+    $("cworld-parent").hidden = !parent?.id;
+    $("cworld-parent-name").textContent = parent?.title ?? "";
+    $("cworld-lineage").hidden = !parent || (!!parent.id && !parent.updated);
+    $("cworld-lineage").textContent = parent?.updated
+      ? `The original was updated ${day(parent.updated.at)}${parent.updated.changelog ? `: ${parent.updated.changelog}` : ""}`
+      : `Forked from ${parent?.removed ? "a removed" : "an unlisted"} ${mod ? "mod" : "world"}`;
+    $("cworld-versions").hidden = !(w.history?.length > 1);
+    $("cworld-usage").hidden = !w.builder;
+    $("cworld-version").textContent = String(w.version ?? "");
+    $("cworld-forks").hidden = !w.forks;
+    $("cworld-fork-count").textContent = String(w.forks ?? "");
+  }
+  /** A row from a list shows at once; the rest, like where it came from and its forks, follows. */
+  async function openWorld(w) {
+    opened = w;
+    renderWorld();
+    show("cworld");
+    const full = await communityCall(w.kind === "mod" ? "mod" : "world", { id: w.id }).catch((e) => void ($("error").textContent = e.message));
+    if (full && opened === w) {
+      Object.assign(w, full);
+      renderWorld();
+    }
+  }
+  $("cworld-parent").onclick = () => openWorld({ ...opened.parent, kind: opened.kind, votes: 0, plays: 0, players: 0, uses: 0 });
+  /** Any world's agent adds a mod with this line; the player pastes it to their agent. */
+  $("cworld-add").onclick = () => navigator.clipboard.writeText(`Add the Community mod ${opened.title}: ./world add_mod id=${opened.id}`).then(() => ($("cworld-add").lastChild.textContent = "Copied"));
+  let forks = [];
+  async function loadForks(more = false) {
+    if (!more) forks = [];
+    try {
+      const page = await communityCall("forks", { id: opened.id, after: more ? forks.at(-1)?.id : undefined });
+      forks.push(...page);
+      $("forks-more").hidden = page.length < 50;
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+    $("fork-list").replaceChildren(...forks.map(worldRow));
+  }
+  $("cworld-forks").onclick = () => {
+    $("forks-title").textContent = `Forks of ${opened.title}`;
+    show("forks");
+    loadForks();
+  };
+  $("forks-more").onclick = () => loadForks(true);
+  $("cworld-usage").onclick = async () => {
+    show("usage");
+    let rows = [];
+    try {
+      rows = await communityCall("usage", { id: opened.id });
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+    $("usage-none").hidden = rows.length > 0;
+    $("usage-list").replaceChildren(...rows.map(usageRow));
+    enter();
+  };
+  $("cworld-versions").onclick = () => {
+    $("version-list").replaceChildren(
+      ...opened.history.map((v) => {
+        const row = el("div", { className: "item pictured" }, el("span", { className: "what", textContent: `Version ${v.version}` }, el("small", { textContent: v.changelog })), el("span", { className: "value", textContent: day(v.at) }));
+        row.dataset.key = `version-${v.version}`;
+        return row;
+      }),
+    );
+    show("versions");
+  };
+  /** Play hosts it, Fork copies it into Worlds. Anyone else's world runs their code here, so it asks first. */
+  function getWorld(host) {
+    const go = async () => {
+      while (current().id === "trust") stack.pop();
+      enter();
+      await busy(host ? "Downloading…" : "Copying…", async () => {
+        try {
+          await communityCall("get", { id: opened.id, host });
+        } catch (e) {
+          return e.message;
+        }
+        if (host) return;
+        $("cworld-fork").firstChild.textContent = "Forked";
+        refresh();
+      });
+    };
+    if (opened.mine) return go();
+    $("trust-title").textContent = `${host ? "Play" : "Fork"} ${opened.title}?`;
+    $("trust-text").textContent = `This world runs code from ${opened.author}. Only play worlds from people you trust.`;
+    $("trust-yes").textContent = host ? "Play" : "Fork";
+    $("trust-yes").onclick = go;
+    show("trust");
+  }
+  $("cworld-play").onclick = () => getWorld(true);
+  $("cworld-fork").onclick = () => getWorld(false);
+  $("trust-no").onclick = back;
+  $("cworld-vote").onclick = () =>
+    needAccount(async () => {
+      try {
+        Object.assign(opened, await communityCall("vote", { id: opened.id, up: !opened.voted }));
+        renderWorld();
+      } catch (e) {
+        $("error").textContent = e.message;
+      }
+    });
+  /** Comments, oldest first, 100 at a time. Their author and the world's owner remove them; anyone reports them. */
+  let thread = [];
+  async function loadComments(more = false) {
+    if (!more) thread = [];
+    try {
+      const page = await communityCall("comments", { id: opened.id, after: more ? thread.at(-1)?.id : undefined });
+      thread.push(...page);
+      $("comments-more").hidden = page.length < 100;
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+    $("comments-status").textContent = "No comments yet";
+    $("comments-status").hidden = thread.length > 0;
+    $("comment-list").replaceChildren(...thread.map(commentRow));
+  }
+  function commentRow(c) {
+    const act = (text, run) => el("button", { textContent: text, onclick: run });
+    const head = el("small", { textContent: `${c.author} · ${ago(c.at)}` });
+    if (c.canRemove)
+      head.append(
+        act("Remove", () =>
+          commentAction("remove-comment", c, () => {
+            Object.assign(c, { removed: true, body: "", canRemove: false });
+            $("comment-list").replaceChildren(...thread.map(commentRow));
+          }),
+        ),
+      );
+    if (!c.mine && !c.removed) head.append(act("Report", (e) => commentAction("report-comment", c, () => ((e.target.textContent = "Reported"), (e.target.disabled = true)))));
+    return el("div", { className: c.removed ? "comment removed" : "comment" }, head, el("p", { textContent: c.removed ? "Removed" : c.body }));
+  }
+  async function commentAction(action, c, done) {
+    try {
+      await communityCall(action, { id: c.id });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    done();
+  }
+  $("cworld-comments").onclick = () => {
+    $("comments-title").textContent = opened.title;
+    $("comment-text").value = "";
+    show("comments");
+    loadComments();
+  };
+  $("comments-more").onclick = () => loadComments(true);
+  $("comment-go").onclick = () =>
+    needAccount(async () => {
+      const body = $("comment-text").value.trim();
+      if (!body) return $("comment-text").focus();
+      try {
+        thread.push(await communityCall("comment", { id: opened.id, body }));
+      } catch (e) {
+        return void ($("error").textContent = e.message);
+      }
+      $("comment-text").value = "";
+      $("comments-status").hidden = true;
+      $("comment-list").replaceChildren(...thread.map(commentRow));
+    });
+  $("cworld-report").onclick = async () => {
+    try {
+      await communityCall("report", { id: opened.id });
+      $("cworld-report").firstChild.textContent = "Reported";
+      $("cworld-report").disabled = true;
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+  };
+  $("cworld-down").onclick = () => {
+    $("take-down-title").textContent = `Take down ${opened.title}?`;
+    show("take-down");
+  };
+  $("take-down-no").onclick = back;
+  $("take-down-yes").onclick = async () => {
+    try {
+      await communityCall("take-down", { id: opened.id });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    while (current().id !== "community") stack.pop();
+    enter();
+    loadCommunity();
+  };
+
+  /** A builder's profile: their worlds, and for anyone else, a message and a block. On your own, the credits waiting for you. */
+  let profiled = null;
+  async function openProfile(name) {
+    show("profile");
+    $("profile-name").textContent = name;
+    $("profile-about").textContent = "";
+    for (const id of ["profile-friend", "profile-decline", "profile-message", "profile-block", "credits-part"]) $(id).hidden = true;
+    $("profile-worlds").replaceChildren();
+    $("profile-none").hidden = true;
+    let p;
+    try {
+      p = await communityCall("profile", { name });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    profiled = p;
+    $("profile-name").textContent = p.username;
+    $("profile-about").textContent = `Joined ${new Date(p.joined).toLocaleDateString(undefined, { month: "long", year: "numeric" })} · ${counted(p.players, "player")} · ${counted(p.votes, "vote")}`;
+    $("profile-message").hidden = $("profile-block").hidden = $("profile-friend").hidden = p.me;
+    showFriend();
+    $("profile-block").textContent = p.blocked ? "Unblock" : "Block";
+    $("profile-worlds").replaceChildren(...p.worlds.map(worldRow));
+    $("profile-none").hidden = p.worlds.length > 0;
+    if (p.me) loadCredits();
+  }
+  async function loadCredits() {
+    const waiting = await communityCall("credits").catch(() => []);
+    $("credits-part").hidden = !waiting.length;
+    $("credit-list").replaceChildren(
+      ...waiting.map((c) => {
+        const b = el("button", { className: "item" }, `Accept ${c.world.title}`, el("span", { className: "value", textContent: `as ${c.name}, by ${c.world.author}` }));
+        b.onclick = async () => {
+          try {
+            await communityCall("accept", { token: c.token });
+          } catch (e) {
+            return void ($("error").textContent = e.message);
+          }
+          openProfile(account.username);
+        };
+        return b;
+      }),
+    );
+  }
+  /** The friend button says where the two stand: Add friend, Request sent (takes it back), Accept (with Decline beside it), or Friends (unfriends). */
+  function showFriend() {
+    const f = profiled.friend;
+    $("profile-friend").firstChild.textContent = { friends: "Friends", sent: "Request sent", received: "Accept friend request" }[f] ?? "Add friend";
+    $("profile-friend").querySelector(".value").textContent = { friends: "Unfriend", sent: "Take back" }[f] ?? "";
+    $("profile-decline").hidden = f !== "received";
+  }
+  async function setFriend(on) {
+    try {
+      profiled.friend = (await communityCall("friend", { name: profiled.username, on })).friend;
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    showFriend();
+    showRequests();
+  }
+  $("profile-friend").onclick = () => needAccount(() => setFriend(!profiled.friend || profiled.friend === "received"));
+  $("profile-decline").onclick = () => setFriend(false);
+  async function showRequests() {
+    if (!account) return void ($("friend-requests").textContent = "");
+    const { received } = await communityCall("friends").catch(() => ({ received: [] }));
+    $("friend-requests").textContent = received.length ? `${received.length} new` : "";
+  }
+  $("go-friends").onclick = () =>
+    needAccount(async () => {
+      show("friends");
+      let f = { friends: [], received: [], sent: [] };
+      try {
+        f = await communityCall("friends");
+      } catch (e) {
+        $("error").textContent = e.message;
+      }
+      const row = (name, value) => el("button", { className: "item", onclick: () => openProfile(name) }, name, el("span", { className: "value", textContent: value }));
+      $("friend-list").replaceChildren(...f.received.map((n) => row(n, "Wants to be friends")), ...f.friends.map((n) => row(n, "")), ...f.sent.map((n) => row(n, "Request sent")));
+      $("friends-none").hidden = f.received.length + f.friends.length + f.sent.length > 0;
+      enter();
+    });
+  $("go-me").onclick = () => needAccount(() => openProfile(account.username));
+  $("profile-message").onclick = () => needAccount(() => openThread(profiled.username));
+  $("profile-block").onclick = () =>
+    needAccount(async () => {
+      try {
+        profiled.blocked = (await communityCall("block", { name: profiled.username, on: !profiled.blocked })).blocked;
+      } catch (e) {
+        return void ($("error").textContent = e.message);
+      }
+      $("profile-block").textContent = profiled.blocked ? "Unblock" : "Block";
+      if (profiled.blocked) profiled.friend = null;
+      showFriend();
+    });
+
+  /** Messages: plain text, read only by the two people in a conversation. Notifications count beside them. */
+  async function showUnread() {
+    if (!account) return void ($("unread").textContent = $("notice-count").textContent = "");
+    const { unread, notifications } = await communityCall("unread").catch(() => ({ unread: 0, notifications: 0 }));
+    $("unread").textContent = unread ? String(unread) : "";
+    $("notice-count").textContent = notifications ? `${notifications} new` : "";
+  }
+  /** What a notice says, and where it leads. */
+  const NOTICES = {
+    fork: (n) => [`${n.actor} forked your ${n.world.kind}`, n.world.title, () => openWorld(n.world)],
+    comment: (n) => [`${n.actor} commented`, n.world.title, () => openWorld(n.world)],
+    message: (n) => [`${n.actor} sent you a message`, "", () => openThread(n.actor)],
+    credit: (n) => [`${n.actor} credited you`, n.world.title, () => openProfile(account.username)],
+    "friend-request": (n) => [`${n.actor} wants to be friends`, "", () => openProfile(n.actor)],
+    "friend-accepted": (n) => [`${n.actor} is your friend now`, "", () => openProfile(n.actor)],
+  };
+  $("go-notices").onclick = () =>
+    needAccount(async () => {
+      show("notices");
+      let list = [];
+      try {
+        list = await communityCall("notifications");
+      } catch (e) {
+        $("error").textContent = e.message;
+      }
+      $("notices-none").hidden = list.length > 0;
+      $("notice-list").replaceChildren(
+        ...list.map((n) => {
+          const [what, world, go] = NOTICES[n.kind](n);
+          const b = el("button", { className: "item pictured", onclick: go }, el("span", { className: "what", textContent: what }, el("small", { textContent: world })), el("span", { className: n.read ? "value" : "value live", textContent: n.read ? ago(n.at) : "New" }));
+          b.dataset.key = `notice-${n.id}`;
+          return b;
+        }),
+      );
+      enter();
+      if (list.some((n) => !n.read)) await communityCall("read-notifications").then(showUnread, () => {});
+    });
+  $("go-inbox").onclick = () =>
+    needAccount(async () => {
+      show("inbox");
+      let threads = [];
+      try {
+        threads = await communityCall("inbox");
+      } catch (e) {
+        $("error").textContent = e.message;
+      }
+      $("inbox-none").hidden = threads.length > 0;
+      $("thread-list").replaceChildren(
+        ...threads.map((t) => el("button", { className: "item pictured", onclick: () => openThread(t.with) }, el("span", { className: "what", textContent: t.with }, el("small", { textContent: `${t.last.mine ? "You: " : ""}${t.last.body}` })), el("span", { className: "value", textContent: t.unread ? `${t.unread} new` : ago(t.last.at) }))),
+      );
+      enter();
+    });
+  let talking = null;
+  async function openThread(name) {
+    talking = name;
+    $("thread-name").textContent = name;
+    $("message-text").value = "";
+    $("message-list").replaceChildren();
+    show("thread");
+    let t;
+    try {
+      t = await communityCall("thread", { name });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    $("thread-blocked").hidden = !t.blocked;
+    $("message-list").replaceChildren(...t.messages.map(messageRow));
+    $("message-list").lastElementChild?.scrollIntoView({ block: "nearest" });
+    showUnread();
+  }
+  function messageRow(m) {
+    const head = el("small", { textContent: `${m.mine ? "You" : talking} · ${ago(m.at)}` });
+    if (!m.mine)
+      head.append(
+        el("button", {
+          textContent: "Report",
+          onclick: async (e) => {
+            await communityCall("report-message", { id: m.id }).catch(() => {});
+            e.target.textContent = "Reported";
+            e.target.disabled = true;
+          },
+        }),
+      );
+    return el("div", { className: m.mine ? "comment mine" : "comment" }, head, el("p", { textContent: m.body }));
+  }
+  $("message-go").onclick = async () => {
+    const body = $("message-text").value.trim();
+    if (!body) return $("message-text").focus();
+    let m;
+    try {
+      m = await communityCall("send", { to: talking, body });
+    } catch (e) {
+      return void ($("error").textContent = e.message);
+    }
+    $("message-text").value = "";
+    $("message-list").append(messageRow(m));
+    $("message-list").lastElementChild.scrollIntoView({ block: "nearest" });
+  };
+  $("thread-profile").onclick = () => openProfile(talking);
+
+  /** Publishing starts from one of this computer's worlds; the form signs in first if it has to, then carries on. */
+  let publishing = null;
+  $("go-publish").onclick = async () => {
+    show("publish-pick");
+    const covers = Object.fromEntries(games.filter((g) => g.kind === "Hosted").map((g) => [g.url, g.cover]));
+    const local = await communityCall("local").catch((e) => (($("error").textContent = e.message), []));
+    $("publish-none").hidden = !!local.length;
+    $("publish-list").replaceChildren(
+      ...local.map((w) => {
+        const cover = el("span", { className: "cover" });
+        if (covers[`local:${w.id}`]) cover.append(el("img", { src: covers[`local:${w.id}`], alt: "", onerror: (e) => e.target.remove() }));
+        return el("button", { className: "item pictured", onclick: () => publishForm(w) }, cover, el("span", { className: "what", textContent: w.name }), el("span", { className: "value", textContent: w.shared ? "Published" : "" }));
+      }),
+    );
+    enter();
+  };
+  function publishForm(w) {
+    publishing = w;
+    $("publish-name").textContent = w.name;
+    $("publish-title").value = w.shared?.title ?? w.name;
+    $("publish-description").value = w.shared?.description ?? "";
+    $("publish-visibility").set(w.shared?.visibility ?? "public");
+    $("publish-go").firstChild.textContent = w.shared ? "Update" : "Publish";
+    $("publish-changes-field").hidden = !w.shared;
+    $("publish-changes").value = "";
+    $("publish-builders").replaceChildren();
+    show("publish");
+    loadBuilders(w);
+  }
+  /** Who played in the world, to credit: each one picked is asked on Community, and shows once they accept. */
+  async function loadBuilders(w) {
+    const names = await communityCall("builders", { id: w.id }).catch(() => []);
+    const mine = (await shell.name()).name;
+    if (publishing !== w) return;
+    $("publish-builders").replaceChildren(
+      ...names
+        .filter((n) => n !== mine)
+        .map((n) => {
+          const field = el("div", { className: "field" }, el("span", { textContent: `Credit ${n}` }));
+          const choice = el("div", { className: "pick" });
+          choice.dataset.options = "no:No,yes:Yes";
+          choice.dataset.builder = n;
+          field.append(choice);
+          pick(choice);
+          return field;
+        }),
+    );
+  }
+  pick($("publish-visibility"));
+  $("publish-go").onclick = () =>
+    needAccount(() =>
+      busy("Uploading…", async () => {
+        let world;
+        try {
+          const builders = [...document.querySelectorAll("#publish-builders [data-builder]")].filter((b) => b.dataset.value === "yes").map((b) => b.dataset.builder);
+          world = await communityCall("publish", { id: publishing.id, title: $("publish-title").value, description: $("publish-description").value, visibility: $("publish-visibility").dataset.value, changelog: $("publish-changes").value, builders });
+        } catch (e) {
+          return e.message;
+        }
+        while (current().id !== "community") stack.pop();
+        openWorld(world);
+      }),
+    );
 
   $("quit").onclick = () => shell.quit();
   $("go-update").onclick = () => busy("Downloading…", shell.update);
+  shell.version().then((v) => ($("version").textContent = `Sandbox ${v}`));
   shell.on("update", (version) => {
     $("go-update").hidden = !version;
     $("update-version").textContent = version ?? "";
@@ -293,6 +1171,13 @@
     show("down");
   });
   addEventListener("focus", () => document.body.classList.contains("playing") || refresh());
+  /** An update's download by its bytes, then Installing until the installer takes over. */
+  shell.on("updating", (progress) => {
+    $("progress").hidden = !progress;
+    if (!progress) return;
+    $("progress").firstChild.style.width = `${(progress.installing ? 1 : progress.downloaded) * 100}%`;
+    if (progress.installing) $("busy").textContent = "Installing…";
+  });
   shell.on("starting", (text) => {
     $("busy").textContent = text ?? "";
     $("busy").hidden = !text;

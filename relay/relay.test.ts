@@ -170,3 +170,22 @@ test("players stay while their host reconnects, and play on through the new conn
   p.ws.close();
   again.ws.close();
 });
+
+test("a world listed with a password gives its invite only for the right password, from its host's hash, 10 tries a minute", async () => {
+  const unlock = (room: string, password: string, ip = "10.0.0.1") => fetch(`${BASE}/_unlock`, { method: "POST", headers: { "x-real-ip": ip }, body: JSON.stringify({ room, password }) });
+  const h = await host("locked-room", true);
+  expect((await unlock("locked-room", "hunter2")).status).toBe(404);
+  h.ws.send(JSON.stringify({ t: "lock", hash: await Bun.password.hash("hunter2"), invite: "the-invite" }));
+  await Bun.sleep(100);
+  expect((await unlock("locked-room", "wrong")).status).toBe(403);
+  const right = await unlock("locked-room", "hunter2");
+  expect(await right.json()).toEqual({ invite: "the-invite" });
+  expect(right.headers.get("access-control-allow-origin")).toBe("*");
+  for (let i = 0; i < 8; i++) await unlock("locked-room", "wrong");
+  expect((await unlock("locked-room", "hunter2")).status).toBe(429);
+  expect((await unlock("locked-room", "hunter2", "10.0.0.2")).status).toBe(200);
+  h.ws.send(JSON.stringify({ t: "lock" }));
+  await Bun.sleep(100);
+  expect((await unlock("locked-room", "hunter2", "10.0.0.3")).status).toBe(404);
+  h.ws.close();
+});

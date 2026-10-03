@@ -26,7 +26,8 @@
   .item.choice button { flex: none; background: none; border: 0; padding: 8px 6px; color: var(--dim); font: 700 16px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; cursor: pointer; outline: none; }
   .item.choice button:is(:focus, :hover) { color: var(--accent); }
   .cover video { display: block; width: 100%; height: 100%; object-fit: cover; }
-  :is(#app, #invite) .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
+  :is(#app, #invite, #settings) .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
+  #create-cover { width: 96px; margin-left: 12px; opacity: 1; }
 </style>
 </head>
 <body>
@@ -41,6 +42,7 @@
       <button class="item" id="go-join" data-to="join">Join world</button>
       <button class="item" id="go-create" data-to="create">Host world</button>
       <button class="item" id="go-app" data-to="app" hidden>Desktop app</button>
+      <button class="item" id="go-settings" data-to="settings">Settings</button>
     </div>
   </section>
 
@@ -96,7 +98,7 @@
 
   <section id="create" class="screen" data-nav data-enter="Host" hidden>
     <h1>Host world</h1>
-    <div class="field"><span>World</span><div class="pick" id="create-world"></div></div>
+    <div class="field"><span>World</span><div class="pick" id="create-world"></div><span class="cover" id="create-cover"></span></div>
     <label class="field new-only"><span>Name</span><input type="text" id="create-name" placeholder="Random" maxlength="40" autocomplete="off" spellcheck="false"></label>
     <div class="field new-only"><span>Start with</span><div class="pick" id="create-start" data-options="basics:3D field,hills:3D hills,blank:Blank"></div></div>
     <label class="field"><span>Password</span><input type="text" id="create-password" placeholder="None" maxlength="40" autocomplete="off" spellcheck="false"></label>
@@ -116,6 +118,12 @@
   <section id="rewind" class="screen" data-nav hidden>
     <h1>Rewind</h1>
     <div class="items" id="snapshots"></div>
+  </section>
+
+  <section id="settings" class="screen" data-nav hidden>
+    <h1>Settings</h1>
+    <div class="field"><span>Share usage stats</span><div class="pick" id="share-usage" data-options="on:On,off:Off"></div></div>
+    <p class="note">Sends which screens and buttons you use, never what you type.</p>
   </section>
 
   <section id="hosting" class="screen" data-nav hidden>
@@ -139,9 +147,9 @@
 
   <div id="error" class="error"></div>
 </main>
-<div class="hints"><span><kbd>↑↓</kbd>Select</span><span id="enter-hint"><kbd>Enter</kbd>Open</span></div>
+<div class="hints"><span><kbd>↑↓</kbd>Select</span><span id="enter-hint"><kbd>Enter</kbd>Open</span><span id="rename-hint" hidden><kbd>F2</kbd>Rename</span></div>
 <script type="module">
-  import { COMPUTERS, backdrop, computerPick, joinLink, joinable, logo, pick } from "/front.js";
+  import { COMPUTERS, backdrop, computerPick, joinLink, joinable, logo, pick, renameInPlace, usage } from "/front.js";
   const $ = (id) => document.getElementById(id);
   backdrop($("backdrop"));
   logo($("logo"));
@@ -176,6 +184,8 @@
     return data;
   }
   const attempt = (work) => work().catch((e) => ($("error").textContent = e.message));
+  // The launcher sends them on under this computer's install.
+  const stats = usage("menu", (events) => key && fetch("/api/menu/events", { method: "POST", keepalive: true, headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ events }) }).catch(() => {}));
 
   // ---------- screens: a stack, Esc goes back one ----------
   const stack = [];
@@ -195,9 +205,11 @@
   function enter() {
     const { id, focus } = current();
     for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== id;
+    stats.screen(id);
     $("error").textContent = "";
     $("back").hidden = stack.length < 2 && !inApp;
     $("enter-hint").lastChild.textContent = $(id).dataset.enter ?? "Open";
+    $("rename-hint").hidden = id !== "worlds";
     const target = focus?.isConnected && !focus.disabled && focus.getClientRects().length ? focus : $(id).querySelector("[autofocus]") ?? $(id).querySelector(".item:not([hidden]):not(:disabled), .field input, .pick, .copy-row button");
     target?.focus();
   }
@@ -275,10 +287,13 @@
     const r = s.running;
     // The menu answers only on this computer, so the app opens it here.
     offerApp(`${location.origin}/menu#key=${key}`);
+    $("share-usage").set(s.shareUsage ? "on" : "off");
     $("no-worlds").hidden = !!s.worlds.length;
-    rebuild($("world-list"), s.worlds.map((w) => {
+    // A name being typed stays while the state refreshes.
+    if (!$("world-list").querySelector(".renaming")) rebuild($("world-list"), s.worlds.map((w) => {
       const b = el("button", { className: "item pictured" }, coverTile(localCover(w)), el("span", { className: "what", textContent: w.name }), el("span", { className: r?.id === w.id ? "value live" : "value", textContent: r?.id === w.id ? "Live" : ago(w.played) }));
       b.dataset.key = w.id;
+      b.dataset.event = "world";
       b.onclick = () => {
         selected = w.id;
         renderWorld();
@@ -294,6 +309,7 @@
       rebuild($("players"), r.players.map((p) => {
         const remove = el("button", { className: "danger", textContent: "Remove" });
         remove.dataset.key = `remove-${p.name}`;
+        remove.dataset.event = "remove-player";
         remove.onclick = async () => (await ask(`Remove ${p.name}?`, "Remove")) && attempt(() => api("remove", { name: p.name }));
         return el("div", { className: "copy-row" }, el("i", { className: p.online ? "dot on" : "dot" }), el("b", { textContent: p.name }), remove);
       }));
@@ -301,6 +317,7 @@
         const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         const b = el("button", { className: "item", textContent: time }, el("span", { className: "value", textContent: ago(at) }));
         b.dataset.key = String(at);
+        b.dataset.event = "snapshot";
         b.onclick = async () => (await ask(`Back to ${time}?`, "Rewind")) && attempt(() => api("rewind", { at }));
         return b;
       }));
@@ -345,14 +362,22 @@
   }
 
   /** The host plays at the game's origin with the world's invite, like anyone; their game joins them as the host through the controls it frames from here. */
-  const play = (s) => location.assign(`${game}/#invite=${s.running.invite}`);
+  const play = (s) => {
+    stats.step("hosted");
+    location.assign(`${game}/#invite=${s.running.invite}`);
+  };
   /** Hosts a world and plays it, unless the host would rather keep the one running; says whether it went ahead. */
   async function hostWorld(id, settings) {
     if (state.running && state.running.id !== id && !(await ask(`Stop ${state.running.name}?`, "Stop and host"))) return false;
     await attempt(async () => play(await api("host", { id, ...settings })));
     return true;
   }
-  const joinGame = () => attempt(async () => location.assign(joinLink($("join-link").value)));
+  const joinGame = () =>
+    attempt(async () => {
+      const link = joinLink($("join-link").value);
+      stats.step("join");
+      location.assign(link);
+    });
   /** Only reads the clipboard where the browser already allows it, so opening Join world never prompts. */
   $("go-join").addEventListener("click", async () => {
     const allowed = await navigator.permissions?.query({ name: "clipboard-read" }).then((p) => p.state === "granted", () => false);
@@ -360,6 +385,21 @@
     if (copied && !$("join-link").value && joinable(copied)) $("join-link").value = copied;
   });
   $("go-create").addEventListener("click", () => pickWorld("new"));
+  /** F2 on a world renames it; its id and invite link stay. */
+  $("world-list").addEventListener("keydown", (e) => {
+    const row = document.activeElement;
+    if (e.key !== "F2" || !row?.dataset.key || row.parentElement !== $("world-list")) return;
+    e.preventDefault();
+    renameInPlace(row, (name) =>
+      api("rename", { id: row.dataset.key, name }).then(
+        () => stats.step("renamed", { kind: "hosted" }),
+        (e) => {
+          $("error").textContent = e.message;
+          render(state);
+        },
+      ),
+    );
+  });
   $("world-play").onclick = () => hostWorld(selected);
 
   /** Community and pasted links answer with data, not the menu's state. */
@@ -389,6 +429,8 @@
         const remix = el("button", { textContent: "Remix", onclick: () => getWorld(w, false) });
         host.dataset.key = `host-${w.id}`;
         remix.dataset.key = `remix-${w.id}`;
+        host.dataset.event = "community-host";
+        remix.dataset.event = "community-remix";
         return el("div", { className: "item pictured choice" }, clipTile(w), el("span", { className: "what", textContent: w.title }, el("small", { textContent: `by ${w.author}` })), host, remix);
       }));
     }).finally(() => $("community-status").textContent === "Loading" && communityStatus(""));
@@ -490,11 +532,13 @@
   function pickWorld(id) {
     const w = state?.worlds.find((x) => x.id === id);
     $("create-world").set(w ? id : "new");
+    $("create-cover").replaceWith(Object.assign(coverTile(w && localCover(w)), { id: "create-cover" }));
     for (const f of document.querySelectorAll("#create .new-only")) f.hidden = !!w;
     $("create-password").value = w?.password ?? "";
     $("create-agents").set(w?.agents === false ? "off" : "on");
     $("create-rules").set(w?.rules ?? "open");
   }
+  pick($("share-usage"), (value) => attempt(() => api("share-usage", { share: value === "on" })));
   pick($("create-rules"));
   pick($("create-start"));
   pick($("create-agents"));

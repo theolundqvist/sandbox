@@ -6,7 +6,7 @@
 <title>Sandbox</title>
 <meta name="description" content="Friends dream up their most epic game together, live.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='6' y='6' width='20' height='20' fill='%23ffb547'/></svg>">
-<link rel="preload" as="image" href="/stills/high-noon.webp">
+<link rel="preload" as="image" href="/stills/world.webp">
 <link rel="stylesheet" href="/front.css">
 <style>
   * { box-sizing: border-box; }
@@ -36,6 +36,12 @@
   .world .quiet { margin: 10px 0 0; padding-left: 0; }
   .cover video, .cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
   #empty { margin-top: 8px; }
+  /* Worlds hosted right now: join in a click, or with the host's password. */
+  #live-list { margin-bottom: 24px; }
+  #live-list .world { flex-wrap: wrap; }
+  .playing { color: var(--ok); font: 700 13px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; }
+  .lock { width: 12px; height: 14px; margin-left: 10px; vertical-align: -1px; fill: currentColor; }
+  .unlock { flex-basis: 100%; }
 
   /* A world's own page. */
   #world .stage { width: min(960px, 100%); aspect-ratio: 16 / 9; background: #1b1c1f; margin-bottom: 28px; }
@@ -43,8 +49,35 @@
   #world-by { margin: -24px 0 20px; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .12em; text-transform: uppercase; }
   #world-about { margin: 0 0 28px; font-size: 18px; max-width: 640px; }
   #world-tip { color: var(--text); }
+  #world-parent { margin: -12px 0 24px; color: var(--dim); }
   .actions { display: flex; gap: 8px 24px; flex-wrap: wrap; align-items: center; margin-top: 20px; }
   #report:disabled { opacity: .5; cursor: default; }
+  #my-worlds { margin-bottom: 32px; }
+  #worlds .field { width: min(960px, 100%); }
+  #comment-list { width: min(720px, 100%); }
+  .comment { padding: 14px 0; border-bottom: 1px solid var(--line); }
+  .comment p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .comment.removed p { color: var(--dim); }
+  .comment small { color: var(--dim); font-size: 13px; }
+  .comment .quiet { margin-left: 20px; padding: 0 4px; }
+  .comment.mine small { color: var(--accent); }
+  #world-by a, a.quiet { text-decoration: none; }
+  #mod-part pre { margin: 0 0 32px; max-width: 720px; max-height: 420px; overflow: auto; padding: 16px; background: rgba(0, 0, 0, .45); color: var(--text); font: 14px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #mods-search-form { width: min(720px, 100%); }
+  #world-by a:hover { color: var(--text); }
+  #profile-about { margin: -24px 0 20px; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .12em; text-transform: uppercase; }
+  #message-list { width: min(720px, 100%); margin-bottom: 16px; }
+  #threads .world { padding: 14px 0; }
+  #threads .world b { font-size: 22px; }
+  #threads .value { color: var(--dim); font: 700 13px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; }
+  /* A username is one word: it shrinks to fit on one line rather than breaking. */
+  h1.name { white-space: nowrap; overflow-wrap: normal; font-size: min(64px, calc(min(100vw - 32px, 960px) / (var(--len, 8) * .9))); }
+  #top { position: fixed; top: 24px; right: 32px; z-index: 1; display: flex; align-items: center; gap: 8px; }
+  #top a { text-decoration: none; }
+  #bell svg { width: 14px; height: 16px; fill: currentColor; vertical-align: -2px; }
+  #bell-count { margin-left: 6px; color: var(--ok); }
+  #bell-count:empty { display: none; }
+  form.entries { display: flex; flex-direction: column; }
 
   @media (max-width: 760px) {
     #home .lead { font-size: 17px; margin-bottom: 40px; }
@@ -63,6 +96,7 @@
 <div id="backdrop" class="backdrop"></div>
 <main class="front">
   <a class="back" id="back" href="/" hidden>Back</a>
+  <nav id="top"><a class="quiet" id="bell" href="/notifications" aria-label="Notifications" hidden><svg viewBox="0 0 14 16" aria-hidden="true"><path d="M7 0a1.2 1.2 0 0 1 1.2 1.3A5 5 0 0 1 12 6.2V11l2 2v1H0v-1l2-2V6.2a5 5 0 0 1 3.8-4.9A1.2 1.2 0 0 1 7 0zm-2 15h4a2 2 0 0 1-4 0z"/></svg><span id="bell-count"></span></a><a class="quiet" id="me" href="/account" hidden></a></nav>
 
   <section id="home" class="screen title" data-nav hidden>
     <svg class="logo" id="logo"></svg>
@@ -72,6 +106,7 @@
       <a class="item" href="/worlds">Community worlds</a>
       <a class="item" href="/host">Host world</a>
     </div>
+    <p class="note"><button class="quiet" id="share-usage"></button> Sends which screens and buttons you use, never what you type.</p>
   </section>
 
   <section id="join" class="screen" data-nav hidden>
@@ -83,8 +118,12 @@
 
   <section id="worlds" class="screen" data-nav hidden>
     <h1>Community</h1>
+    <div class="worlds" id="live-list"></div>
+    <div class="field"><span>Show</span><div class="pick" id="world-sort" data-options="top:Most played,new:Newest,mods:Mods"></div></div>
+    <form id="mods-search-form" hidden><label class="item entry"><input type="text" id="mods-search" maxlength="100" placeholder="Search mods" autocomplete="off"></label></form>
     <div class="worlds" id="world-list"></div>
     <p id="empty" class="status" hidden></p>
+    <div class="items"><button class="item" id="more" hidden>More</button></div>
   </section>
 
   <section id="world" class="screen" data-nav hidden>
@@ -92,9 +131,26 @@
     <h1 id="world-title"></h1>
     <p id="world-by"></p>
     <p id="world-about"></p>
-    <div class="items"><button class="item" id="world-get">Host or remix it in the app</button></div>
+    <p id="world-parent" hidden></p>
+    <div id="mod-part" hidden>
+      <div class="copy-row"><span>Add</span><code id="mod-add"></code><button data-copy="mod-add">Copy</button></div>
+      <p class="note">Paste it to the agent building your world.</p>
+      <pre id="mod-readme"></pre>
+      <h2>API</h2>
+      <pre id="mod-api"></pre>
+    </div>
+    <div class="items"><button class="item" id="world-get">Play or fork it in the app</button><button class="item" id="vote">Upvote<span class="value" id="votes"></span></button></div>
     <p class="note" id="world-tip" hidden>Link copied. In Sandbox, open <b>Worlds</b>, then <b>Community</b>, and paste it.</p>
-    <div class="actions"><a class="quiet" href="/host">Get the app</a><button class="quiet" id="report">Report</button></div>
+    <div class="actions"><a class="quiet" href="/host">Get the app</a><button class="quiet" id="report">Report</button><button class="quiet danger" id="take-down" hidden>Take down</button></div>
+    <div id="versions-part" hidden><h2>Versions</h2><div class="worlds" id="version-list"></div></div>
+    <div id="usage-part" hidden><h2>Agent usage</h2><div class="worlds" id="usage-list"></div><p class="note" id="usage-none" hidden>No agent has reported building here yet</p></div>
+    <div id="forks-part" hidden><h2>Forks</h2><div class="worlds" id="fork-list"></div><button class="quiet" id="forks-more" hidden>More</button></div>
+    <h2>Comments</h2>
+    <form id="comment-form"><label class="item entry"><input type="text" id="comment-text" maxlength="1000" placeholder="Write a comment" autocomplete="off"></label></form>
+    <a class="quiet" id="comment-signin" hidden>Sign in to comment</a>
+    <div id="comment-list"></div>
+    <p class="note" id="comments-none" hidden>No comments yet</p>
+    <button class="quiet" id="comments-more" hidden>More</button>
   </section>
 
   <section id="host" class="screen" data-nav hidden>
@@ -110,6 +166,77 @@
       <li>Scroll down to “Sandbox” was blocked, and click Open Anyway.</li>
       <li>Click Open. Your Mac remembers it from then on.</li>
     </ol>
+  </section>
+
+  <section id="signin" class="screen" data-nav hidden>
+    <h1>Sign in</h1>
+    <form class="entries" id="signin-form">
+      <label class="item entry"><input type="email" id="signin-email" placeholder="Email" autocomplete="email" spellcheck="false" required></label>
+      <label class="item entry"><input type="password" id="signin-password" placeholder="Password" autocomplete="current-password" required></label>
+      <button class="item">Sign in</button>
+    </form>
+    <div class="items"><a class="item" id="go-signup" href="/signup">Create account</a></div>
+  </section>
+
+  <section id="signup" class="screen" data-nav hidden>
+    <h1>Create account</h1>
+    <form class="entries" id="signup-form">
+      <label class="item entry"><input type="text" id="signup-username" placeholder="Username" maxlength="20" autocomplete="username" spellcheck="false" required></label>
+      <label class="item entry"><input type="email" id="signup-email" placeholder="Email" autocomplete="email" spellcheck="false" required></label>
+      <label class="item entry"><input type="password" id="signup-password" placeholder="Password" autocomplete="new-password" required></label>
+      <button class="item">Create account</button>
+    </form>
+  </section>
+
+  <section id="account" class="screen" data-nav hidden>
+    <h1 class="name" id="account-name"></h1>
+    <div class="worlds" id="my-worlds"></div>
+    <p class="note" id="my-none" hidden>Worlds you publish from the app show up here.</p>
+    <div class="items"><a class="item" id="go-profile">Your profile</a><a class="item" href="/friends">Friends<span class="value" id="friend-requests"></span></a><a class="item" href="/messages">Messages<span class="value" id="unread"></span></a><button class="item" id="sign-out">Sign out</button><a class="item" href="/account/delete">Delete account</a></div>
+  </section>
+
+  <section id="profile" class="screen" data-nav hidden>
+    <h1 class="name" id="profile-name"></h1>
+    <p id="profile-about"></p>
+    <div class="items"><button class="item" id="profile-friend" hidden>Add friend<span class="value"></span></button><a class="item" id="profile-message" hidden>Message</a></div>
+    <div class="worlds" id="profile-worlds"></div>
+    <p class="note" id="profile-none" hidden>No worlds yet</p>
+    <div class="actions"><button class="quiet" id="profile-decline" hidden>Decline</button><button class="quiet" id="profile-block" hidden>Block</button></div>
+  </section>
+
+  <section id="notifications" class="screen" data-nav hidden>
+    <h1 class="name" style="--len: 13">Notifications</h1>
+    <div class="worlds" id="notice-list"></div>
+    <p class="note" id="notices-none" hidden>Nothing yet.</p>
+  </section>
+
+  <section id="friends" class="screen" data-nav hidden>
+    <h1>Friends</h1>
+    <div class="items" id="friend-list"></div>
+    <p class="note" id="friends-none" hidden>No friends yet. Add one from their profile.</p>
+  </section>
+
+  <section id="messages" class="screen" data-nav hidden>
+    <h1>Messages</h1>
+    <div class="worlds" id="threads"></div>
+    <p class="note" id="threads-none" hidden>No messages yet. Message a builder from their profile.</p>
+  </section>
+
+  <section id="thread" class="screen" data-nav hidden>
+    <h1 class="name" id="thread-name"></h1>
+    <div id="message-list"></div>
+    <form id="message-form"><label class="item entry"><input type="text" id="message-text" maxlength="2000" placeholder="Write a message" autocomplete="off"></label></form>
+    <p class="note" id="thread-blocked" hidden>You blocked them. Unblock them on their profile to hear from them again.</p>
+    <div class="actions"><a class="quiet" id="thread-profile">Profile</a></div>
+  </section>
+
+  <section id="delete" class="screen" data-nav hidden>
+    <h1>Delete account?</h1>
+    <p class="lead">Your published worlds, votes and comments go with it.</p>
+    <form class="entries" id="delete-form">
+      <label class="item entry"><input type="password" id="delete-password" placeholder="Password" autocomplete="current-password" required></label>
+      <button class="item danger">Delete account</button>
+    </form>
   </section>
 
   <div id="error" class="error"></div>

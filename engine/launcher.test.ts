@@ -147,12 +147,37 @@ test("a hosted world has one invite link, the same when hosted again, and a Wi-F
   await menu("stop", {});
 }, 30_000);
 
+test("a world that asks for a password gets its invite only from the relay, for that password, and the choice stays with the world while only a hash is kept", async () => {
+  const menu = await hostMenu();
+  const s = await menu("create", { name: "Lock Test" });
+  const { id, invite, link } = s.running;
+  const room = link.match(/\/r\/([a-z0-9-]+)\//)[1];
+  const unlock = (password: string) => fetch(`http://127.0.0.1:${RELAY}/_unlock`, { method: "POST", body: JSON.stringify({ room, password }) });
+  await until("the relay link", async () => (await fetch(link.split("#")[0])).status === 200);
+  expect(s.running.access).toBe(null);
+  expect((await unlock("hunter22")).status).toBe(404);
+  expect(await menu("access", { id, mode: "password" })).toMatchObject({ status: 400, error: "Pick a password." });
+  const locked = await menu("access", { id, mode: "password", password: "hunter22" });
+  expect([locked.running.access, locked.running.locked]).toEqual(["password", true]);
+  expect(readFileSync(join(dir, "data", "access.json"), "utf8")).not.toContain("hunter22");
+  expect((await unlock("wrong one")).status).toBe(403);
+  expect(await (await unlock("hunter22")).json()).toEqual({ invite });
+
+  // Hosted again, the world still asks; once open to friends, the relay holds nothing back.
+  await menu("stop", {});
+  await menu("host", { id });
+  expect(await until("the lock again", async () => (await unlock("hunter22")).status === 200)).toBe(true);
+  expect((await menu("access", { id, mode: "friends" })).running.access).toBe("friends");
+  expect((await unlock("hunter22")).status).toBe(404);
+  await menu("stop", {});
+}, 30_000);
+
 test("worlds made without a name each get their own", async () => {
   const { key } = await (await localKey(`http://127.0.0.1:${LAUNCHER}`)).json();
   const create = async () => (await fetch(`http://127.0.0.1:${LAUNCHER}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: "{}" })).json();
   await create();
   const { worlds } = await create();
-  const unnamed = worlds.filter((w: { name: string }) => !["Relay Test", "Origin Test", "Link Test", "Controls Test", "Other Controls Test"].includes(w.name)).map((w: { name: string }) => w.name);
+  const unnamed = worlds.filter((w: { name: string }) => !["Relay Test", "Origin Test", "Link Test", "Lock Test", "Controls Test", "Other Controls Test"].includes(w.name)).map((w: { name: string }) => w.name);
   expect(unnamed).toHaveLength(2);
   expect(new Set(unnamed).size).toBe(2);
   expect(unnamed).not.toContain("Sandbox");
@@ -607,3 +632,68 @@ test("an import that isn't a world, or climbs out of its folder, is turned away"
   expect(readdirSync(join(dir, "data")).filter((f) => f.startsWith("importing-"))).toEqual([]);
   expect(existsSync(join(dir, "evil.txt"))).toBe(false);
 });
+
+test("the host's game keeps the world's picture fresh until the host picks one when sharing, which then stays", async () => {
+  const menu = await hostMenu();
+  const { key } = await (await localKey(`http://127.0.0.1:${LAUNCHER}`)).json();
+  const cover = (id: string, jpeg?: Uint8Array) =>
+    fetch(`http://127.0.0.1:${LAUNCHER}/api/menu/cover?id=${id}`, { method: jpeg ? "POST" : "GET", headers: { authorization: `Bearer ${key}` }, body: jpeg as Uint8Array<ArrayBuffer> | undefined });
+  const jpeg = (n: number) => new Uint8Array([0xff, 0xd8, 0xff, 0xe0, n, 0xff, 0xd9]);
+  const { running } = await menu("create", { name: "Picture Test" });
+  const id = running.id;
+  expect((await cover(id)).status).toBe(404);
+  expect((await cover(id, jpeg(1))).status).toBe(204);
+  expect((await cover(id, jpeg(2))).status).toBe(204);
+  expect(new Uint8Array(await (await cover(id)).arrayBuffer())).toEqual(jpeg(2));
+  expect((await menu("state")).worlds.find((w: { id: string }) => w.id === id).cover).toBeNumber();
+  expect((await cover(id, new Uint8Array([1, 2, 3]))).status).toBe(400);
+
+  // Sharing with the World picture leaves the game in charge of it.
+  const community = Bun.serve({ port: 0, fetch: () => new Response(null, { status: 200 }) });
+  const uploads = { zip: `${community.url}zip`, cover: `${community.url}cover`, clip: `${community.url}clip` };
+  expect((await menu("publish-stage", { id, visibility: "link" })).status).toBe(200);
+  expect((await menu("publish-upload", { id, uploads })).status).toBe(200);
+  expect((await cover(id, jpeg(3))).status).toBe(204);
+
+  // Current view, once it went up, is the picture here too, and the game's own frames no longer replace it.
+  const picked = jpeg(4);
+  expect((await menu("publish-stage", { id, visibility: "link", cover: Buffer.from(picked).toString("base64") })).status).toBe(200);
+  expect(new Uint8Array(await (await cover(id)).arrayBuffer())).toEqual(jpeg(3));
+  expect((await menu("publish-upload", { id, uploads })).status).toBe(200);
+  expect(new Uint8Array(await (await cover(id)).arrayBuffer())).toEqual(picked);
+  expect((await cover(id, jpeg(5))).status).toBe(409);
+  expect(new Uint8Array(await (await cover(id)).arrayBuffer())).toEqual(picked);
+  community.stop(true);
+  await menu("stop", {});
+});
+
+test("renaming a world, running or not, keeps its id, folder, invite link, players and data", async () => {
+  const menu = await hostMenu();
+  const s = await menu("create", { name: "Old Name" });
+  const { id, link, invite } = s.running;
+  const base = link.split("/#")[0];
+  const key = await joinAs("renamer", invite);
+  const before = readdirSync(join(dir, "data", "worlds", id)).sort();
+
+  const renamed = await menu("rename", { id, name: "  Lava Keep  " });
+  expect(renamed.status).toBe(200);
+  expect(renamed.worlds.find((w: { id: string }) => w.id === id).name).toBe("Lava Keep");
+  expect(renamed.running).toMatchObject({ id, name: "Lava Keep", link, invite });
+  expect(await until("the running world under its new name", async () => (await (await fetch(`${base}/api/info`)).json()).name === "Lava Keep")).toBe(true);
+
+  for (const name of ["", "   ", "x".repeat(41)]) expect(await menu("rename", { id, name })).toMatchObject({ status: 400, error: "A name is 1 to 40 characters." });
+  expect(await menu("rename", { id: "../evil", name: "Evil" })).toMatchObject({ status: 400, error: "That world doesn't exist." });
+
+  await menu("stop", {});
+  expect((await menu("rename", { id, name: "Stopped Keep" })).worlds.find((w: { id: string }) => w.id === id).name).toBe("Stopped Keep");
+  const again = await menu("host", { id });
+  expect(again.running).toMatchObject({ id, name: "Stopped Keep", link, invite });
+  expect(await until("the invite link back, under the new name", async () => (await fetch(`${base}/api/info`).then((r) => r.json(), () => ({}))).name === "Stopped Keep")).toBe(true);
+  // The player who joined before the renames is still that player, and a new one still joins by the same invite.
+  const back = await (await fetch(`${base}/api/join`, { method: "POST", body: JSON.stringify({ key }) })).json();
+  expect(back).toMatchObject({ key, name: "renamer" });
+  expect(await joinAs("newcomer", invite)).toBeString();
+  expect(readdirSync(join(dir, "data", "worlds")).filter((f) => f === id)).toEqual([id]);
+  expect(readdirSync(join(dir, "data", "worlds", id)).sort()).toEqual(expect.arrayContaining(before));
+  await menu("stop", {});
+}, 30_000);

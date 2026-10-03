@@ -57,7 +57,7 @@ The [desktop app](desktop/README.md) for Mac and Linux adds full-screen play and
 
 ## Connect an agent
 
-Any coding agent that can run commands on your computer works: Claude Code, the Claude and ChatGPT apps, Codex, Cursor, GitHub Copilot, OMP, Pi and opencode. Press Tab in the game, open Agent, pick yours and follow its three steps: install it, start it with permissions off, paste the prompt. The prompt installs this world's command, signed with your personal key, and the agent listens to the in-game chat. Agents that support subagents hand each request to one and keep listening. Works best with Opus 5.5.
+Any coding agent that can run commands on your computer works: Claude Code, the Claude and ChatGPT apps, Codex, Cursor, GitHub Copilot, OMP, Pi and opencode. Press Tab in the game, open Agent and pick yours. Run the one command it shows; it works once, for ten minutes, and sets up a folder for the world under `~/Sandbox` with its command, your key and a rule that lets your agent run that one command without asking. Open the folder in your agent and paste the prompt from the same page. It then listens to you in the in-game chat. Works best with Opus 5.5.
 
 ![The in-game Agent page listing the agents that can build](docs/readme/connect.png)
 

@@ -1,9 +1,10 @@
 // A throwaway world over real HTTP and websockets, driven through the same tools a Claude uses.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
+import { joinCodes } from "./cli";
 
 const dir = mkdtempSync(join(tmpdir(), "sandbox-world-"));
 const PORT = 19000 + Math.floor(Math.random() * 1000);
@@ -344,3 +345,49 @@ test("a world restarted by a rewind or after a mod froze it opens every mod's da
   expect(logs).toContain("froze the server");
   expect(logs).not.toContain("database is locked");
 }, 90_000);
+
+// The install command is POSIX sh; Windows gets its own in PowerShell.
+test.skipIf(process.platform === "win32")("the Agent page's install command sets up the world's folder once, with the key only its command reads, and the command there plays as the player", async () => {
+  const res = await fetch(`${BASE}/api/join-code?base=${encodeURIComponent(BASE)}`, { method: "POST", headers: { authorization: `Bearer ${key}` } });
+  const { command, folder, prompt } = await res.json();
+  expect(folder).toBe("~/Sandbox/test");
+  expect(prompt).toBe("We're playing Test together. Read AGENTS.md in this folder and join as it says.");
+  expect(command).toMatch(/^curl -fsSL '[^']+\/join\/[0-9a-f]{12}' \| sh$/);
+  expect(command).not.toContain(key);
+  const home = mkdtempSync(join(dir, "home-"));
+  const run = (cmd: string, cwd = home) => {
+    const done = Bun.spawnSync(["sh", "-c", cmd], { cwd, env: { HOME: home, PATH: process.env.PATH! } });
+    return [done.exitCode, `${done.stdout}${done.stderr}`.trim()];
+  };
+  expect(run(command)).toEqual([0, "Ready. Open ~/Sandbox/test in your agent and paste the prompt from the Agent page."]);
+  const made = join(home, "Sandbox", "test");
+  expect(readFileSync(join(made, "AGENTS.md"), "utf8")).toContain("I'm builder in Test");
+  expect(readFileSync(join(made, "CLAUDE.md"), "utf8")).toBe("@AGENTS.md\n");
+  expect(JSON.parse(readFileSync(join(made, ".claude", "settings.json"), "utf8"))).toEqual({ permissions: { allow: ["Bash(./world)", "Bash(./world *)"] } });
+  expect(readFileSync(join(made, ".key"), "utf8")).toBe(key);
+  expect(statSync(join(made, ".key")).mode & 0o777).toBe(0o600);
+  expect(readFileSync(join(made, "world"), "utf8")).not.toContain(key);
+  const skill = readFileSync(join(import.meta.dir, "skills", "libraries.md"), "utf8");
+  expect(readFileSync(join(made, "skills", "libraries.md"), "utf8")).toBe(skill);
+  expect(readFileSync(join(made, ".claude", "skills", "libraries", "SKILL.md"), "utf8")).toStartWith(`---\nname: libraries\ndescription: "${skill.match(/^When to use: (.+)$/m)![1]}"\n---\n\n# Libraries`);
+  expect(readFileSync(join(made, "AGENTS.md"), "utf8")).toContain("`skills/libraries.md`");
+  const [said, out] = run(`./world say text="Hey everyone"`, made);
+  expect(said).toBe(0);
+  expect(String(out)).not.toContain("isn't valid");
+  expect(run(`./world say text=@scope/package`, made)[0]).toBe(0); // a scoped package name, not a file to upload
+  expect(run(command)).toEqual([1, "This install command expired or was used already. Copy a new one from the Agent page of the game menu."]);
+});
+
+test("a join code works once, and not after ten minutes", () => {
+  let now = 0;
+  const codes = joinCodes(() => now);
+  const once = codes.mint("k", "b");
+  expect(codes.take(once)).toEqual({ key: "k", base: "b", until: 600_000 });
+  expect(codes.take(once)).toBeNull();
+  const late = codes.mint("k", "b");
+  now = 599_999;
+  const fresh = codes.mint("k", "b");
+  now = 600_000;
+  expect(codes.take(late)).toBeNull();
+  expect(codes.take(fresh)?.key).toBe("k");
+});

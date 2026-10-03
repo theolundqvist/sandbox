@@ -87,10 +87,11 @@ body:has(.screen.title:not([hidden])) .front { justify-content: center; align-it
 .item.pictured small { display: block; margin-top: 6px; color: var(--dim); font: 600 15px/1.3 system-ui, sans-serif; letter-spacing: normal; text-transform: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cover { width: 160px; aspect-ratio: 16 / 9; flex: none; background: #1b1c1f; opacity: .6; transition: opacity .12s ease-out; }
 .cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
-.item.pictured:is(:focus, :focus-visible, .active) .cover { opacity: 1; }
+.item.pictured:is(:focus, :focus-visible, .active) .cover, .item.renaming .cover { opacity: 1; }
+.item.renaming input, .item.renaming input:not(:placeholder-shown) { flex: 1; min-width: 0; font-size: 26px; letter-spacing: .03em; }
 
 .error { color: var(--err); min-height: 1.4em; margin-top: 16px; font: 600 14px/1.4 var(--display); }
-.hints { position: fixed; left: 96px; bottom: 36px; display: flex; gap: 28px; color: var(--dim); font: 700 12px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; pointer-events: none; }
+.hints { position: fixed; left: 96px; right: 96px; bottom: 36px; display: flex; flex-wrap: wrap; gap: 10px 28px; color: var(--dim); font: 700 12px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; pointer-events: none; }
 .hints kbd { font: inherit; display: inline-block; min-width: 24px; text-align: center; border: 1px solid rgba(255,255,255,.35); padding: 4px 6px; margin-right: 8px; color: var(--text); }
 
 @media (max-width: 760px) {

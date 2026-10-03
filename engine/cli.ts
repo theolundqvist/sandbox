@@ -1,11 +1,16 @@
-import { box } from "./box";
-import { install } from "./box/packages";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { box } from "./box";
+import { EgressError } from "./box/broker";
+import { install } from "./box/packages";
+import { ASSET_FILES, ASSET_LIMIT, assetType, download } from "./egress";
 import { GIT, GIT_ENV, hasGit, type Mods } from "./mods";
 import { brief, type Recorder } from "./record";
 import type { GameCard } from "./games";
 import type { Sims } from "./sims";
+import { PlaytestError, type playtests } from "./playtest";
+import { communityClient } from "./modshare";
 
 export type Task = { title: string; status: string; percent?: number; state: "working" | "done" | "blocked"; at: number };
 const speaker = (who: string) => `${who}'s agent`;
@@ -31,6 +36,7 @@ export type CliContext = {
   status(): object;
   perf(): object;
   screenshot(who: string): Promise<string>;
+  playtest: ReturnType<typeof playtests>;
   /** Sends a message to the player's open game; false if they don't have it open. */
   sendToGame(who: string, msg: object): boolean;
   record: Recorder;
@@ -109,7 +115,7 @@ const tools = [
   {
     name: "add_asset",
     description:
-      "Add a model, texture, sound or other file to mods/<mod>/assets/<name>, from a url the server downloads or from base64. It is live immediately: client code loads it from ctx.asset(\"<name>\") (or \"<other-mod>/<name>\"). Max 20 MB.",
+      `Add a model, texture, sound or data file to mods/<mod>/assets/<name>, from a url on the public internet the server downloads or from base64. Players' games load media only from this world, never from another site, so add every model, texture and sound here first. It is live immediately: client code loads it from ctx.asset("<name>") (or "<other-mod>/<name>"). Takes ${ASSET_FILES} files up to ${ASSET_LIMIT >> 20} MiB.`,
     inputSchema: {
       type: "object",
       properties: { mod: { type: "string" }, name: { type: "string", description: "File name, e.g. dragon.glb" }, url: { type: "string" }, base64: { type: "string" } },
@@ -242,8 +248,34 @@ const tools = [
   },
   {
     name: "screenshot",
-    description: "See exactly what your player sees right now, at most 1280 px wide: the scene, mod layers and HTML overlays (they must have the game open; a background tab shows only the scene). Look before you mark it done.",
+    description:
+      "See exactly what your player sees right now, at most 1280 px wide: the scene, mod layers and HTML overlays (they must have the game open; a background tab shows only the scene). While a playtest runs, it shows your view in the playtest instead. Look before you mark it done.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "playtest",
+    description:
+      "Try a change yourself without touching anyone's game: starts a hidden copy of the world as it is now (code, entities and databases) on the host's computer, with you in it as your player, and keeps it running for play and screenshot. mod reloads that mod in the copy from its current files, reloaded live or not, so you can see a change work before or after it goes live. Nothing done in the copy reaches the live world. Needs the host's Sandbox desktop app.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["start", "stop"], description: "start (default) starts one or reuses the one running; stop ends it and deletes the copy." },
+        mod: { type: "string", description: "A mod to reload in the copy from its current files." },
+      },
+    },
+  },
+  {
+    name: "play",
+    description: "Play in the running playtest as your player: hold keys for ms milliseconds, move the mouse to look around, click. Says where you moved; then screenshot shows it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        keys: { type: "string", description: "Comma list of keys held together: w, a, s, d, space, shift, up, KeyE, Digit1." },
+        ms: { type: "number", description: "How long to hold them, default 500, at most 10000." },
+        look: { type: "string", description: "Mouse movement dx,dy in pixels, like 300,0 to turn right." },
+        click: { type: "string", enum: ["left", "right"] },
+      },
+    },
   },
   {
     name: "add_package",
@@ -288,12 +320,29 @@ const tools = [
       required: ["text"],
     },
   },
+  {
+    name: "search_mods",
+    description:
+      "Search Community mods: systems other worlds built and published, ready to add here (an inventory, day and night, vehicles, a shop). Before building a common system, search here first. Each result has the mod's id, name, author, how many worlds use it, a one-line description and a preview image URL.",
+    inputSchema: { type: "object", properties: { q: { type: "string", description: "Words to find in a mod's title, name, description or README; empty lists the most used." }, sort: { type: "string", enum: ["top", "new"], description: "top: most used first (default); new: newest first." } } },
+  },
+  {
+    name: "read_mod",
+    description: "A Community mod's README and the API it exports to other mods, with the npm packages and other mods it needs.",
+    inputSchema: { type: "object", properties: { id: { type: "string", description: "The mod's id from search_mods, or its link." } }, required: ["id"] },
+  },
+  {
+    name: "add_mod",
+    description:
+      "Install a Community mod in this world as mods/<name>/, with the npm packages it needs, then reload it live for everyone. Afterwards it is a normal mod: edit and reload it like your own. mods/<name>/community.json records where it came from.",
+    inputSchema: { type: "object", properties: { id: { type: "string", description: "The mod's id from search_mods, or its link." }, as: { type: "string", description: "Another folder name, when mods/<name>/ is taken." } }, required: ["id"] },
+  },
 ];
 
 const instructions = `This is a live multiplayer game that the players build together while playing. Every player's Claude edits the same shared file tree on the game server, and anything you reload goes live for everyone at once.
 Workflow: call status, read GUIDE.md and the mods that touch what you are about to build, then write or edit files under mods/<your-mod>/ and call reload. Nothing is live until reload succeeds.
 A world can hold several games: check list_games before you build, and put a game's mods in it with game: "<id>" (GUIDE.md, Games).
-One game, not a pile of mods: every shared system (movement, ground and sky, lighting, economy, shop, inventory, progression, map, HUD, each key) has one owner mod, which names it in its server.ts with export const owns = ["inventory"] so status lists it. Extend it through its exports or wrap, or ask its owner with say to "claudes"; never build a second one. Hook new things into what players already earn, press and see.
+One game, not a pile of mods: every shared system (movement, ground and sky, lighting, economy, shop, inventory, progression, map, HUD, each key) has one owner mod, which names it in its server.ts with export const owns = ["inventory"] so status lists it. Extend it through its exports or wrap, or ask its owner with say to "claudes"; never build a second one. Hook new things into what players already earn, press and see. Before building a common system from scratch, search_mods: another world may have published one to add.
 Before you tell anyone something works, see it work: logs for your player stay clean, screenshot shows it, the input reaches the server (query_world, with wait when you expect state to change; never poll it in a loop). Only then mark your task done. Chat belongs to the players: say one greeting when you connect and nothing more there; players follow your work through task, and when a task goes done and they can try something new, call announce with what to try.
 Other Claudes edit at the same time: re-read a file right before changing it. Between builds call wait_for_chat, for the whole session: players ask for things in the in-game chat, which is also appended to every tool result.`;
 
@@ -303,6 +352,10 @@ class ToolError extends Error {}
 const treePath = (root: string, abs: string) => relative(root, abs).split(sep).join("/");
 
 export function createCli(ctx: CliContext) {
+  const mods = communityClient(process.env.SANDBOX_SECRETS, () => JSON.parse(readFileSync(join(ctx.data, "config.json"), "utf8")).telemetry);
+  const refuse = (e: Error): never => {
+    throw new ToolError(e.message);
+  };
   function resolvePath(path: string) {
     const abs = resolve(ctx.root, path);
     const rel = treePath(ctx.root, abs);
@@ -380,7 +433,7 @@ export function createCli(ctx: CliContext) {
       return (result = await run(name, args, who));
     } catch (e: any) {
       error = String(e.message).slice(0, 300);
-      throw e;
+      throw e instanceof PlaytestError ? new ToolError(e.message) : e;
     } finally {
       ctx.record.add("tool", who, { tool: name, args: brief(args), ms: Math.round(performance.now() - started), bytes: typeof result === "string" ? result.length : result?.image.length, error });
     }
@@ -458,22 +511,22 @@ export function createCli(ctx: CliContext) {
         const { abs, rel } = writable(args.path, who);
         checkBase(abs, rel, args.base_hash);
         rmSync(abs);
-        if (!readdirSync(dirname(abs)).length) rmSync(dirname(abs), { recursive: true });
+        // Empty folders go up to the mod's own, so deleting a mod's last asset still lets reload remove the mod.
+        for (let dir = dirname(abs), r = dirname(rel); r !== "mods" && !readdirSync(dir).length; dir = dirname(dir), r = dirname(r)) rmSync(dir, { recursive: true });
         return `Deleted ${rel}.`;
       }
       case "add_asset": {
         if (!/^[\w.-]{1,64}$/.test(args.name ?? "") || args.name.startsWith(".")) throw new ToolError("name must be a plain file name like dragon.glb.");
+        if (!assetType(args.name)) throw new ToolError(`add_asset takes only ${ASSET_FILES} files.`);
         const { abs, rel } = writable(`mods/${args.mod}/assets/${args.name}`, who);
         let bytes: Uint8Array;
         if (args.url) {
-          const res = await fetch(args.url).catch((e) => {
-            throw new ToolError(`Download failed: ${e.message}`);
+          bytes = await download(String(args.url), args.name).catch((e) => {
+            throw e instanceof EgressError ? new ToolError(e.message) : e;
           });
-          if (!res.ok) throw new ToolError(`Download failed: HTTP ${res.status}`);
-          bytes = new Uint8Array(await res.arrayBuffer());
         } else if (args.base64) bytes = Buffer.from(args.base64, "base64");
         else throw new ToolError("Pass url or base64.");
-        if (bytes.length > 20 << 20) throw new ToolError(`${bytes.length} bytes is over the 20 MB limit.`);
+        if (bytes.length > ASSET_LIMIT) throw new ToolError(`${bytes.length} bytes is over the ${ASSET_LIMIT >> 20} MiB limit.`);
         claim(args.mod, who);
         mkdirSync(dirname(abs), { recursive: true });
         writeFileSync(abs, bytes);
@@ -568,6 +621,11 @@ export function createCli(ctx: CliContext) {
         await git("reset", "-q");
         return `Restored mods/${args.mod} to ${args.commit}. Call reload to put it live.`;
       }
+      case "playtest":
+        if (args.action !== undefined && args.action !== "start" && args.action !== "stop") throw new ToolError("action is start or stop.");
+        return args.action === "stop" ? ctx.playtest.stop() : await ctx.playtest.start(who, args.mod);
+      case "play":
+        return await ctx.playtest.play(args);
       case "screenshot":
         return {
           image: await ctx.screenshot(who).catch((e) => {
@@ -586,6 +644,16 @@ export function createCli(ctx: CliContext) {
         const typecheckError = await ctx.mods.warm().then(() => "", (error: unknown) => error instanceof Error ? error.message : String(error));
         ctx.feed(`${speaker(who)} added the ${spec} package`, "info");
         return `${out.trim().split("\n").slice(-3).join("\n")}\n${typecheckError ? `The package is installed, but the typecheck couldn't start:\n${typecheckError}` : "Import it from any mod, then reload that mod."}`;
+      }
+      case "search_mods":
+        return await mods.search(String(args.q ?? ""), String(args.sort ?? "top")).catch(refuse);
+      case "read_mod":
+        return await mods.read(args.id).catch(refuse);
+      case "add_mod": {
+        const added = await mods.add(args.id, args.as, ctx.root).catch(refuse);
+        ctx.feed(`${speaker(who)} added ${added.mod.title} from Community`, "info");
+        const reloaded = await run("reload", { mod: added.name }, who).catch((e) => `It didn't go live: ${e.message}\nThe files are in mods/${added.name}/: fix them and reload.`);
+        return `Added ${added.mod.title} by ${added.mod.author} as mods/${added.name}/ (${added.files.join(", ")}${added.packages.length ? `; installed ${added.packages.join(", ")}` : ""}).${added.mod.needs.length ? ` It uses the mods ${added.mod.needs.join(", ")}: check status for them.` : ""}\n${typeof reloaded === "string" ? reloaded : ""}`;
       }
       case "wait_for_chat": {
         const until = Date.now() + Math.min(Number(args.seconds) || 60, 240) * 1000;
@@ -612,7 +680,7 @@ export function createCli(ctx: CliContext) {
     throw new ToolError(`Unknown tool ${name}`);
   }
 
-  const STALE = "This command's key isn't valid for the world running now: the host switched worlds or removed this player. Ask your player to open the game, join, and paste you the new prompt from the Agent page of the game menu.";
+  const STALE = "This command's key isn't valid for the world running now: the host switched worlds or removed this player. Ask your player to run the new install command from the Agent page of the game menu.";
   /** Ends every result, so any agent keeps listening without a harness hook to stop it ending its turn. */
   const KEEP_LISTENING = "When you are done with this, call wait_for_chat again. Never end your turn.";
   const chatSeen = new Map<string, number>();
@@ -637,13 +705,9 @@ export function createCli(ctx: CliContext) {
   };
 
   /** The command line every agent reaches the world through: a shell script it installs, calling the tools over plain HTTP. */
-  async function cli(req: Request, who: string | null, command: string, url: string | null, name: string | null) {
+  async function cli(req: Request, who: string | null, command: string) {
     if (!who) return new Response(`${STALE}
 `, { status: 401 });
-    if (command === "script") {
-      if (!url || !name || !/^[a-z0-9-]{1,40}$/.test(name)) return new Response("Give ?url=<this world's public URL>&name=<command name>.\n", { status: 400 });
-      return new Response(script(url, req.headers.get("authorization")!.slice(7), name), { headers: { "content-type": "text/x-shellscript" } });
-    }
     if (command === "help") {
       const list = tools.map((t) => `${usage(t)}\n    ${t.description}${Object.entries(t.inputSchema.properties as Record<string, any>).map(([k, v]) => (v.description ? `\n    ${k}: ${v.description}` : "")).join("")}`);
       return new Response(`${instructions}\n\nname=value sends text, name=@file sends a file (binary files work for add_asset base64), name=- reads stdin. Numbers, booleans and lists are JSON. New chat is appended to every result.\n\n${list.join("\n\n")}\n`);
@@ -708,18 +772,103 @@ const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "sandbox";
 
-/** One prompt for any coding agent with a shell: it installs this world's command, signed with this player's key, then plays. `base` is the world's address players reach. */
-export function connectPrompt(world: string, base: string, me: string, key: string) {
-  const bin = `~/.local/bin/${slug(world)}`;
-  const install = `mkdir -p ~/.local/bin && curl -fsS -H ${quote(`Authorization: Bearer ${key}`)} ${quote(`${base}/cli?name=${slug(world)}&url=${encodeURIComponent(base)}`)} -o ${bin} && chmod +x ${bin}`;
-  return `First install the command for our game by running \`${install}\`. Then run \`${bin}\` alone to list its tools, call one as \`${bin} <tool> name=value\`, and give wait_for_chat calls a shell timeout of at least 300 seconds. We are playing ${world} together right now: a live multiplayer game my friends and I build while we play it, each with our own coding agent. I am ${me} in the game. Anything you reload goes live for every player at once, so make it one coherent game: extend what the others built instead of building it again, and see a thing work before you call it done. Start with status and read GUIDE.md, then say one short greeting like "Hey everyone" so we see you are in: that is the only thing you ever say in chat, which belongs to us players. From then on I talk to you only through the in-game chat, where my voice is transcribed too when I hold T: act when I ask for something or clearly want a change, not on every word. Then loop forever: wait_for_chat seconds=240, get what I (${me}) ask for built, and wait_for_chat again. We follow your work on the Builders line, never in chat: set task when you start (a short title and percent), update it as it progresses, and end it done once every check you can run passes, with what to try in its status, or blocked with the reason, never left waiting for us to try it; when a task goes done and we can try something new, call announce with what to try. If you can start subagents or background tasks, be the orchestrator and never build or test yourself: give each request, or each part of a big one, to its own subagent owning its own mod, which builds, reloads and checks it in play, keep calling wait_for_chat while they work, and keep task updated from what they report (GUIDE.md, Subagents). Nothing ever arrives in this terminal, so never end your turn.`;
+/** The prompt a player pastes into any coding agent opened in the world's folder. It carries no key: the folder holds it. */
+export const connectPrompt = (world: string) => `We're playing ${world} together. Read AGENTS.md in this folder and join as it says.`;
+
+/** Single-use codes behind the Agent page's install command, each good for ten minutes. `now` is the clock, so tests can move it. */
+export function joinCodes(now = Date.now) {
+  const codes = new Map<string, { key: string; base: string; until: number }>();
+  return {
+    mint(key: string, base: string) {
+      for (const [code, entry] of codes) if (entry.until < now()) codes.delete(code);
+      const code = randomBytes(6).toString("hex");
+      codes.set(code, { key, base, until: now() + 10 * 60_000 });
+      return code;
+    },
+    take(code: string) {
+      const entry = codes.get(code);
+      codes.delete(code);
+      return entry && entry.until > now() ? entry : null;
+    },
+  };
 }
 
-/** The command a player installs: POSIX sh and curl, so it runs on any Mac or Linux box without installing anything. */
-const script = (url: string, key: string, name: string) => `#!/bin/sh
+/** The Agent page's install command: a single-use code, so nothing a player copies or shares carries their key. */
+export const joinCommand = (base: string, code: string, world: string) => ({ command: `curl -fsSL ${quote(`${base}/join/${code}`)} | sh`, folder: `~/${worldDir(world)}`, prompt: connectPrompt(world) });
+
+const worldDir = (world: string) => `Sandbox/${slug(world)}`;
+
+/** engine/skills/*.md: how-tos the world folder carries for its agent, each opening with a "When to use:" line. */
+const SKILLS = readdirSync(join(import.meta.dir, "skills"))
+  .filter((f) => f.endsWith(".md"))
+  .sort()
+  .map((f) => {
+    const text = readFileSync(join(import.meta.dir, "skills", f), "utf8");
+    return { name: f.slice(0, -3), text, when: text.match(/^When to use: (.+)$/m)![1]! };
+  });
+
+/** The world's folder under a player's home: this world's command, the key only it reads, the join request every agent opened there reads as the player's own instructions, each agent's allow rule for that one command, and the skills. Paths are relative to the folder. */
+function worldFiles(world: string, base: string, me: string, key: string): [path: string, text: string, mode: number][] {
+  const request = `# ${world}
+
+I'm ${me} in ${world}, a live multiplayer game my friends and I build together while we play, each with our own coding agent. This folder connects you to it as me: \`./world\` here is the game's command. Run \`./world\` alone to list its tools, and call one as \`./world <tool> name=value\`, always from this folder.
+
+When I ask you to join:
+
+1. Run \`./world status\` and \`./world read_file path=GUIDE.md\`, and follow the guide.
+2. Say hi in the game with \`./world say text="Hey everyone"\`. After that the chat is ours, so don't post there again.
+3. While we play, listen for me in the game chat: run \`./world wait_for_chat seconds=240\` with a shell timeout of at least 300 seconds, build what I ask for, then listen again until I say stop. I talk to you only through the game, never in this terminal.
+
+Before a task one of the skills in \`skills/\` covers, read that skill and start from its recipes: ${SKILLS.map((k) => `\`skills/${k.name}.md\``).join(", ")}.
+
+Anything you reload goes live for everyone at once, so extend what the others built and see it work in play before calling it done. Show your progress with \`task\` and \`announce\` as the guide says, not in chat.
+`;
+  return [
+    [".key", key, 0o600],
+    ["world", script(base, slug(world)), 0o700],
+    ["AGENTS.md", request, 0o644],
+    ["CLAUDE.md", "@AGENTS.md\n", 0o644],
+    [".claude/settings.json", `${JSON.stringify({ permissions: { allow: ["Bash(./world)", "Bash(./world *)"] } }, null, 2)}\n`, 0o644],
+    [".codex/rules/world.rules", `prefix_rule(pattern = ["./world"], decision = "allow")\n`, 0o644],
+    [".cursor/cli.json", `${JSON.stringify({ permissions: { allow: ["Shell(./world)"] } }, null, 2)}\n`, 0o644],
+    ["opencode.json", `${JSON.stringify({ permission: { bash: { "./world": "allow", "./world *": "allow" } } }, null, 2)}\n`, 0o644],
+    ...SKILLS.flatMap(({ name, text, when }): [string, string, number][] => [
+      [`skills/${name}.md`, text, 0o644],
+      [`.claude/skills/${name}/SKILL.md`, `---\nname: ${name}\ndescription: ${JSON.stringify(when)}\n---\n\n${text}`, 0o644],
+    ]),
+  ];
+}
+
+/** Sets up ~/Sandbox/<world>/ under `home` for this player's key and returns the folder. */
+export function setUpWorldFolder(home: string, world: string, base: string, me: string, key: string) {
+  const folder = join(home, worldDir(world));
+  for (const [path, text, mode] of worldFiles(world, base, me, key)) {
+    mkdirSync(dirname(join(folder, path)), { recursive: true });
+    writeFileSync(join(folder, path), text, { mode });
+    chmodSync(join(folder, path), mode);
+  }
+  return folder;
+}
+
+/** The same folder as setUpWorldFolder, as the script a join code runs on the player's computer. */
+export function joinScript(world: string, base: string, me: string, key: string) {
+  return `#!/bin/sh
+set -e
+cd
+mkdir -p ${quote(worldDir(world))}
+cd ${quote(worldDir(world))}
+umask 077
+${worldFiles(world, base, me, key)
+  .map(([path, text, mode]) => `mkdir -p ${quote(dirname(path))} && printf '%s' ${quote(text)} > ${quote(path)} && chmod ${mode.toString(8)} ${quote(path)}`)
+  .join("\n")}
+echo ${quote(`Ready. Open ~/${worldDir(world)} in your agent and paste the prompt from the Agent page.`)}
+`;
+}
+
+const script = (url: string, name: string) => `#!/bin/sh
 # Sandbox world ${name} from the command line. Run it alone for the tools and how to call them.
 URL=${quote(url)}
-KEY=${quote(key)}
+KEY=$(cat "$(dirname "$0")/.key")
 auth="Authorization: Bearer $KEY"
 if [ $# -eq 0 ] || [ "$1" = help ]; then exec curl -sS --fail-with-body -H "$auth" "$URL/cli/help"; fi
 tool=$1
@@ -731,7 +880,7 @@ for arg do
   value=\${arg#*=}
   case $value in
     -) set -- "$@" -F "$name=@-" ;;
-    @*) set -- "$@" -F "$name=@\${value#@}" ;;
+    @*) if [ -f "\${value#@}" ]; then set -- "$@" -F "$name=@\${value#@}"; else set -- "$@" --form-string "$name=$value"; fi ;; # @scope/package is text unless such a file exists
     *) set -- "$@" --form-string "$name=$value" ;;
   esac
 done

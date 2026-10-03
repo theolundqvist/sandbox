@@ -1,21 +1,26 @@
 /**
  * The host's privileged controls inside their game, World (export, stop hosting, rewind), Share (to Community) and the speech key, live in frames on the main menu's own origin (engine/client/host.html).
- * This page, where mods' code runs, never holds the menu's key, the world's host key, a Community owner token or the speech key. It may only ask the frames to join the host into the world running now and to save a picture of it,
- * and hand the Share frame what only the game can make when that frame asks: its view and a clip of its timelapse. Sharing, stopping sharing and every field of what goes up happen in the Share frame alone.
- * It shows the frames only while they keep saying, from that origin, that they are still the controls.
+ * This page, where mods' code runs, never holds the menu's key, the world's host key, a Community owner token or the speech key. It may only ask the frames to join the host into the world running now, to save a picture of it
+ * and to stage one of its mods for the app to publish, and hand the Share frame what only the game can make when that frame asks: its view, a clip of its timelapse, and the app's own publish dialog.
+ * Sharing, stopping sharing and every field of what goes up happen in the Share frame alone. It shows the frames only while they keep saying, from that origin, that they are still the controls.
  */
 
 type FromFrame = { host?: unknown; t?: unknown; id?: unknown; hosting?: unknown; height?: unknown; text?: unknown; kind?: unknown; code?: unknown; key?: unknown; name?: unknown; error?: unknown; password?: unknown };
 type View = "world" | "share" | "voice";
 const TITLES: Record<View, string> = { world: "World", share: "Share", voice: "Voice key" };
-/** A frame of controls: when it last said it is them, since when its page shows, and since when it should take the keyboard once it shows. */
-type Frame = { view: View; el: HTMLIFrameElement; src: string; beat: number; shownAt: number; focusAt: number };
+/**
+ * A frame of controls: when it last said it is them, since when its page shows, since when it should take the keyboard once it shows,
+ * and which showing it was last asked to draw for: 0 while hidden.
+ */
+type Frame = { view: View; el: HTMLIFrameElement; src: string; beat: number; shownAt: number; focusAt: number; paint: number };
 
 export type HostControls = {
   /** Joins the world running now as its host: by this computer's key, or by a name, which comes back to the host from another computer without asking. */
   join(body: { key: string } | { name: string; password?: string }): Promise<{ key: string; name: string }>;
   /** Saves a JPEG of the host's view as the running world's picture; settles once saved, or after a moment either way. */
   cover(jpeg: Uint8Array<ArrayBuffer>): Promise<void>;
+  /** Stages a mod of the running world, with this preview, for the app to publish once the player confirms; why it couldn't, or null. */
+  stageMod(mod: { name: string; title: string; description: string }, jpeg: Uint8Array<ArrayBuffer>): Promise<string | null>;
   /** The World page opened: the frame shows the saved moments as they are now. */
   show(): void;
   /** The Share page opened: the frame shows how the world is shared now, offering `about` for a world not shared yet. */
@@ -42,6 +47,10 @@ export async function hostControls(o: {
   view(): Uint8Array<ArrayBuffer>;
   /** A clip of the timelapse, recorded in the game for the Share frame; null when there is nothing to replay yet. */
   clip(): Promise<Blob | null>;
+  /** The Share frame staged the world: the app's dialog, then its publishing as the signed-in account; what happened, or null once done or declined. */
+  publish(): Promise<string | null>;
+  /** Stop sharing in the Share frame: the app takes the world out of Community once the player confirms. */
+  unpublish(): Promise<string | null>;
 }): Promise<HostControls | null> {
   // Players at a LAN address or through the relay are on another computer: the main menu at 127.0.0.1 is never theirs to frame.
   if (location.hostname !== "localhost") return null;
@@ -55,6 +64,24 @@ export async function hostControls(o: {
   /** What the game offered as About when it last opened the Share page, for a Share frame that loads after it did; null before it ever has. */
   let shareAbout: string | null = null;
   const post = (f: Frame, msg: object, transfer: Transferable[] = []) => f.el.contentWindow?.postMessage(msg, menu, transfer);
+  /** The keyboard goes into a frame asked for it only once it shows and has drawn since its page opened. */
+  const settle = (f: Frame) => {
+    if (!f.el.hasAttribute("data-shown") || f.el.style.visibility !== "visible" || performance.now() - f.focusAt > 3000) return;
+    f.focusAt = 0;
+    f.el.focus();
+  };
+  // Chromium stops drawing a hidden frame from another origin, and sends a click into it by where it last drew: one that comes after its page opens
+  // but before it draws again reaches neither it nor this page. Each time a frame's page opens, the frame is asked to say when it has drawn, and once
+  // this page has drawn too, the frame is marked shown (data-shown). Until then, the keyboard waits.
+  const showing = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const f = frames.find((x) => x.el === entry.target);
+      if (!f) continue;
+      f.el.removeAttribute("data-shown");
+      f.paint = entry.isIntersecting ? ++seq : 0;
+      if (f.paint) post(f, { t: "paint", id: f.paint });
+    }
+  });
   const layout = () => {
     for (const f of frames) post(f, { t: "layout", narrow: innerWidth <= 760 });
   };
@@ -65,10 +92,11 @@ export async function hostControls(o: {
     // Share copies its link from inside the frame.
     if (view === "share") el.allow = "clipboard-write";
     el.style.cssText = "display: block; width: 100%; height: 0; border: 0; visibility: hidden";
-    const f: Frame = { view, el, src, beat: 0, shownAt: 0, focusAt: 0 };
+    const f: Frame = { view, el, src, beat: 0, shownAt: 0, focusAt: 0, paint: 0 };
     el.addEventListener("focus", () => post(f, { t: "focus" }));
     frames.push(f);
     place(el);
+    showing.observe(el);
     return f;
   }
 
@@ -85,19 +113,31 @@ export async function hostControls(o: {
       else if (msg.t === "ready") {
         if (f.view === "world") known.resolve(msg.hosting === true);
         if (f.view === "share" && shareAbout !== null) post(f, { t: "show", about: shareAbout });
+        // A frame that loads again while its page shows draws for that showing.
+        if (f.paint) post(f, { t: "paint", id: f.paint });
         layout();
       } else if (msg.t === "beat") {
         f.beat = performance.now();
         f.el.style.visibility = "visible";
-        if (f.beat - f.focusAt < 3000) f.el.focus();
-        f.focusAt = 0;
+        settle(f);
+      } else if (msg.t === "painted" && msg.id === f.paint && f.paint) {
+        const paint = f.paint;
+        // After this page's own next frame too, which carries where the frame now is.
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            if (f.paint !== paint) return;
+            f.el.setAttribute("data-shown", "");
+            settle(f);
+          }),
+        );
       } else if (msg.t === "gone") {
         f.beat = 0;
         f.el.style.visibility = "hidden";
+        f.el.removeAttribute("data-shown");
       } else if (msg.t === "size") f.el.style.height = `${Math.ceil(Number(msg.height) || 0)}px`;
       else if (msg.t === "toast") o.toast(String(msg.text).slice(0, 300), msg.kind === "error" ? "error" : "info");
       else if (msg.t === "key" && (msg.code === "Escape" || msg.code === "Tab" || msg.code === "ArrowLeft")) o.key(msg.code);
-      else if ((msg.t === "joined" || msg.t === "covered") && typeof msg.id === "number") waiting.get(msg.id)?.(msg);
+      else if ((msg.t === "joined" || msg.t === "covered" || msg.t === "staged") && typeof msg.id === "number") waiting.get(msg.id)?.(msg);
       else if (msg.t === "stopping" && f.view === "world") o.stopping();
       else if (msg.t === "stopped" && f.view === "world") o.stopped();
       else if (msg.t === "share" && f.view === "world") o.share();
@@ -111,6 +151,12 @@ export async function hostControls(o: {
           .then((clip) => clip?.arrayBuffer() ?? null)
           .catch(() => null)
           .then((webm) => post(f, { t: "clip", id, webm: webm && new Uint8Array(webm) }, webm ? [webm] : []));
+      } else if ((msg.t === "publish" || msg.t === "unpublish") && f.view === "share" && typeof msg.id === "number") {
+        const id = msg.id;
+        const t = msg.t;
+        void (t === "publish" ? o.publish() : o.unpublish())
+          .catch((e: Error) => e.message)
+          .then((said) => post(f, { t, id, said: said ?? null }));
       }
     },
     true,
@@ -167,6 +213,10 @@ export async function hostControls(o: {
     async cover(jpeg) {
       await ask({ t: "cover", jpeg }, 1500, [jpeg.buffer]);
     },
+    async stageMod(mod, jpeg) {
+      const msg = await ask({ t: "mod", name: mod.name, title: mod.title, description: mod.description, jpeg }, 120_000, [jpeg.buffer]);
+      return msg ? (typeof msg.error === "string" ? msg.error : null) : "The host's controls didn't answer. Try again.";
+    },
     show: () => post(world, { t: "show" }),
     showShare(about) {
       shareAbout = about;
@@ -176,7 +226,7 @@ export async function hostControls(o: {
       const f = frames.find((x) => x.el === el);
       if (!f) return false;
       f.focusAt = performance.now();
-      if (f.el.style.visibility === "visible") f.el.focus();
+      settle(f);
       return true;
     },
   };

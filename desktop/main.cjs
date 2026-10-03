@@ -1,7 +1,11 @@
 // A thin shell around the web client: one window, a trusted launch screen and title bar, and the game in a view with no extra powers.
-const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, session, shell: desktop } = require("electron");
+// The same app started by a world it hosts, as the hidden game a playtest plays.
+if (process.env.SANDBOX_PLAYTEST) return void require("./playtest.cjs");
+const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, safeStorage, session, shell: desktop } = require("electron");
 const { execFile, spawn } = require("node:child_process");
-const { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } = require("node:fs");
+const { createHash } = require("node:crypto");
+const { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } = require("node:fs");
+const { finished } = require("node:stream/promises");
 const { createServer } = require("node:net");
 const { homedir, userInfo } = require("node:os");
 const { delimiter, join, normalize } = require("node:path");
@@ -11,6 +15,7 @@ const mac = process.platform === "darwin";
 const windows = process.platform === "win32";
 const BAR = 36;
 const RELAY = process.env.SANDBOX_RELAY ?? "https://sandbox-relay.lundqvistliss.com";
+const COMMUNITY = process.env.SANDBOX_COMMUNITY ?? "https://sandbox.api.lundqvistliss.com";
 const RELEASES = process.env.SANDBOX_UPDATES ?? "https://api.github.com/repos/theolundqvist/sandbox/releases/latest";
 /** The installer and the build from the release being installed, so a broken master never breaks an update. */
 const INSTALLER = (version) => process.env.SANDBOX_INSTALLER ?? `https://raw.githubusercontent.com/theolundqvist/sandbox/v${version}/desktop/install${windows ? ".ps1" : ""}`;
@@ -18,12 +23,10 @@ const DOWNLOADS = (version) => process.env.SANDBOX_RELEASE ?? `https://github.co
 const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"]);
 /** Pages a game may open in the browser: where the host gets a speech key, from each provider in engine/voice.ts, and where a player downloads an agent app from the Agent page. */
 const OUTSIDE = /^https:\/\/((console\.groq\.com|platform\.openai\.com|aistudio\.google\.com|elevenlabs\.io|console\.deepgram\.com)\/|(claude|chatgpt)\.com\/download$)/;
-/** The Agent page's Open in ChatGPT, which only types the prompt into a new Codex chat. */
-const AGENT_LINK = /^codex:\/\/new\?prompt=/;
-/** The agents this app starts in its own terminal, each from its maker's installer. The game asks only by id; what runs is decided here. */
+/** The agents this app starts in its own terminal, each from its maker's installer, in the world's folder where its allow rule for the world's command sits. The game asks only by id; what runs is decided here. */
 const AGENTS = {
-  "claude-code": { name: "Claude Code", maker: "Anthropic", bin: "claude", args: "--dangerously-skip-permissions", install: "curl -fsSL https://claude.ai/install.sh | bash" },
-  codex: { name: "Codex", maker: "OpenAI", bin: "codex", args: "--dangerously-bypass-approvals-and-sandbox", install: "curl -fsSL https://chatgpt.com/codex/install.sh | sh" },
+  "claude-code": { name: "Claude Code", maker: "Anthropic", bin: "claude", install: "curl -fsSL https://claude.ai/install.sh | bash" },
+  codex: { name: "Codex", maker: "OpenAI", bin: "codex", install: "curl -fsSL https://chatgpt.com/codex/install.sh | sh" },
 };
 
 /** An invite or personal link passed on the command line, e.g. `sandbox http://host:7777/#invite=…`. */
@@ -43,6 +46,8 @@ app.on("second-instance", (_event, argv) => {
 
 /** The engine this app hosts worlds with: its launcher, run by the bun shipped inside the app, with its worlds in the app's data folder. */
 const ENGINE = app.isPackaged ? join(process.resourcesPath, "engine") : join(__dirname, "..");
+/** How a hosted world starts this app again as a playtest's hidden game. */
+const PLAYTEST_APP = [process.execPath, ...(app.isPackaged ? [] : [app.getAppPath()]), ...(app.commandLine.hasSwitch("no-sandbox") ? ["--no-sandbox"] : [])];
 const BUN = app.isPackaged ? join(ENGINE, windows ? "bun.exe" : "bun") : "bun";
 /** The game's own front end (fonts, stills, menu styles), which the start screen uses too, so it works offline. */
 const FRONT = join(ENGINE, "engine/client");
@@ -52,8 +57,8 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
 const STATE = join(app.getPath("userData"), "state.json");
-/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], last?: string, port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string }} The name this player joins every world as; joined worlds by shareable address; main menus opened, by host key; the world last played, as its address in Worlds; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed. */
-const state = { recents: [], hosts: {}, mic: [] };
+/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], labels: Record<string, string>, hosts: Record<string, string>, mic: string[], last?: string, port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string, worldKeys: Record<string, string>, creditTokens: string[] }} The name this player joins every world as; joined worlds by shareable address, and the names the player gave them; main menus opened, by host key; the world last played, as its address in Worlds; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed; the random id each joined world's playtime goes under; a token per world played in, to accept credit for building it. */
+const state = { recents: [], labels: {}, hosts: {}, mic: [], worldKeys: {}, creditTokens: [] };
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
 } catch {}
@@ -111,7 +116,7 @@ function menuBase(base) {
 /** Saves a world the player went into, and unless they only watch its timelapse, makes it the last one played: a world this computer hosts by its entry in Worlds, a joined one by its address. */
 async function remember(base, played = true) {
   const info = await session.defaultSession.fetch(`${base}/api/info`).then((r) => r.json()).catch(() => null);
-  const name = info?.name ?? state.recents.find((r) => r.url === base)?.name ?? new URL(base).host;
+  const name = state.labels[base] ?? info?.name ?? state.recents.find((r) => r.url === base)?.name ?? new URL(base).host;
   state.recents = [{ url: base, name, at: Date.now() }, ...state.recents.filter((r) => r.url !== base)].slice(0, 8);
   const host = server?.base === base ? "local" : Object.entries(state.hosts).find(([key, b]) => b === menuBase(base) && key !== ownKey())?.[0];
   if (played && (!host || info?.id)) state.last = host === "local" ? `local:${info.id}` : host ? `${menuBase(base)}/menu#key=${host}&world=${info.id}` : base;
@@ -133,7 +138,8 @@ function play(raw) {
   leave();
   const view = new WebContentsView({ webPreferences: { preload: join(__dirname, "game-preload.cjs"), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
   view.setBackgroundColor("#0b0b0c");
-  game = { view, name: state.recents.find((r) => r.url === worldBase(url))?.name ?? "" };
+  game = { view, name: state.labels[worldBase(url)] ?? state.recents.find((r) => r.url === worldBase(url))?.name ?? "" };
+  setTimeout(beatNow, 5000);
   /** Why the game didn't open: this computer is offline, the world is closed, or its host doesn't answer. It opens by itself once the world answers. */
   const fail = (reason, why = "silent") => {
     if (game?.view !== view) return;
@@ -200,6 +206,7 @@ function waitFor(url) {
 }
 
 const DATA = join(app.getPath("userData"), "data");
+const usage = require("./usage.cjs")(DATA, app.getVersion());
 /** @type {{ proc: import("node:child_process").ChildProcess, base: string, menu: string, key: string } | null} The game server this app runs: its worlds at `base`, its main menu at `menu`. */ let server = null;
 /** @type {Promise<{ base: string, menu: string, key: string }> | null} */ let starting = null;
 
@@ -246,7 +253,7 @@ function startServer() {
     const log = openSync(logPath, "a");
     const from = statSync(logPath).size;
     const proc = spawn(BUN, [join(ENGINE, "engine/launcher.ts")], {
-      env: { ...process.env, PORT: String(port), SANDBOX_DATA: DATA, SANDBOX_NO_OPEN: "1", SANDBOX_EXIT_WITH_STDIN: "1", SANDBOX_RELAY: RELAY },
+      env: { ...process.env, PORT: String(port), SANDBOX_DATA: DATA, SANDBOX_NO_OPEN: "1", SANDBOX_EXIT_WITH_STDIN: "1", SANDBOX_RELAY: RELAY, SANDBOX_VERSION: app.getVersion(), SANDBOX_PLAYTEST_APP: JSON.stringify(PLAYTEST_APP) },
       stdio: ["pipe", log, log],
     });
     const exited = new Promise((resolve) => proc.once("exit", resolve));
@@ -298,12 +305,344 @@ async function stopServer() {
   if (current.proc.exitCode === null && !current.proc.signalCode) current.proc.kill("SIGKILL");
 }
 
+/** The Community account's session lives only here, encrypted at rest: never in the engine's data folder, a world's environment or any page. Where the system can't encrypt it, it lasts until the app quits. */
+const ACCOUNT = join(app.getPath("userData"), "account.bin");
+/** @type {string | null | undefined} */ let accountToken;
+function sessionToken() {
+  if (accountToken === undefined) {
+    try {
+      accountToken = safeStorage.decryptString(readFileSync(ACCOUNT));
+    } catch {
+      accountToken = null;
+    }
+  }
+  return accountToken;
+}
+function keepSession(token) {
+  accountToken = token;
+  rmSync(ACCOUNT, { force: true });
+  const plain = process.platform === "linux" && safeStorage.getSelectedStorageBackend?.() === "basic_text";
+  if (token && safeStorage.isEncryptionAvailable() && !plain) writeFileSync(ACCOUNT, safeStorage.encryptString(token), { mode: 0o600 });
+}
+/** Community's API as the signed-in account; a session it no longer knows signs this app out. */
+async function community(path, { method = "GET", body } = {}) {
+  const token = sessionToken();
+  const res = await fetch(`${COMMUNITY}${path}`, {
+    method,
+    headers: { ...(body && { "content-type": "application/json" }), ...(token && { authorization: `Bearer ${token}` }) },
+    body: body && JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  }).catch(() => null);
+  if (!res) throw new Error("Can't reach Community. Check your connection.");
+  const data = res.status === 204 ? {} : await res.json().catch(() => ({}));
+  if (res.status === 401 && token && path !== "/sessions") keepSession(null);
+  if (!res.ok) throw Object.assign(new Error(data.error ?? `Community answered ${res.status}. Try again.`), { status: res.status });
+  return data;
+}
+/** A menu action on this app's own launcher. */
+async function menu(action, body) {
+  const own = await startServer();
+  const res = await fetch(`${own.menu}/api/menu/${action}`, { method: "POST", headers: { authorization: `Bearer ${own.key}` }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error);
+  return data;
+}
+/** Worlds this computer shared before accounts move to the account signed in here; the launcher then forgets their owner tokens, which no longer do anything. */
+async function claimWorlds() {
+  let shared = {};
+  try {
+    shared = JSON.parse(readFileSync(join(DATA, "community.json"), "utf8"));
+  } catch {}
+  const settled = [];
+  for (const [local, s] of Object.entries(shared))
+    if (s.id && s.ownerToken) await community(`/worlds/${s.id}/claim`, { method: "POST", body: { ownerToken: s.ownerToken } }).then(() => settled.push(local), (e) => [403, 409].includes(e.status) && settled.push(local));
+  if (settled.length) await menu("community-claimed", { ids: settled });
+}
+const ACCOUNT_ACTIONS = {
+  account: async () => (sessionToken() ? (await community("/account").catch((e) => (e.status === 401 ? {} : Promise.reject(e)))).account ?? null : null),
+  "sign-up": async ({ email, password, username }) => signedInAs(await community("/accounts", { method: "POST", body: { email, password, username } })),
+  "sign-in": async ({ email, password }) => signedInAs(await community("/sessions", { method: "POST", body: { email, password } })),
+  "sign-out": async () => {
+    await community("/sessions", { method: "DELETE" }).catch(() => {});
+    keepSession(null);
+    return null;
+  },
+  rename: async ({ username }) => (await community("/account", { method: "PATCH", body: { username } })).account,
+  "delete-account": async ({ password }) => {
+    await community("/account", { method: "DELETE", body: { password } });
+    keepSession(null);
+    return null;
+  },
+};
+async function signedInAs({ token, account }) {
+  keepSession(token);
+  await claimWorlds().catch((e) => console.log(`Couldn't claim shared worlds: ${e.message}`));
+  return account;
+}
+
+/** Publishes a world the launcher staged, as the signed-in account: a new community world, or the same one again. */
+async function publishStaged(id, { details, sizes, community: before }) {
+  const body = { ...details, files: sizes };
+  const updated = before && (await community(`/worlds/${before}`, { method: "PUT", body }).catch((e) => ([404, 410].includes(e.status) ? null : Promise.reject(e))));
+  const { id: world, uploads } = updated || (await community("/worlds", { method: "POST", body }));
+  await menu("publish-upload", { id, uploads });
+  const published = await community(`/worlds/${world}/done`, { method: "POST" });
+  await menu("published", { id, world: published });
+  return published;
+}
+/** The game's Share: the world staged itself, and the player confirms in a dialog no world can draw. Null once it's done or the player said no, or why it couldn't. */
+async function publishWorld(id) {
+  const stage = await menu("staged", { id });
+  if (!stage) return "Share it again.";
+  const account = await ACCOUNT_ACTIONS.account();
+  if (!account) return "Sign in to Community in Settings, then share again.";
+  const where = stage.details.visibility === "public" ? "Anyone can find it in Community." : "Anyone with the link can play it.";
+  const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Publish", "Cancel"], defaultId: 0, cancelId: 1, message: `Publish ${stage.details.title} as ${account.username}?`, detail: where });
+  if (response !== 0) return null;
+  await publishStaged(id, stage);
+  return null;
+}
+/** The game's Share on a mod: the world staged it, and the player confirms. What happened, or null when they said no. A mod shared from here before, or added from Community, updates that one when it's theirs and becomes a fork of it otherwise. */
+async function publishMod(id, name) {
+  const stage = await menu("mod-staged", { id, name });
+  if (!stage) return "Share it again.";
+  const account = await ACCOUNT_ACTIONS.account();
+  if (!account) return "Sign in to Community in Settings, then share again.";
+  const { response } = await dialog.showMessageBox(win, { type: "question", buttons: ["Publish", "Cancel"], defaultId: 0, cancelId: 1, message: `Publish the mod ${stage.details.title} as ${account.username}?`, detail: "Anyone can find it in Community and add it to their world. Only this mod's code and assets are shared." });
+  if (response !== 0) return null;
+  const body = { ...stage.details, files: stage.sizes };
+  const before = stage.community;
+  const updated = before && (await community(`/mods/${before}`, { method: "PUT", body }).catch((e) => ([403, 404, 410].includes(e.status) ? null : Promise.reject(e))));
+  const { id: mod, uploads } = updated || (await community("/mods", { method: "POST", body: { ...body, forkOf: before ?? undefined } }));
+  await menu("mod-upload", { id, name, uploads });
+  const published = await community(`/worlds/${mod}/done`, { method: "POST" });
+  await menu("mod-published", { id, name, mod: published });
+  return `${stage.details.title} is in Community: ${published.link}`;
+}
+/** Takes a world this app published out of Community, once the player confirms. */
+async function unpublishWorld(id) {
+  const shared = (await hostState())?.worlds.find((w) => w.id === id)?.shared?.id;
+  if (!shared) return "That world isn't shared.";
+  const { response } = await dialog.showMessageBox(win, { type: "warning", buttons: ["Remove", "Cancel"], defaultId: 1, cancelId: 1, message: "Remove this world from Community?", detail: "Its link stops working for everyone." });
+  if (response !== 0) return null;
+  // A world shared before accounts and not yet claimed is still taken down by the owner token the launcher keeps.
+  const legacy = await community(`/worlds/${shared}`, { method: "DELETE" }).then(() => false, (e) => ([401, 403].includes(e.status) ? true : e.status === 410 ? false : Promise.reject(e)));
+  await (legacy ? menu("unshare", { id }) : menu("published", { id }));
+  return null;
+}
+/** Only the world this app is hosting and playing may ask to publish itself. */
+const hostState = () => server && ask(`${server.menu}/api/menu/state`, server.key).then((r) => r.json(), () => null);
+async function hostingHere(event, id) {
+  return event.sender === game?.view.webContents && (await hostState())?.running?.id === id;
+}
+
+/** Time in games while the window has focus, sent each minute: as playtime for every game, under a Community world's id or a random id per world, and as plays of Community worlds hosted here. The hosted world is checked each time, since the in-game menu can switch it. Off with Share usage stats. */
+let focusedMs = 0;
+let focusedSince = null;
+const focusedNow = () => focusedMs + (focusedSince === null ? 0 : Date.now() - focusedSince);
+/** @type {{ local: string, id: string, to: { token: string, host: string }, from: number } | null} */ let playing = null;
+let playtimeFrom = 0;
+/** @type {string | null} */ let playtimeWorld = null;
+async function beat() {
+  const s = game && usage.sharing() ? await hostState() : null;
+  const local = s?.running?.id ?? null;
+  await sendPlaytime(playtimeWorld);
+  playtimeWorld = game && usage.sharing() ? worldKey(s, local) : null;
+  if (playing && playing.local !== local) await sendBeat(playing).then(() => (playing = null));
+  if (playing) return sendBeat(playing);
+  const world = local && s.worlds.find((w) => w.id === local);
+  const id = world?.shared?.id ?? world?.from;
+  const to = id && (await usage.install());
+  if (!to) return;
+  const token = to.host === COMMUNITY && sessionToken();
+  const res = await fetch(`${to.host}/plays`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${to.token}`, "content-type": "application/json", ...(token && { "x-session": token }) },
+    body: JSON.stringify({ world: id }),
+    signal: AbortSignal.timeout(10000),
+  }).catch(() => null);
+  if (res?.ok) playing = { local, id: (await res.json()).play, to, from: focusedNow() };
+}
+/** A Community world's id, the random id a world of this computer's keeps, or one this app makes up for a world it joined: never a world's name or link. */
+function worldKey(s, local) {
+  const world = local && s.worlds.find((w) => w.id === local);
+  if (world) return world.shared?.id ?? world.from ?? world.telemetry;
+  const url = URL.parse(game.view.webContents.getURL());
+  if (!url || (server && url.origin === new URL(server.base).origin)) return null;
+  const base = worldBase(url);
+  if (!state.worldKeys[base]) {
+    state.worldKeys[base] = crypto.randomUUID();
+    save();
+  }
+  return state.worldKeys[base];
+}
+async function sendPlaytime(world) {
+  const seconds = Math.round((focusedNow() - playtimeFrom) / 1000);
+  playtimeFrom = focusedNow();
+  const to = world && seconds > 0 && (await usage.install());
+  if (!to) return;
+  const token = to.host === COMMUNITY && sessionToken();
+  await fetch(`${to.host}/playtime`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${to.token}`, "content-type": "application/json", ...(token && { "x-session": token }) },
+    body: JSON.stringify({ world, seconds }),
+    signal: AbortSignal.timeout(10000),
+  }).catch(() => null);
+}
+const sendBeat = (p) =>
+  fetch(`${p.to.host}/plays/${p.id}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${p.to.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ seconds: Math.round((focusedNow() - p.from) / 1000) }),
+    signal: AbortSignal.timeout(10000),
+  }).catch(() => null);
+let beating = Promise.resolve();
+const beatNow = () => (beating = beating.then(beat, beat));
+
+/** The world hosted here, in Community's Live now while its host lets in more than the people holding its invite: sent every 30 s and on each change, and taken down once it stops, goes Wi-Fi only, or the app quits. Unchosen, a signed-in host's world is for their friends. */
+/** @type {{ token: string, host: string } | null} */ let listed = null;
+const accessOf = (running) => running.access ?? (sessionToken() ? "friends" : "invite");
+async function live() {
+  const s = server && !quitting ? await hostState() : null;
+  const r = s?.running;
+  const session = sessionToken();
+  const to = r && session && accessOf(r) !== "invite" && !r.wifiOnly && (await usage.install());
+  if (to && to.host === COMMUNITY) {
+    const world = s.worlds.find((w) => w.id === r.id);
+    listed = to;
+    await fetch(`${COMMUNITY}/live`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${to.token}`, "content-type": "application/json", "x-session": session },
+      body: JSON.stringify({ link: r.link, title: r.name, players: r.players.filter((p) => p.online).length, access: accessOf(r), world: world?.shared?.id ?? world?.from ?? null }),
+      signal: AbortSignal.timeout(10000),
+    }).catch(() => null);
+  } else if (listed) {
+    const from = listed;
+    listed = null;
+    await fetch(`${COMMUNITY}/live`, { method: "DELETE", headers: { authorization: `Bearer ${from.token}` }, signal: AbortSignal.timeout(10000) }).catch(() => null);
+  }
+}
+let living = Promise.resolve();
+const liveNow = () => (living = living.then(live, live));
+
+/** Community from the launch screen, as the signed-in account. Ids are checked here, since they go into the API's paths. */
+const worldId = (id) => {
+  if (!/^[a-z0-9]{12}$/.test(String(id))) throw new Error("That world isn't in Community.");
+  return String(id);
+};
+const userName = (name) => {
+  if (!/^[A-Za-z0-9_]{3,20}$/.test(String(name))) throw new Error("There is no such builder.");
+  return String(name);
+};
+const commentId = (id) => {
+  if (!/^[0-9]{1,18}$/.test(String(id))) throw new Error("That comment isn't there any more.");
+  return String(id);
+};
+/** The local world a community world was published from, if it was from here. */
+const publishedFrom = async (id) => (await startServer(), await hostState())?.worlds.find((w) => w.shared?.id === id)?.id;
+const COMMUNITY_ACTIONS = {
+  list: ({ after, mine, sort }) => (mine ? community("/account/worlds") : community(`/worlds?sort=${sort === "new" ? "new" : "top"}${after ? `&after=${worldId(after)}` : ""}`)),
+  world: ({ id }) => community(`/worlds/${worldId(id)}`),
+  mods: ({ q, sort, after }) => community(`/mods?sort=${sort === "new" ? "new" : "top"}&q=${encodeURIComponent(String(q ?? "").slice(0, 100))}${after ? `&after=${worldId(after)}` : ""}`),
+  mod: ({ id }) => community(`/mods/${worldId(id)}`),
+  usage: ({ id }) => community(`/worlds/${worldId(id)}/usage`),
+  forks: ({ id, after }) => community(`/worlds/${worldId(id)}/forks${after ? `?after=${worldId(after)}` : ""}`),
+  vote: ({ id, up }) => community(`/worlds/${worldId(id)}/vote`, { method: "PUT", body: { up: up === true } }),
+  report: ({ id }) => community(`/worlds/${worldId(id)}/report`, { method: "POST" }),
+  comments: ({ id, after }) => community(`/worlds/${worldId(id)}/comments${after ? `?after=${commentId(after)}` : ""}`),
+  comment: ({ id, body }) => community(`/worlds/${worldId(id)}/comments`, { method: "POST", body: { body: String(body ?? "") } }),
+  "remove-comment": ({ id }) => community(`/comments/${commentId(id)}`, { method: "DELETE" }),
+  "report-comment": ({ id }) => community(`/comments/${commentId(id)}/report`, { method: "POST" }),
+  "take-down": async ({ id }) => {
+    const local = await publishedFrom(worldId(id));
+    await community(`/worlds/${id}`, { method: "DELETE" });
+    if (local) await menu("published", { id: local });
+    return {};
+  },
+  /** Play hosts the world, reusing the copy it made before; Fork makes a new copy in Worlds. The launch screen has asked about trust already. */
+  get: async ({ id, host }) => {
+    await startServer();
+    const { world } = await menu("community-get", { id: worldId(id), trust: true, host: host === true });
+    if (host === true) await hostGame(world);
+    return { world };
+  },
+  /** This computer's worlds, to pick one to publish. */
+  local: async () => (await startServer(), await hostState())?.worlds.map((w) => ({ id: w.id, name: w.name, shared: w.shared })) ?? [],
+  /** Publishing invites the builders picked, by name; each is credited once they accept. */
+  publish: async ({ id, title, description, visibility, changelog, builders }) => {
+    await startServer();
+    const stage = await menu("publish-stage", { id: String(id), title, description, visibility, changelog });
+    const world = await publishStaged(String(id), stage);
+    if (Array.isArray(builders) && builders.length) await community(`/worlds/${world.id}/credits`, { method: "PUT", body: { credits: await menu("credit-checks", { id: String(id), names: builders }) } });
+    return world;
+  },
+  builders: async ({ id }) => (await startServer(), menu("builders", { id: String(id) })),
+  /** Credits waiting for this player: the tokens from the worlds they played in, matched by Community. */
+  credits: () => community("/credits/waiting", { method: "POST", body: { tokens: state.creditTokens } }),
+  accept: ({ token }) => community("/credits/accept", { method: "POST", body: { token: String(token) } }),
+  "drop-credit": ({ id }) => community(`/worlds/${worldId(id)}/credits`, { method: "DELETE" }),
+  profile: ({ name }) => community(`/users/${userName(name)}`),
+  live: () => community("/live"),
+  notifications: () => community("/notifications"),
+  "read-notifications": () => community("/notifications/read", { method: "POST" }),
+  /** A password world's invite, from its relay, which alone checks the password. */
+  unlock: async ({ room, password }) => {
+    if (!/^[a-z0-9-]{3,32}$/.test(String(room))) throw new Error("That world isn't live.");
+    const res = await fetch(`${RELAY}/_unlock`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room, password: String(password ?? "") }), signal: AbortSignal.timeout(10000) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error ?? "The world didn't answer."), { status: res.status });
+    return { link: `${RELAY}/r/${room}/#invite=${data.invite}` };
+  },
+  inbox: () => community("/messages"),
+  unread: () => community("/account/unread"),
+  thread: ({ name, before }) => community(`/messages/${userName(name)}${before ? `?before=${commentId(before)}` : ""}`),
+  send: ({ to, body }) => community("/messages", { method: "POST", body: { to: userName(to), body: String(body ?? "") } }),
+  friends: () => community("/friends"),
+  friend: ({ name, on }) => community(`/friends/${userName(name)}`, { method: on === true ? "PUT" : "DELETE" }),
+  block: ({ name, on }) => community(`/blocks/${userName(name)}`, { method: on === true ? "PUT" : "DELETE" }),
+  "report-message": ({ id }) => community(`/messages/${commentId(id)}/report`, { method: "POST" }),
+};
+
 /** Players in the world this app hosts, besides the host playing it here. */
 async function guests() {
-  if (!server) return null;
-  const s = await ask(`${server.menu}/api/menu/state`, server.key).then((r) => r.json(), () => null);
+  const s = await hostState();
   if (!s?.running) return null;
   return { name: s.running.name, count: s.running.players.filter((p) => p.online && p.name !== state.name).length };
+}
+
+/** A joined world's picture: the player's own view of it, kept on this computer by its address and never sent anywhere. */
+const COVERS = join(app.getPath("userData"), "covers");
+const coverFile = (url) => join(COVERS, `${createHash("sha256").update(url).digest("hex").slice(0, 32)}.jpg`);
+function joinedCover(url) {
+  const file = coverFile(url);
+  return existsSync(file) ? `sandbox://app/joined-cover/${file.slice(-36, -4)}?v=${statSync(file).mtimeMs}` : null;
+}
+function keepJoinedCover(sender, jpeg) {
+  const url = URL.parse(sender.getURL());
+  if (!url || !(jpeg instanceof Uint8Array) || jpeg.length > 2 << 20 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return;
+  if (server && url.origin === new URL(server.base).origin) return;
+  const file = coverFile(worldBase(url));
+  mkdirSync(COVERS, { recursive: true });
+  writeFileSync(`${file}.tmp`, jpeg);
+  renameSync(`${file}.tmp`, file);
+}
+
+/** A world's new name in Worlds: a hosted world is renamed on the launcher that hosts it, keeping its id and invite; a joined one gets a name only this computer shows. */
+async function renameWorld(url, raw) {
+  const name = String(raw ?? "").trim();
+  if (!name || name.length > 40) return "A name is 1 to 40 characters.";
+  const own = url.match(/^local:(.+)$/)?.[1];
+  if (own) return menu("rename", { id: own, name }).then(() => null, (e) => e.message);
+  const parsed = URL.parse(url);
+  const hash = new URLSearchParams(parsed?.hash.slice(1) ?? "");
+  if (parsed?.pathname.endsWith("/menu") && hash.get("key")) {
+    const res = await fetch(`${worldBase(parsed)}/api/menu/rename`, { method: "POST", headers: { authorization: `Bearer ${hash.get("key")}` }, body: JSON.stringify({ id: hash.get("world"), name }), signal: AbortSignal.timeout(5000) }).catch(() => null);
+    return res?.ok ? null : ((await res?.json().catch(() => null))?.error ?? "The host didn't answer. Try again.");
+  }
+  if (!state.recents.some((r) => r.url === url)) return "That world isn't in Worlds any more.";
+  state.labels[url] = name;
+  save();
+  return null;
 }
 
 /** The worlds this app hosts, read from its data folder so they show without starting the server. */
@@ -366,13 +705,15 @@ async function games() {
   const copied = (await clipboard.readText()).trim().slice(0, 2000);
   return {
     hosted,
-    joined: state.recents.filter((r) => !mine.has(r.url) && r.url !== (state.port ? `http://localhost:${state.port}` : null)),
+    joined: state.recents.filter((r) => !mine.has(r.url) && !(server && r.url === server.base)).map((r) => ({ ...r, name: state.labels[r.url] ?? r.name, cover: joinedCover(r.url) })),
     copied,
     last: state.last ?? null,
   };
 }
 
 let leaveTimeout = null;
+/** Games closing, which may still send the picture they take as they go. */
+const left = new WeakSet();
 function leave() {
   clearTimeout(leaveTimeout);
   leaveTimeout = null;
@@ -380,8 +721,10 @@ function leave() {
   waiting = null;
   stopAgent();
   if (!game) return;
+  void beatNow();
   win.contentView.removeChildView(game.view);
-  // The game has already sent its last cover if it answered the shell's leave request; this is a fallback for pages that didn't load.
+  // A game that answered the shell's Leave already sent its picture; any other may still send it as it goes, the way closing a browser tab would let it.
+  left.add(game.view.webContents);
   game.view.webContents.close({ waitForBeforeUnload: true });
   game = null;
   layout();
@@ -414,9 +757,9 @@ async function buildWith(id, key) {
     return true;
   }
   const base = worldBase(new URL(game.view.webContents.getURL()));
-  const res = await ask(`${base}/api/prompt?base=${encodeURIComponent(base)}`, String(key), 5000).catch(() => null);
+  const res = await fetch(`${base}/api/join-code?base=${encodeURIComponent(base)}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(5000) }).catch(() => null);
   if (!res?.ok) return res?.status === 403 ? "The host turned agents off for this world." : "The world didn't answer. Try again.";
-  const prompt = await res.text();
+  const { command, folder, prompt } = await res.json();
   const PATH = await terminalPath();
   const installed = PATH.split(delimiter).some((dir) => dir && existsSync(join(dir, kind.bin)));
   const { response } = await dialog.showMessageBox(win, {
@@ -425,7 +768,7 @@ async function buildWith(id, key) {
     defaultId: 0,
     cancelId: 1,
     message: `Build with ${kind.name}?`,
-    detail: `${installed ? "" : `Sandbox installs ${kind.name} with ${kind.maker}'s installer first. `}${kind.name} runs beside the game with permissions off, so it can run commands on this computer without asking. It builds in ${game.name} as you. Stop closes it.`,
+    detail: `${installed ? "" : `Sandbox installs ${kind.name} with ${kind.maker}'s installer first. `}Sandbox sets up ${folder} for ${game.name} and starts ${kind.name} there, beside the game. When it asks whether you trust that folder, say yes. It builds as you. Stop closes it.`,
   });
   if (response !== 0 || !game || agent) return false;
   const view = new WebContentsView({ webPreferences: { preload: join(__dirname, "agent-preload.cjs"), sandbox: true, contextIsolation: true } });
@@ -437,15 +780,13 @@ async function buildWith(id, key) {
     return { action: "deny" };
   });
   view.webContents.on("before-input-event", keys);
-  const dir = join(app.getPath("userData"), "agents", id);
-  mkdirSync(dir, { recursive: true });
-  const script = `${installed ? "" : `${kind.install} && `}exec ${kind.bin} ${kind.args} "$SANDBOX_PROMPT"`;
+  const script = `${installed ? "" : `${kind.install} && `}${command} && cd ${folder} && exec ${kind.bin} "$SANDBOX_PROMPT"`;
   agent = {
     view,
     name: kind.name,
     pty: null,
     start(cols, rows) {
-      const pty = (this.pty = require("node-pty").spawn("/bin/sh", ["-c", script], { name: "xterm-256color", cols, rows, cwd: dir, env: { ...process.env, PATH, TERM: "xterm-256color", SANDBOX_PROMPT: prompt } }));
+      const pty = (this.pty = require("node-pty").spawn("/bin/sh", ["-c", script], { name: "xterm-256color", cols, rows, cwd: homedir(), env: { ...process.env, PATH, TERM: "xterm-256color", SANDBOX_PROMPT: prompt } }));
       pty.onData((data) => view.webContents.send("agent-output", data));
       pty.onExit(() => {
         if (agent?.pty === pty && !view.webContents.isDestroyed()) view.webContents.send("agent-exit");
@@ -512,7 +853,17 @@ function createWindow() {
       save();
       layout();
     });
-  win.on("focus", () => (game ? game.view : shell).webContents.focus());
+  win.on("focus", () => {
+    focusedSince ??= Date.now();
+    (game ? game.view : shell).webContents.focus();
+  });
+  win.on("blur", () => {
+    focusedMs = focusedNow();
+    focusedSince = null;
+  });
+  if (win.isFocused()) focusedSince = Date.now();
+  setInterval(beatNow, 60000);
+  setInterval(liveNow, 30000);
   win.on("close", (event) => {
     if (quitting) return;
     event.preventDefault();
@@ -521,6 +872,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  rmSync(DOWNLOADED, { recursive: true, force: true });
   Menu.setApplicationMenu(
     mac
       ? Menu.buildFromTemplate([
@@ -556,10 +908,21 @@ app.whenReady().then(() => {
       return res.ok ? null : (await res.json()).error;
     }
     state.recents = state.recents.filter((r) => r.url !== url);
+    delete state.labels[url];
+    rmSync(coverFile(String(url)), { force: true });
     save();
     return null;
   });
+  ipcMain.handle("rename", (event, url, name) => (fromShell(event) ? renameWorld(String(url), name) : null));
   ipcMain.handle("name", (event) => (fromShell(event) ? { name: state.name ?? null, suggested: suggestedName() } : null));
+  ipcMain.handle("community", async (event, action, body) => {
+    if (!fromShell(event) || !Object.hasOwn(COMMUNITY_ACTIONS, action)) return { error: "Unknown action" };
+    return COMMUNITY_ACTIONS[action](body ?? {}).then((result) => ({ result }), (e) => ({ error: e.message, status: e.status }));
+  });
+  ipcMain.handle("account", async (event, action, body) => {
+    if (!fromShell(event) || !Object.hasOwn(ACCOUNT_ACTIONS, action)) return { error: "Unknown action" };
+    return ACCOUNT_ACTIONS[action](body ?? {}).then((account) => ({ account }), (e) => ({ error: e.message }));
+  });
   ipcMain.handle("set-name", (event, raw) => {
     if (!fromShell(event)) return null;
     const name = String(raw).trim().toLowerCase();
@@ -579,13 +942,46 @@ app.whenReady().then(() => {
       leaveTimeout = setTimeout(leave, 4000);
     } else leave();
   });
+  ipcMain.handle("version", () => app.getVersion());
   ipcMain.handle("update", (event) => (fromShell(event) || event.sender === game?.view.webContents) && install());
   ipcMain.on("quit", (event) => fromShell(event) && app.quit());
   ipcMain.handle("ready", (event) => fromShell(event) && ready);
+  ipcMain.on("events", (event, events) => fromShell(event) && usage.add(events));
+  ipcMain.on("credit-token", (event, token) => {
+    if (!fromGame(event) || !/^[A-Za-z0-9_-]{43}$/.test(String(token)) || state.creditTokens.includes(token)) return;
+    state.creditTokens = [...state.creditTokens, token].slice(-500);
+    save();
+  });
+  /** Who can join the world this app hosts, picked on its Invite page: a listed choice needs an account, so only a signed-in host sees one. */
+  ipcMain.handle("access", async (event, id, mode, password) => {
+    if (!(await hostingHere(event, String(id)))) return "Only the host picks who can join.";
+    try {
+      if (mode !== undefined) await menu("access", { id: String(id), mode, password });
+    } catch (e) {
+      return e.message;
+    }
+    void liveNow();
+    const { running } = await hostState();
+    return { mode: accessOf(running), locked: running.locked, signedIn: !!sessionToken() };
+  });
+  ipcMain.handle("share-usage", (event, on) => {
+    if (!fromShell(event)) return null;
+    if (typeof on === "boolean") usage.share(on);
+    return usage.sharing();
+  });
   const fromGame = (event) => event.sender === game?.view.webContents;
   const fromAgent = (event) => event.sender === agent?.view.webContents;
+  ipcMain.on("cover", (event, jpeg) => (fromGame(event) || left.has(event.sender)) && keepJoinedCover(event.sender, jpeg));
   ipcMain.on("agents", (event) => (event.returnValue = fromGame(event) ? Object.entries(AGENTS).map(([id, a]) => ({ id, name: a.name })) : []));
-  ipcMain.handle("build", (event, id, key) => (fromGame(event) ? buildWith(String(id), key) : false));
+  ipcMain.handle("build", async (event, id, key) => {
+    if (!fromGame(event)) return false;
+    const started = await buildWith(String(id), key);
+    usage.step("agent", "build-with", { agent: Object.hasOwn(AGENTS, id) ? id : null, outcome: started === true ? "started" : started === false ? "declined" : "failed" });
+    return started;
+  });
+  ipcMain.handle("publish-mod", async (event, id, name) => ((await hostingHere(event, String(id))) ? publishMod(String(id), String(name)).catch((e) => e.message) : "Publish from the Sandbox app."));
+  for (const [channel, fn] of [["publish", publishWorld], ["unpublish", unpublishWorld]])
+    ipcMain.handle(channel, async (event, id) => ((await hostingHere(event, String(id))) ? fn(String(id)).catch((e) => e.message) : "Publish from the Sandbox app."));
   ipcMain.on("agent-name", (event) => (event.returnValue = fromAgent(event) ? agent.name : ""));
   ipcMain.on("agent-input", (event, data) => fromAgent(event) && agent.pty?.write(String(data)));
   ipcMain.on("agent-resize", (event, cols, rows) => {
@@ -601,6 +997,7 @@ app.whenReady().then(() => {
     const xterm = { "/xterm/xterm.js": "@xterm/xterm/lib/xterm.js", "/xterm/xterm.css": "@xterm/xterm/css/xterm.css", "/xterm/addon-fit.js": "@xterm/addon-fit/lib/addon-fit.js" }[path];
     if (xterm) return net.fetch(pathToFileURL(require.resolve(xterm)).href);
     if (/^\/cover\/[a-z0-9-]+$/.test(path)) return net.fetch(pathToFileURL(join(DATA, "worlds", path.slice(7), "cover.jpg")).href);
+    if (/^\/joined-cover\/[0-9a-f]{32}$/.test(path)) return net.fetch(pathToFileURL(join(COVERS, `${path.slice(14)}.jpg`)).href);
     const file = normalize(join(FRONT, path));
     return file.startsWith(FRONT) ? net.fetch(pathToFileURL(file).href) : new Response("not found", { status: 404 });
   });
@@ -615,7 +1012,8 @@ app.whenReady().then(() => {
     });
   }
   if (UPDATES && reopen) void checkUpdate().then(pollUpdates);
-  else if (UPDATES) ready = updateFirst().then(pollUpdates);
+  // The start screen says what it waits for only once it listens.
+  else if (UPDATES) ready = new Promise((r) => shell.webContents.once("did-finish-load", r)).then(updateFirst).then(pollUpdates);
 });
 
 const UPDATES = app.isPackaged || !!process.env.SANDBOX_UPDATES;
@@ -663,7 +1061,41 @@ function pollUpdates() {
   setTimeout(() => checkUpdate().then(pollUpdates), checkEvery);
 }
 
-/** Updates the way the installer does, since Squirrel won't update an unsigned Mac app: the installer downloads the release, this app quits, and the installer swaps it in and opens it again. Says why when the download fails, and stays open. */
+/** This computer's build in a release, named as the installer names it; a Mac picks Apple silicon even when this app runs translated. */
+const ASSET = mac ? `Sandbox-mac-${process.arch === "arm64" || app.runningUnderARM64Translation ? "arm64" : "x64"}.zip` : windows ? "Sandbox-win-x64.zip" : "Sandbox-linux-x86_64.AppImage";
+/** Where the app downloads an update for the installer; whatever is left there goes when the app next starts. */
+const DOWNLOADED = join(app.getPath("userData"), "update");
+
+/** Tells the start screen and the game how the update goes: the share downloaded, then installing, or null once it has stopped. */
+function updating(progress) {
+  shell?.webContents.send("updating", progress);
+  game?.view.webContents.send("updating", progress);
+}
+
+/** Downloads this computer's build of the update, telling how far it is by the bytes received against the release's size, and returns the folder it is in. */
+async function download(version) {
+  rmSync(DOWNLOADED, { recursive: true, force: true });
+  mkdirSync(DOWNLOADED, { recursive: true });
+  const res = await net.fetch(`${DOWNLOADS(version)}/${ASSET}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const size = Number(res.headers.get("content-length"));
+  const out = createWriteStream(join(DOWNLOADED, ASSET));
+  let received = 0;
+  let told = 0;
+  for await (const chunk of res.body) {
+    if (!out.write(chunk)) await new Promise((r) => out.once("drain", r));
+    received += chunk.length;
+    if (size && Date.now() - told > 100) {
+      told = Date.now();
+      updating({ downloaded: received / size });
+    }
+  }
+  out.end();
+  await finished(out);
+  return DOWNLOADED;
+}
+
+/** Updates the way the installer does, since Squirrel won't update an unsigned Mac app: this app downloads the release and hands it to the installer, quits, and the installer swaps it in and opens it again. Says why when the download fails, and stays open. */
 let installing = false;
 async function install() {
   if (!update || installing) return null;
@@ -674,11 +1106,19 @@ async function install() {
     if (response !== 0) return null;
   }
   installing = true;
+  updating({ downloaded: 0 });
+  const release = await download(update).catch((e) => console.log(`The update didn't download: ${e.message}`));
+  if (!release) {
+    installing = false;
+    updating(null);
+    return "The update didn't download. Check your connection.";
+  }
+  updating({ installing: true });
   const path = join(app.getPath("userData"), "update.log");
   const log = openSync(path, "a");
   const from = statSync(path).size;
   const [shell, args] = windows ? ["powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `irm '${INSTALLER(update)}' | iex`]] : ["bash", ["-c", `curl -fsSL '${INSTALLER(update)}' | bash`]];
-  const child = spawn(shell, args, { detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, SANDBOX_APP_PID: String(process.pid), SANDBOX_RELEASE: DOWNLOADS(update) } });
+  const child = spawn(shell, args, { detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, SANDBOX_APP_PID: String(process.pid), SANDBOX_RELEASE: pathToFileURL(release).href } });
   child.unref();
   closeSync(log);
   const exited = new Promise((resolve) => child.once("exit", () => resolve(false)));
@@ -693,6 +1133,7 @@ async function install() {
   while (!ready && (await Promise.race([exited, new Promise((r) => setTimeout(() => r(true), 250))]))) ready = said().includes("Quit Sandbox to continue.");
   if (!ready) {
     installing = false;
+    updating(null);
     console.log(`The update failed: ${said().trim().split("\n").at(-1) ?? ""}`);
     return "The update didn't download. Check your connection.";
   }
@@ -700,6 +1141,7 @@ async function install() {
   state.updatedTo = update;
   quitting = true;
   stopAgent();
+  await Promise.all([beatNow(), liveNow(), usage.drain()]);
   await stopServer();
   save();
   app.quit();
@@ -718,6 +1160,7 @@ function quit() {
     }
     quitting = true;
     stopAgent();
+    await Promise.all([beatNow(), liveNow(), usage.drain()]);
     await stopServer();
     app.quit();
   })().finally(() => (confirming = null));

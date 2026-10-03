@@ -31,6 +31,9 @@
       "preload.cjs",
       "game-preload.cjs",
       "agent-preload.cjs",
+      "usage.cjs",
+      "playtest.cjs",
+      "playtest-preload.cjs",
       "shell.html",
       "agent.html"
     ],

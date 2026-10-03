@@ -7,7 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='6' y='6' width='20' height='20' fill='%23ffb547'/></svg>">
 <link rel="stylesheet" href="/front.css">
 <script type="importmap">
-{ "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
+{ "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/", "three/examples/jsm/": "/vendor/three/examples/jsm/" } }
 </script>
 <style>
   /* The Tab menu is in a shadow root on #ui (see main.ts): these rules apply there as a copy, where nothing a mod adds to the page reaches. */
@@ -45,7 +45,7 @@
   @media (max-width: 600px) { #rules { display: none; } #top { left: 16px; right: 16px; gap: 10px; } }
   #status { position: fixed; top: 72px; left: 50%; transform: translateX(-50%); padding: 10px 16px; background: var(--veil); }
 
-  #feed { position: fixed; left: 24px; bottom: 64px; width: min(440px, calc(100vw - 48px)); max-height: 34vh; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; pointer-events: none; }
+  #feed { position: fixed; left: 24px; bottom: 64px; width: min(440px, calc(100vw - 48px)); max-height: 34vh; overflow-y: auto; scrollbar-width: none; display: flex; flex-direction: column; gap: 3px; pointer-events: none; }
   #feed .line.old { opacity: 0; transition: opacity 1.2s ease; }
   #feed:has(~ #chat:not([hidden])) .line.old { opacity: 1; transition: none; }
   .line { padding: 4px 10px; background: var(--glass); width: fit-content; max-width: 100%; border-left: 2px solid transparent; }
@@ -162,7 +162,9 @@
   #mod-pages:empty { visibility: hidden; }
   #leave, #menu-update { flex: none; }
   #menu-update, #menu-update[hidden] + #leave { margin-top: auto; }
-  #pages { position: absolute; top: 0; bottom: 0; left: 400px; width: min(760px, calc(100vw - 440px)); padding: 72px 56px 40px; background: var(--pane); overflow-y: auto; }
+  #menu-update .bar { position: absolute; left: 28px; right: 0; bottom: 0; height: 3px; background: var(--line); }
+  #menu-update .bar i { display: block; height: 100%; background: var(--accent); }
+  #pages { position: absolute; top: 0; bottom: 0; left: 400px; width: min(760px, calc(100vw - 440px)); padding: 72px 56px 40px; background: var(--pane); overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.25) transparent; }
   #pages .screen-title { font-size: 44px; margin-bottom: 28px; }
   #pages:focus { outline: none; }
   /* Mods' blocks show inside their own box, so none covers the engine's page. */
@@ -192,8 +194,8 @@
   .steps .copy-row { border: 0; min-height: 44px; }
   .steps li > small { display: block; margin-top: 4px; color: var(--dim); font: 500 14px/1.4 system-ui, sans-serif; }
   .steps a.quiet { display: inline-block; margin-top: 8px; color: var(--text); text-decoration: none; border-bottom: 1px solid var(--accent); padding: 6px 0; }
-  #agent-guide [data-copy=claude-prompt] { background: var(--text); color: #0b0b0c; padding: 12px 18px; min-width: 170px; text-align: center; }
-  #agent-guide [data-copy=claude-prompt]:hover, #agent-guide [data-copy=claude-prompt]:focus { background: var(--accent); color: #0b0b0c; }
+  #agent-guide [data-copy=agent-connect] { background: var(--text); color: #0b0b0c; padding: 12px 18px; min-width: 170px; text-align: center; }
+  #agent-guide [data-copy=agent-connect]:hover, #agent-guide [data-copy=agent-connect]:focus { background: var(--accent); color: #0b0b0c; }
   .field em { font-style: normal; color: var(--dim); font-weight: 700; }
   @media (max-width: 760px) {
     #rail { width: 100%; padding: 40px 16px 24px; }
@@ -354,7 +356,7 @@
       <button id="timelapse" class="item">Timelapse</button>
     </div>
     <div id="mod-pages" class="items"></div>
-    <button id="menu-update" class="item" hidden>Update</button>
+    <button id="menu-update" class="item" hidden><span>Update</span><i class="bar" hidden><i></i></i></button>
     <button id="leave" class="item">Leave</button>
   </nav>
   <div id="pages" data-nav hidden>
@@ -375,11 +377,12 @@
               <small id="agent-terminal"></small>
               <div class="copy-row" id="agent-install-row"><code id="agent-install"></code><button data-copy="agent-install">Copy</button></div>
               <a id="agent-download" class="quiet" target="_blank" rel="noopener"></a></li>
+            <li><b>Connect this computer</b>
+              <small id="agent-connect-how"></small>
+              <div class="copy-row"><code id="agent-connect"></code><button data-copy="agent-connect">Copy</button></div></li>
             <li><b id="agent-start-what"></b>
-              <div class="copy-row" id="agent-start-row"><code id="agent-start"></code><button data-copy="agent-start">Copy</button></div></li>
-            <li><b>Paste this prompt into it</b>
-              <div class="copy-row"><code id="claude-prompt"></code><button data-copy="claude-prompt">Copy prompt</button></div>
-              <a id="agent-open" class="quiet" href="codex://new" hidden></a></li>
+              <div class="copy-row" id="agent-start-row"><code id="agent-start"></code><button data-copy="agent-start">Copy</button></div>
+              <div class="copy-row"><code id="agent-prompt"></code><button data-copy="agent-prompt">Copy</button></div></li>
           </ol>
         </div>
       </div>
@@ -387,6 +390,8 @@
     <section data-tab="invite" hidden>
       <div class="copy-row"><span>Link</span><code id="invite-link"></code><button data-copy="invite-link">Copy</button></div>
       <p class="note" id="invite-wifi" hidden>Internet invites are down. Friends on your Wi-Fi can still join.</p>
+      <div class="field" id="access-field" hidden><span>Who can join</span><div class="pick" id="access" data-options="friends:Friends,anyone:Anyone,password:Password,invite:Invite link only"></div></div>
+      <label class="field" id="access-password-field" hidden><span>Password</span><input type="password" id="access-password" maxlength="40" autocomplete="new-password" spellcheck="false"></label>
       <div class="gap"></div>
       <ul id="menu-players"></ul>
     </section>

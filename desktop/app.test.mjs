@@ -1,5 +1,5 @@
 // The real Electron app on a throwaway relay and launcher and a stand-in GitHub; run with `xvfb-run -a node --test desktop/app.test.mjs`.
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -19,6 +19,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Below the kernel's ephemeral range (32768 and up), where outgoing connections already hold ports.
 const port = () => 20000 + Math.floor(Math.random() * 12000);
 const children = [];
+/** Where the run saves screenshots for review, when it is given a folder. */
+const CAPTURES = process.env.SANDBOX_CAPTURES;
+const capture = (page, name) => CAPTURES && page.screenshot({ path: join(CAPTURES, `${name}.png`) });
 
 async function until(what, check, ms = 20000) {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) {
@@ -70,37 +73,69 @@ const VOICE_KEY = "sk_test_voice_key";
 const COVER = Buffer.from("/9j/4AAQSkZJRgABAgAAAQABAAD//gARTGF2YzU4LjEzNC4xMDAA/9sAQwAIFBQXFBcbGxsbGxsgHiAhISEgICAgISEhJCQkKioqJCQkISEkJCgoKiouLy4rKyorLy8yMjI8PDk5RkZIVlZn/8QASwABAQAAAAAAAAAAAAAAAAAAAAUBAQAAAAAAAAAAAAAAAAAAAAUQAQAAAAAAAAAAAAAAAAAAAAARAQAAAAAAAAAAAAAAAAAAAAD/wAARCAAIABADASIAAhEAAxEA/9oADAMBAAIRAxEAPwCGAIGP/9k=", "base64");
 
 /** A world shared to Community: an export's zip, as the Worker serves it. */
-const { zipSync } = createRequire(join(DESKTOP, "../package.json"))("fflate");
+const { zipSync, unzipSync } = createRequire(join(DESKTOP, "../package.json"))("fflate");
 const tinyIsle = Buffer.from(zipSync({ "config.json": Buffer.from(JSON.stringify({ name: "Tiny Isle", rules: "open", start: "blank" })), "cover.jpg": COVER, "world/mods/isle/server.ts": Buffer.from("export default { load() {} };") }));
 
 /** GitHub as the app sees it: the latest release and the installer script the app runs to update; Community, with one world and whatever the app shares; and ElevenLabs, which knows one key. */
-const releases = { latest: VERSION, installer: null };
+const releases = { latest: VERSION, installer: null, build: true };
+/** The release's build for this computer, sent slowly enough to watch it download. */
+const BUILD = Buffer.alloc(4 << 20, 7);
 const RELEASES = port();
-const isle = { id: "tinyisle0001", title: "Tiny Isle", description: "One small island.", author: "maker", cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, zip: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/zip`, clip: null, link: "https://site.example/w/tinyisle0001" };
-const community = { shared: null, files: {} };
+const isle = { id: "tinyisle0001", title: "Tiny Isle", description: "One small island.", author: "maker", visibility: "public", votes: 2, plays: 5, players: 3, forks: 0, cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, zip: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/zip`, clip: null, link: "https://site.example/w/tinyisle0001" };
+const community = { shared: null, mod: null, files: {}, session: "session-token-1" };
+const jetpack = { id: "jetpack00001", kind: "mod", name: "jetpack", title: "Jetpack", description: "Fly with space.", author: "maker", votes: 4, uses: 12, forks: 0, cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, link: "https://site.example/m/jetpack00001", readme: "# Jetpack\nHold space to fly. Fuel refills on the ground.", api: '// server.ts, reached with world.use("jetpack")\n/** Fuel left for a player, 0 to 1. */\nfuel(world, player: string): number', builders: ["maker"], parent: null };
+const ACCOUNT = { username: "ana", email: "ana@example.com" };
 const body = (req) => new Promise((resolve) => {
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
   req.on("end", () => resolve(Buffer.concat(chunks)));
 });
 const github = createServer(async (req, res) => {
+  const signedIn = req.headers.authorization === `Bearer ${community.session}`;
+  if (req.url === "/sessions" && req.method === "POST") {
+    const { email, password } = JSON.parse(await body(req));
+    if (email !== ACCOUNT.email || password !== "lava-keep-9") return (res.statusCode = 401), res.end(JSON.stringify({ error: "That email and password don't match." }));
+    return res.end(JSON.stringify({ token: community.session, account: ACCOUNT }));
+  }
+  if (req.url === "/account") return signedIn ? res.end(JSON.stringify({ account: ACCOUNT })) : ((res.statusCode = 401), res.end("{}"));
   if (req.url === "/worlds" && req.method === "POST") {
+    if (!signedIn) return (res.statusCode = 401), res.end("{}");
     community.shared = JSON.parse(await body(req));
     const uploads = Object.fromEntries(Object.keys(community.shared.files).map((kind) => [kind, `http://127.0.0.1:${RELEASES}/upload/${kind}`]));
     return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001", ownerToken: "owner", uploads }));
   }
+  if (req.url === "/mods" && req.method === "POST") {
+    if (!signedIn) return (res.statusCode = 401), res.end("{}");
+    community.mod = JSON.parse(await body(req));
+    const uploads = Object.fromEntries(Object.keys(community.mod.files).map((kind) => [kind, `http://127.0.0.1:${RELEASES}/upload/mod-${kind}`]));
+    return res.end(JSON.stringify({ id: "sharedmod001", link: "https://site.example/m/sharedmod001", uploads }));
+  }
+  if (req.url === "/worlds/sharedmod001/done" && req.method === "POST") return res.end(JSON.stringify({ id: "sharedmod001", kind: "mod", title: community.mod.title, author: ACCOUNT.username, link: "https://site.example/m/sharedmod001" }));
+  if (req.url.split("?")[0] === "/mods") return res.end(JSON.stringify([jetpack].filter((m) => m.readme.toLowerCase().includes(new URL(req.url, "http://x").searchParams.get("q").toLowerCase()))));
+  if (req.url === "/mods/jetpack00001") return res.end(JSON.stringify(jetpack));
   if (req.url.startsWith("/upload/") && req.method === "PUT") {
     community.files[req.url.slice(8)] = await body(req);
     return res.end();
   }
-  if (req.url === "/worlds/shared000001/done" && req.method === "POST") return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001" }));
-  if (req.url === "/worlds") return res.end(JSON.stringify([isle]));
+  if (req.url === "/worlds/shared000001/done" && req.method === "POST") {
+    const { title, description, visibility } = community.shared;
+    return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001", title, description, visibility }));
+  }
+  if (req.url.split("?")[0] === "/worlds") return res.end(JSON.stringify([isle]));
   if (req.url === "/worlds/tinyisle0001") return res.end(JSON.stringify(isle));
   if (req.url === "/files/tinyisle0001/cover") return res.end(COVER);
   if (req.url === "/files/tinyisle0001/zip") return res.end(tinyIsle);
   if (req.url === "/latest") return res.end(JSON.stringify({ tag_name: `v${releases.latest}` }));
   if (req.url === "/hang") return;
   if (req.url === "/install" && releases.installer) return res.end(releases.installer);
+  if (req.url === "/release/Sandbox-linux-x86_64.AppImage" && releases.build) {
+    res.setHeader("content-length", BUILD.length);
+    for (let at = 0; at < BUILD.length && !res.destroyed; at += 1 << 17) {
+      res.write(BUILD.subarray(at, at + (1 << 17)));
+      await sleep(100);
+    }
+    return res.end();
+  }
   if (req.url === "/v1/speech-to-text") {
     res.statusCode = req.headers["xi-api-key"] === VOICE_KEY ? 400 : 401;
     return res.end("{}");
@@ -159,7 +194,7 @@ async function launch(name, env = {}, player = "host") {
   const app = await _electron.launch({
     executablePath: ELECTRON,
     args: [DESKTOP, "--no-sandbox", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
-    env: { ...ownEnv, SANDBOX_STT: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_COMMUNITY: `http://127.0.0.1:${RELEASES}`, ...env },
+    env: { ...ownEnv, SANDBOX_STT: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_RELEASE: `http://127.0.0.1:${RELEASES}/release`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_COMMUNITY: `http://127.0.0.1:${RELEASES}`, ...env },
   });
   await app.context().addInitScript(OPEN_UI);
   const shell = await until("the start screen", async () => app.windows().find((w) => w.url().startsWith("sandbox://app/shell.html")));
@@ -167,6 +202,12 @@ async function launch(name, env = {}, player = "host") {
   return { app, shell, state: () => (existsSync(saved) ? JSON.parse(readFileSync(saved, "utf8")) : {}) };
 }
 
+/** Leaves the game for the title, and waits for its page to close, which it does only once it has sent the host's view of the world. */
+async function leave(app, shell) {
+  const left = app.windows().filter((w) => /^https?:/.test(w.url()));
+  await shell.click("#leave");
+  await Promise.all(left.map((w) => w.isClosed() || w.waitForEvent("close")));
+}
 const gamePage = (app) => until("the game view", async () => app.windows().find((w) => /^https?:/.test(w.url())));
 const menuShown = (shell) => shell.locator("#title .items").isVisible();
 const shown = (page, sel) => page.locator(sel).isVisible();
@@ -240,6 +281,8 @@ describe("hosting and joining", () => {
   test("the title menu, no update, and no worlds yet", async () => {
     await until("the menu", () => menuShown(shell));
     assert.deepEqual(await shell.locator("#title .item:visible").allTextContents(), ["Worlds", "Join world", "Host world", "Settings", "Quit"]);
+    assert.equal(await shell.textContent("#version"), `Sandbox ${VERSION}`);
+    await capture(shell, "title");
     await shell.click("text=Worlds");
     assert.equal(await shown(shell, "#no-games"), true);
   });
@@ -376,26 +419,29 @@ describe("hosting and joining", () => {
     await game.keyboard.press("Escape");
   });
 
-  test("connecting an agent: the player picks theirs, gets its install and start, and Copy prompt copies the one prompt in place", async () => {
+  test("connecting an agent: the player picks theirs, gets its install, a one-time command that sets up the world's folder, and the prompt to paste there", async () => {
     const game = await gamePage(app);
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#rail [data-tab=claude]");
     assert.equal(await shown(game, "#agent-guide"), false);
     await game.locator(".item.agent:not(.build)", { hasText: "Claude Code" }).click();
-    assert.deepEqual([await game.textContent("#agent-install"), await game.textContent("#agent-start")], ["curl -fsSL https://claude.ai/install.sh | bash", "claude --dangerously-skip-permissions"]);
+    const [, folder] = await until("the world's folder", async () => (await game.textContent("#agent-start")).match(/^cd (~\/Sandbox\/[a-z0-9-]+) && claude$/));
+    assert.deepEqual([await game.textContent("#agent-install"), await game.textContent("#agent-start")], ["curl -fsSL https://claude.ai/install.sh | bash", `cd ${folder} && claude`]);
     assert.deepEqual([await game.textContent("#agent-os output"), await game.textContent("#agent-terminal")], ["Linux", "Press Ctrl+Alt+T. Paste this line and press Enter."]);
+    await capture(game, "agent-page");
     await game.click("#agent-os i:last-child");
     assert.deepEqual([await game.textContent("#agent-os output"), await game.textContent("#agent-install")], ["Windows", "irm https://claude.ai/install.ps1 | iex"]);
     assert.match(await game.textContent("#agent-terminal"), /^Press the Windows key, type PowerShell, press Enter\./);
-    const copy = game.locator("[data-copy=claude-prompt]");
+    const copy = game.locator("[data-copy=agent-connect]");
     const box = await copy.boundingBox();
     await copy.click();
     await until("Copied", async () => (await copy.textContent()) === "Copied");
     assert.deepEqual(await copy.boundingBox(), box);
-    const prompt = await app.evaluate(({ clipboard }) => clipboard.readText());
-    assert.equal(prompt, await game.textContent("#claude-prompt"));
-    assert.match(prompt, /^First install the command for our game by running `mkdir -p ~\/\.local\/bin && curl .*\/cli\?name=/);
-    await until("Copy prompt again", async () => (await copy.textContent()) === "Copy prompt");
+    const command = await app.evaluate(({ clipboard }) => clipboard.readText());
+    assert.equal(command, await game.textContent("#agent-connect"));
+    assert.match(command, /^curl -fsSL '[^']+\/join\/[0-9a-f]{12}' \| sh$/);
+    await until("Copy again", async () => (await copy.textContent()) === "Copy");
+    assert.match(await game.textContent("#agent-prompt"), /^We're playing .+\. Read AGENTS\.md in this folder and join as it says\.$/);
     // The page remembers the pick, and Change goes back to the list on that agent.
     await game.keyboard.press("Escape");
     await game.click("#rail [data-tab=claude]");
@@ -407,13 +453,13 @@ describe("hosting and joining", () => {
   });
 
   test("leaving shows the hosted world, live, marked Hosted, with the host's view as its picture", async () => {
-    await shell.click("#leave");
+    await leave(app, shell);
     await shell.click("text=Worlds");
     const [row] = await until("the hosted world", async () => (await rows(shell)).length && rows(shell));
     assert.match(row, /^.+ \| Live \| Hosted$/);
     assert.equal((await rows(shell)).length, 1);
     const shot = async () => (await shell.evaluate(() => dispatchEvent(new Event("focus"))), (await pictures(shell.locator("#games")))[0]);
-    assert.equal(await until("the picture", shot), 960);
+    assert.equal(await until("the picture", shot), 480);
     await shell.keyboard.press("Escape");
   });
 
@@ -433,7 +479,7 @@ describe("hosting and joining", () => {
     assert.match(game.url(), new RegExp(`^${other.url}/`));
     assert.deepEqual(stills, []);
     await until("the saved world", async () => state().recents.find((r) => r.url === other.url && r.name === "Snow Race"));
-    await shell.click("#leave");
+    await leave(app, shell);
   });
 
   test("the joined world is listed as Joined, and Forget removes it", async () => {
@@ -456,23 +502,33 @@ describe("hosting and joining", () => {
     const invited = await gamePage(app);
     await joinAs(invited, "localguest");
     await playing(invited);
-    await shell.click("#leave");
+    await leave(app, shell);
     const bare = await shell.evaluate(async () => (await import("/front.js")).joinLink("sandbox-relay.example.com/r/ab12cd/"));
     assert.equal(bare, "https://sandbox-relay.example.com/r/ab12cd/");
   });
 
-  test("Community hosts a shared world after the trust question, and Share sends a world up with its picture and a clip of its timelapse", async () => {
+  test("Community plays a shared world from the launch screen after the trust question, and the game's Share publishes a world as the signed-in account with its picture and a clip of its timelapse", async () => {
+    await shell.click("[data-to=settings]");
+    await shell.click("#go-account");
+    await shell.fill("#signin-email", ACCOUNT.email);
+    await shell.fill("#signin-password", "lava-keep-9");
+    await shell.click("#signin-go");
+    await until("the account", async () => (await shell.inputValue("#account-username")) === "ana");
+    await shell.keyboard.press("Escape");
+    await shell.keyboard.press("Escape");
+    await until("the app's title", () => menuShown(shell));
+
     await shell.click("text=Worlds");
     await shell.click("#go-community");
-    const game = await gamePage(app);
-    const listed = game.locator("#community-list .item");
+    const listed = shell.locator("#community-list .item");
     await until("the community worlds", async () => (await listed.count()) === 1);
-    assert.equal(await listed.first().textContent(), "Tiny Isleby makerHostRemix");
-    await listed.first().locator("button", { hasText: "Host" }).click();
-    await until("the trust question", async () => (await game.textContent("#ask-note")) === "This world runs code from maker. Only play worlds from people you trust.");
-    await game.click("#ask-yes");
-    await until("Stop the hosted world?", async () => /^Stop .+\?$/.test(await game.textContent("#ask-title")));
-    await game.click("#ask-yes");
+    assert.equal(await listed.first().locator(".what").textContent(), "Tiny Isleby maker · 5 plays · 2 votes");
+    await listed.first().click();
+    await until("the world's screen", async () => (await shell.textContent("#cworld-title")) === "Tiny Isle");
+    await shell.click("#cworld-play");
+    await until("the trust question", async () => (await shell.textContent("#trust-text")) === "This world runs code from maker. Only play worlds from people you trust.");
+    await shell.click("#trust-yes");
+    const game = await gamePage(app);
     await playing(game);
     assert.equal(await game.textContent("#world-name"), "Tiny Isle");
     const worlds = join(dir, "host", "Sandbox", "data", "worlds");
@@ -494,15 +550,50 @@ describe("hosting and joining", () => {
     await press(share.locator("#share-cover i").first());
     await until("the world's picture in the share page", async () => (await share.locator("#share-picture").evaluate((img) => img.naturalWidth)) === 16);
     await share.locator("#share-description").fill("One small island, remixed.");
+    await answer(app, 0);
     await press(share.locator("#share-go"));
     await until("the shared link", async () => (await share.locator("#share-link").textContent()) === "https://site.example/w/shared000001", 60_000);
-    assert.deepEqual([community.shared.title, community.shared.visibility, community.shared.remixOf], ["Tiny Isle", "link", "tinyisle0001"]);
+    assert.deepEqual((await asked(app)).map((q) => q.message), ["Publish Tiny Isle as ana?"]);
+    assert.deepEqual([community.shared.title, community.shared.visibility, community.shared.forkOf], ["Tiny Isle", "link", "tinyisle0001"]);
     assert.deepEqual(community.files.cover, COVER, "the world's picture");
     assert.deepEqual([...community.files.clip.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3]);
     assert.equal(community.files.zip.subarray(0, 2).toString(), "PK");
     assert.equal(await share.locator("#share-go").textContent(), "Update");
-    await shell.click("#leave");
+
+    // One mod of it goes to Community on its own from the Mods page, with the current view as its preview.
+    await game.click("#rail [data-tab=mods]");
+    const isleRow = game.locator("#menu-mods li", { hasText: "isle" });
+    await capture(game, "game-mods-share");
+    await answer(app, 0);
+    await isleRow.locator("button", { hasText: "Share" }).click();
+    await until("the mod's toast", async () => (await game.locator("#toasts .toast").allTextContents()).includes("isle is in Community: https://site.example/m/sharedmod001"), 30_000);
+    assert.deepEqual((await asked(app)).map((q) => q.message), ["Publish the mod isle as ana?"]);
+    assert.deepEqual([community.mod.name, community.mod.forkOf, community.mod.packages, community.mod.needs], ["isle", undefined, {}, []]);
+    assert.deepEqual(Object.keys(unzipSync(community.files["mod-zip"])), ["server.ts"]);
+    assert.deepEqual([...community.files["mod-cover"].subarray(0, 2)], [0xff, 0xd8]);
+    assert.deepEqual(JSON.parse(readFileSync(join(worlds, isleId, "world", "mods", "isle", "community.json"), "utf8")), { id: "sharedmod001", name: "isle", title: "isle", author: "ana", link: "https://site.example/m/sharedmod001" });
+    await leave(app, shell);
     await until("the host's view of Tiny Isle", async () => readFileSync(join(worlds, isleId, "cover.jpg")).length > COVER.length);
+
+    // Community's Mods tab finds a mod by its README and shows what it does, its API and the line that adds it.
+    await shell.click("text=Worlds");
+    await shell.click("#go-community");
+    await shell.locator("#community-tab i").first().click();
+    assert.equal(await shell.textContent("#community-tab output"), "Mods");
+    await shell.fill("#mods-search", "fuel");
+    const mods = shell.locator("#community-list .item");
+    await until("the mods found", async () => (await mods.count()) === 1 && (await mods.first().textContent()).includes("Jetpack"));
+    assert.equal(await mods.first().locator(".value").textContent(), "12 worlds use it");
+    await capture(shell, "shell-community-mods");
+    await mods.first().click();
+    await until("the mod's README", async () => (await shell.textContent("#cworld-readme")).startsWith("# Jetpack"));
+    assert.equal(await shown(shell, "#cworld-play"), false);
+    assert.equal(await shell.textContent("#cworld-add-line"), "./world add_mod id=jetpack00001");
+    assert.match(await shell.textContent("#cworld-api"), /fuel\(world, player: string\): number/);
+    await capture(shell, "shell-community-mod");
+    await shell.keyboard.press("Escape");
+    await shell.keyboard.press("Escape");
+    await shell.keyboard.press("Escape");
   });
 
   test("a hosted world opens straight into the game, and Stop hosting in its World tab ends it and goes back to the title", async () => {
@@ -548,7 +639,7 @@ describe("a friend in a browser", () => {
   };
   /** The host's Host screen with the world they're hosting picked, its settings changed, and hosted again. */
   async function rehost(change) {
-    await shell.click("#leave");
+    await leave(app, shell);
     await shell.click("text=Host world");
     game = await until("the Host screen", async () => app.windows().find((w) => /\/menu(#.*)?$/.test(w.url())));
     await game.locator("#create").waitFor();
@@ -626,7 +717,7 @@ describe("a friend in a browser", () => {
     await page.locator("#menu-button").dispatchEvent("click");
     await page.click("#rail [data-tab=claude]");
     assert.equal(await page.textContent("#agents-off"), "The host turned agents off for this world.");
-    assert.equal(await shown(page, "#claude-prompt"), false);
+    assert.equal(await shown(page, "#agent-connect"), false);
     const { id } = await (await fetch(`${base}/api/info`)).json();
     const key = await page.evaluate((id) => localStorage.getItem(`sandbox-key:${id}`), id);
     const res = await fetch(`${base}/cli/status`, { method: "POST", headers: { authorization: `Bearer ${key}` } });
@@ -690,6 +781,7 @@ describe("starting up", () => {
   after(() => {
     releases.latest = VERSION;
     releases.installer = null;
+    releases.build = true;
   });
 
   test("offline, the menu shows and offers no update", async () => {
@@ -729,6 +821,7 @@ describe("starting up", () => {
 
   test("a download that fails at start opens the menu, offering Update", async () => {
     releases.latest = "9.9.9";
+    releases.build = false;
     const { app, shell, state } = await launch("start-fails");
     await until("the menu", () => menuShown(shell));
     assert.equal(await shown(shell, "#go-update"), true);
@@ -737,17 +830,23 @@ describe("starting up", () => {
     await close(app);
   });
 
-  test("a newer release installs before the menu shows, then the installer opens the new version", async () => {
+  test("a newer release downloads with a bar of the bytes received and installs before the menu shows, then the installer opens the new version", async () => {
     const marker = join(dir, "installed-at-start");
     releases.installer = installer(marker);
+    releases.build = true;
     const { app, shell, state } = await launch("start-updates");
     const pid = app.process().pid;
     const closed = new Promise((r) => app.once("close", r));
     await until("the progress", async () => (await shell.textContent("#busy")) === "Updating to 9.9.9…");
     assert.equal(await menuShown(shell), false);
+    const downloaded = () => shell.locator("#progress i").evaluate((bar) => bar.offsetWidth / bar.parentElement.offsetWidth);
+    await until("the download partway", async () => ((d) => d > 0.2 && d < 0.8)(await downloaded()));
+    await capture(shell, "update-downloading");
+    await until("Installing", async () => (await shell.textContent("#busy")) === "Installing…");
+    assert.equal(await downloaded(), 1);
     await closed;
     await until("the installer", async () => existsSync(marker) && readFileSync(marker, "utf8").trim() === String(pid));
-    assert.equal(readFileSync(`${marker}.release`, "utf8").trim(), "https://github.com/theolundqvist/sandbox/releases/download/v9.9.9");
+    assert.deepEqual(readFileSync(new URL(`${readFileSync(`${marker}.release`, "utf8").trim()}/Sandbox-linux-x86_64.AppImage`)), BUILD);
     assert.equal(state().updatedTo, "9.9.9");
   });
 
@@ -797,7 +896,7 @@ describe("updates", () => {
 
   test("a failed download says so and keeps the app and the game open", async () => {
     const own = state().port;
-    releases.installer = null;
+    releases.build = false;
     await answer(app, 0);
     await game.locator("#menu-update").evaluate((b) => b.click());
     await until("the error", async () => game.getByText("The update didn't download. Check your connection.").isVisible());
@@ -810,11 +909,16 @@ describe("updates", () => {
   test("an update downloads before the app quits, then the installer takes over", async () => {
     const marker = join(dir, "installed");
     releases.installer = installer(marker);
+    releases.build = true;
     const own = state().port;
     const pid = app.process().pid;
     await answer(app, 0);
     const closed = new Promise((r) => app.once("close", r));
-    await game.locator("#menu-update").evaluate((b) => b.click());
+    await game.locator("#menu-button").dispatchEvent("click");
+    await game.click("#menu-update");
+    await until("the download partway in the game's menu", () => game.locator("#menu-update").evaluate((b) => b.textContent === "Updating…" && ((d) => d > 0.2 && d < 0.8)(b.querySelector(".bar i").offsetWidth / b.querySelector(".bar").offsetWidth)));
+    assert.equal(await game.getByText("The update didn't download. Check your connection.").count(), 0, "the last attempt's failure is gone");
+    await capture(game, "update-in-game");
     await closed;
     await until("the installer", async () => existsSync(marker) && readFileSync(marker, "utf8").trim() === String(pid));
     assert.equal(await portAnswers(own), false);
@@ -836,7 +940,7 @@ describe("updates", () => {
   });
 
   test("an update while in a friend's world brings the player back into it", async () => {
-    await shell.click("#leave");
+    await leave(app, shell);
     await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
@@ -1157,7 +1261,7 @@ describe("Continue", () => {
   before(async () => ({ app, shell, state } = await launch("continue", {}, "returner")));
   after(() => close(app));
 
-  test("the title starts on Continue, naming the world last played, hosted or joined and after a restart, and it opens that world; a forgotten world takes it away", async () => {
+  test("the title starts on Continue, which opens the world last played, hosted or joined and after a restart; a forgotten world takes it away", async () => {
     const title = () => shell.locator("#title .item:visible").allTextContents();
     const focused = () => shell.evaluate(() => document.activeElement.textContent);
     /** The game view just opened, not the one just left, which closes as it goes. */
@@ -1167,31 +1271,31 @@ describe("Continue", () => {
     await game.click("#create-go");
     await playing(game);
     const world = await game.textContent("#world-name");
-    await shell.click("#leave");
+    await leave(app, shell);
     // The title comes back under the pointer, which moves the focus as it hovers; click rather than press Enter.
-    await until("Continue on the hosted world", async () => (await title())[0] === `Continue${world}`);
+    await until("Continue on the hosted world", async () => (await title())[0] === "Continue");
     await shell.click("#go-last");
     game = await opened(game);
     await playing(game);
     assert.equal(await game.textContent("#world-name"), world);
-    await shell.click("#leave");
+    await leave(app, shell);
 
     await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
     await playing(await opened(game));
     await until("Snow Race played last", async () => state().last === other.url);
-    await shell.click("#leave");
+    await leave(app, shell);
     await close(app);
     ({ app, shell, state } = await launch("continue", {}, "returner"));
-    await until("Continue on the joined world", async () => (await focused()) === "ContinueSnow Race");
-    assert.deepEqual(await title(), ["ContinueSnow Race", "Worlds", "Join world", "Host world", "Settings", "Quit"]);
+    await until("Continue on the joined world", async () => (await focused()) === "Continue");
+    assert.deepEqual(await title(), ["Continue", "Worlds", "Join world", "Host world", "Settings", "Quit"]);
     await shell.keyboard.press("Enter");
     game = await gamePage(app);
     await playing(game);
     assert.equal(await game.textContent("#world-name"), "Snow Race");
     assert.ok(game.url().startsWith(other.url));
-    await shell.click("#leave");
+    await leave(app, shell);
 
     await shell.click("text=Worlds");
     await until("Snow Race listed", async () => (await rows(shell)).some((r) => r.startsWith("Snow Race")));
@@ -1210,7 +1314,7 @@ describe("building with an agent", () => {
   let app, shell, game;
   before(async () => {
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(home, ".local", "bin", "claude"), `#!/bin/sh\necho "$$" > '${said}'\necho "claude $1"\nprintf '%s\\n' "$2" | cut -c1-40\nexec sleep 600\n`, { mode: 0o755 });
+    writeFileSync(join(home, ".local", "bin", "claude"), `#!/bin/sh\necho "$$" > '${said}'\necho "claude in $PWD"\nprintf '%s\\n' "$1" | cut -c1-40\nexec sleep 600\n`, { mode: 0o755 });
     ({ app, shell } = await launch("builder", { HOME: home, SHELL: "/bin/sh" }, "builder"));
     await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
@@ -1220,7 +1324,7 @@ describe("building with an agent", () => {
   });
   after(() => close(app));
 
-  test("Build with asks first in the app's own dialog, then runs the agent beside the game with the world's prompt, and Stop ends it", async () => {
+  test("Build with asks first in the app's own dialog, then sets up the world's folder and runs the agent there beside the game with the prompt, and Stop ends it", async () => {
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#rail [data-tab=claude]");
     assert.deepEqual(await game.locator(".item.agent.build").allTextContents(), ["Build with Claude Code", "Build with Codex"]);
@@ -1235,7 +1339,7 @@ describe("building with an agent", () => {
     await game.click("text=Build with Claude Code");
     await until("the menu closed", async () => !(await shown(game, "#menu")));
     const pane = await until("the agent pane", async () => app.windows().find((w) => w.url().endsWith("/agent.html")));
-    await until("the agent started with the prompt", async () => /claude --dangerously-skip-permissions\s*First install the command for our game/.test(await pane.textContent("#term")));
+    await until("the agent started in the world's folder with the prompt", async () => /claude in \S+\/Sandbox\/[a-z0-9-]+\s*We're playing/.test(await pane.textContent("#term")));
     assert.equal(await pane.textContent("#name"), "Claude Code");
     const pid = Number(readFileSync(said, "utf8"));
     await pane.click("#close");
@@ -1299,7 +1403,7 @@ describe("the host closes the game", () => {
   });
 
   test("opening it again from Worlds waits for the host, keeps its name, and goes back in by itself once the host is back", async () => {
-    await shell.click("#leave");
+    await leave(app, shell);
     await shell.click("text=Worlds");
     await until("the world", async () => (await rows(shell)).some((r) => r.startsWith("Snow Race")));
     await shell.click("#games .item >> text=Snow Race");
@@ -1314,7 +1418,7 @@ describe("the host closes the game", () => {
   });
 
   test("Back stops waiting", async () => {
-    await shell.click("#leave");
+    await leave(app, shell);
     await stopLauncher(otherLauncher);
     await until("the world gone", async () => !(await fetch(`${other.url}/api/info`)).ok);
     await shell.click("text=Worlds");
@@ -1341,5 +1445,397 @@ describe("the installer", () => {
     assert.equal(await new Promise((r) => run.once("exit", r)), 1);
     assert.match(said, /The download failed\. Check your connection, then update again\./);
     await until("the app opened", async () => existsSync(join(home, "opened")), 5000);
+  });
+});
+
+describe("usage stats", () => {
+  /** Community as usage stats see it: it signs the computer up and keeps every batch, with who sent it. */
+  const STATS = port();
+  const batches = [];
+  const stats = createServer(async (req, res) => {
+    if (req.method === "POST" && req.url === "/installs") return res.end(JSON.stringify({ id: "install00001", token: "install-token-1" }));
+    if (req.method === "POST" && req.url === "/events") {
+      batches.push({ auth: req.headers.authorization, raw: String(await body(req)) });
+      res.statusCode = 204;
+      return res.end();
+    }
+    res.statusCode = 404;
+    res.end("{}");
+  }).listen(STATS);
+  const env = { SANDBOX_COMMUNITY: `http://127.0.0.1:${STATS}` };
+  /** Everything the tests type, none of which may ever be sent. */
+  const typed = [];
+  const type = (page, sel, value) => (typed.push(value), page.fill(sel, value));
+  const sent = (surface) => batches.flatMap((b) => JSON.parse(b.raw).events.map((e) => ({ ...e, app: JSON.parse(b.raw).app }))).filter((e) => e.surface === surface);
+  /** Whether `steps` happened in this order, other events between them. */
+  const inOrder = (events, steps) => {
+    let at = 0;
+    for (const e of events) if (at < steps.length && e.screen === steps[at][0] && e.action === steps[at][1]) at++;
+    return at === steps.length || `stopped before ${JSON.stringify(steps[at])} in ${JSON.stringify(events.map((e) => [e.screen, e.action]))}`;
+  };
+  const quit = async (app, shell) => {
+    await answer(app, 0);
+    const closed = app.waitForEvent("close");
+    await shell.click("#quit");
+    await closed;
+  };
+  after(() => stats.close());
+
+  test("a first launch through naming, Settings, Join and hosting a world lands as each screen, button and step, under the computer's install, and nothing typed", async () => {
+    const { app, shell } = await launch("newcomer", env, null);
+    await type(shell, "#name-first", "Newcomer7");
+    await shell.click("#name-go");
+    await until("the menu", () => menuShown(shell));
+    await shell.click("text=Settings");
+    await shell.keyboard.press("Escape");
+    await shell.click("text=Join world");
+    await type(shell, "#join-link", "http://127.0.0.1:1/#invite=SECRETINVITE42");
+    await shell.press("#join-link", "Enter");
+    await shell.locator("#waiting").waitFor();
+    await shell.click("#waiting-back");
+    await until("the menu", () => menuShown(shell));
+    await shell.click("text=Host world");
+    const game = await gamePage(app);
+    await game.locator("#create").waitFor();
+    await type(game, "#create-name", "Secret Valley");
+    await type(game, "#create-password", "hunter22");
+    await game.click("#create-start i:last-child");
+    await game.click("#create-go");
+    await game.waitForURL(/:\d+\/(#.*)?$/);
+    await leave(app, shell);
+    await until("the menu", () => menuShown(shell));
+    await quit(app, shell);
+
+    assert.equal(
+      inOrder(sent("app"), [["name", "screen"], ["name", "name-go"], ["name", "named"], ["title", "screen"], ["title", "to-settings"], ["settings", "screen"], ["title", "to-join"], ["join", "screen"], ["join", "join"], ["waiting", "screen"], ["waiting", "waiting-back"], ["title", "go-new"]]),
+      true,
+    );
+    assert.equal(inOrder(sent("menu"), [["create", "screen"], ["create", "create-start"], ["create", "create-go"], ["create", "hosted"]]), true);
+    assert.deepEqual(sent("menu").find((e) => e.action === "create-start").props, { value: "hills" });
+    assert.deepEqual(sent("app")[0].app, { version: VERSION, os: process.platform });
+    assert.equal(sent("menu")[0].app.os, process.platform);
+    assert.deepEqual([...new Set(batches.map((b) => b.auth))], ["Bearer install-token-1"]);
+    assert.ok(batches.every((b) => JSON.parse(b.raw).events.length <= 50));
+    for (const b of batches) for (const value of typed) assert.equal(b.raw.toLowerCase().includes(value.toLowerCase()), false, `${JSON.stringify(value)} was sent`);
+  });
+
+  test("with Share usage stats off, nothing more is sent", async () => {
+    const { app, shell } = await launch("newcomer", env);
+    await shell.click("text=Settings");
+    await until("the setting", async () => (await shell.textContent("#share-usage output")) === "On");
+    await shell.click("#share-usage i:last-child");
+    assert.equal(await shell.textContent("#share-usage output"), "Off");
+    const before = batches.length;
+    await shell.keyboard.press("Escape");
+    await shell.click("text=Worlds");
+    await shell.keyboard.press("Escape");
+    await shell.click("text=Join world");
+    await shell.keyboard.press("Escape");
+    await quit(app, shell);
+    await sleep(1000);
+    const after = batches.slice(before).flatMap((b) => JSON.parse(b.raw).events);
+    assert.deepEqual(after.filter((e) => ["saved", "join"].includes(e.screen) || e.action === "share-usage"), []);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "newcomer", "Sandbox", "data", "usage.json"), "utf8")), { share: false });
+  });
+});
+
+describe("playtest", () => {
+  /** Screenshots and frame times go where CI uploads them from. */
+  const out = process.env.SANDBOX_CAPTURES ?? join(dir, "captures");
+  let app, shell, state, base, key, game;
+  before(async () => {
+    mkdirSync(out, { recursive: true });
+    ({ app, shell, state } = await launch("playtest"));
+    await shell.click("text=Host world");
+    game = await gamePage(app);
+    await game.locator("#create-go").waitFor();
+    await game.keyboard.press("Enter");
+    await game.waitForURL(/:\d+\/(#.*)?$/);
+    await playing(game);
+    base = `http://127.0.0.1:${state().port}`;
+    key = await game.evaluate(() => Object.entries(localStorage).find(([k]) => k.startsWith("sandbox-key:"))[1]);
+  });
+  after(async () => {
+    await close(app);
+    const worlds = join(dir, "playtest", "Sandbox", "data", "worlds");
+    for (const world of existsSync(worlds) ? readdirSync(worlds) : []) if (existsSync(join(worlds, world, "playtest.log"))) cpSync(join(worlds, world, "playtest.log"), join(out, "playtest.log"));
+    cpSync(join(dir, "playtest", "Sandbox", "server.log"), join(out, "server.log"));
+  });
+
+  const call = async (name, args = {}) => {
+    const form = new FormData();
+    for (const [k, v] of Object.entries(args)) form.append(k, typeof v === "string" ? v : JSON.stringify(v));
+    const res = await fetch(`${base}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form });
+    return res.headers.get("content-type") === "image/jpeg" ? { status: res.status, image: Buffer.from(await res.arrayBuffer()) } : { status: res.status, text: (await res.text()).split("\n\nWhen you are done")[0] };
+  };
+  /** The playtest pauses itself whenever the host's own game slows down, which a busy CI machine does; the agent then simply tries again. */
+  const pauses = [];
+  const retried = async (name, args) => {
+    for (const end = Date.now() + 120000; ; await sleep(1000)) {
+      const res = await call(name, args);
+      if (!(res.status === 422 && res.text.startsWith("paused:")) || Date.now() > end) return res;
+      pauses.push({ name, at: Date.now() });
+    }
+  };
+  /** The host's own game, as its perf reports every 2 s say. */
+  const frames = async (seconds) => {
+    const seen = [];
+    for (const end = Date.now() + seconds * 1000; Date.now() < end; await sleep(1000)) {
+      const p = JSON.parse((await call("perf")).text.split("\n\n")[0]).players.host;
+      if (p && !seen.some((s) => s.fps === p.fps && s.p95FrameMs === p.p95FrameMs && s.slowestFrameMs === p.slowestFrameMs)) seen.push({ fps: p.fps, p95FrameMs: p.p95FrameMs, slowestFrameMs: p.slowestFrameMs });
+    }
+    const sorted = (k) => seen.map((s) => s[k]).sort((a, b) => a - b);
+    return { reports: seen.length, fpsMedian: sorted("fps")[seen.length >> 1], p95FrameMsMedian: sorted("p95FrameMs")[seen.length >> 1], p95FrameMsWorst: sorted("p95FrameMs").at(-1) };
+  };
+  /** The playtest's own processes: the live world starts its copy of the world and its hidden game each leading a process group. Chromium rewrites its environment block, so the hidden game is found by its parent. */
+  const playtestProcesses = () => {
+    const read = (pid, file) => {
+      try {
+        return readFileSync(`/proc/${pid}/${file}`, "utf8");
+      } catch {
+        return "";
+      }
+    };
+    const procs = readdirSync("/proc").filter((p) => /^\d+$/.test(p)).map((pid) => {
+      const f = read(pid, "stat").split(") ")[1]?.split(" ") ?? [];
+      return { pid, state: f[0], parent: f[1], group: f[2], env: read(pid, "environ") };
+    });
+    const worlds = new Set(procs.filter((p) => p.env.includes("SANDBOX_PLAYTEST_APP=") && p.env.includes(`${join(dir, "playtest")}`)).map((p) => p.pid));
+    const groups = new Set(procs.filter((p) => worlds.has(p.parent) && p.group === p.pid).map((p) => p.pid));
+    return procs.filter((p) => groups.has(p.group));
+  };
+  /** Every window the X server shows, and the one with the keyboard. */
+  const screen = async () => {
+    const run = (...args) => new Promise((resolve) => execFile("xdotool", args, (_e, stdout) => resolve(stdout.trim())));
+    return { visible: (await run("search", "--onlyvisible", "--name", "")).split("\n").sort(), focus: await run("getwindowfocus"), appFocused: await app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().some((w) => w.isFocused())) };
+  };
+
+  test("an agent plays a hidden copy: w moves its view in the screenshot, with no new window and the player's window keeping focus", async () => {
+    const without = await frames(20);
+    const before = await screen();
+    const started = await retried("playtest");
+    assert.equal(started.status, 200, started.text);
+    assert.match(started.text, /^Started a playtest: a hidden copy of the world as it is now, with you in it as host\./);
+    assert.ok(playtestProcesses().length >= 2);
+    const first = await retried("screenshot");
+    assert.equal(first.status, 200, first.text);
+    const moved = await retried("play", { keys: "w", ms: 1000 });
+    assert.match(moved.text, /^In the playtest you held w for 1000 ms\. You moved from \(.+\) to \(.+\)\./);
+    const turned = await retried("play", { look: "400,200", ms: 300 });
+    assert.equal(turned.status, 200, turned.text);
+    const second = await retried("screenshot");
+    writeFileSync(join(out, "playtest-before.jpg"), first.image);
+    writeFileSync(join(out, "playtest-after.jpg"), second.image);
+    // Share of pixels that changed clearly: turning and tilting the camera moves the horizon and the ground; without a look it stays under 1%.
+    const changed = await app.evaluate(({ nativeImage }, [a, b]) => {
+      const [x, y] = [a, b].map((s) => nativeImage.createFromBuffer(Buffer.from(s, "base64")).toBitmap());
+            let n = 0;
+      let total = 0;
+      for (let i = 0; i < x.length; i += 4, total++) if (Math.abs(x[i] - y[i]) + Math.abs(x[i + 1] - y[i + 1]) + Math.abs(x[i + 2] - y[i + 2]) > 60) n++;
+      return n / total;
+    }, [first.image.toString("base64"), second.image.toString("base64")]);
+    const withPlaytest = await frames(20);
+    const after = await screen();
+    writeFileSync(join(out, "frametime.json"), JSON.stringify({ without, withPlaytest, pauses, screen: { before, after }, moved: moved.text, turned: turned.text, changed }, null, 2));
+    assert.deepEqual(after, before);
+    assert.ok(changed > 0.05, `only ${changed} of the view changed`);
+    assert.equal((await call("playtest", { action: "stop" })).text, "The playtest stopped and its copy of the world is gone.");
+    await until("the playtest's processes gone", async () => !playtestProcesses().length, 10000);
+  });
+
+  test("the player's game slowing down pauses the playtest, and it resumes once their game is smooth again", async () => {
+    assert.equal((await retried("playtest")).status, 200);
+    // Every frame of the player's own game takes 400 ms more, until the test lets go.
+    await game.evaluate(() => {
+      window.hog = true;
+      const frame = () => {
+        if (!window.hog) return;
+        for (const until = performance.now() + 400; performance.now() < until; );
+        requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    });
+    const seen = [];
+    const paused = await until("the playtest to pause", async () => {
+      const res = await call("play", { ms: 10 });
+      const host = JSON.parse((await call("perf")).text.split("\n\n")[0]).players.host;
+      seen.push({ status: res.status, text: res.text.slice(0, 60), fps: host?.fps, secondsOld: host?.secondsOld, at: Date.now() });
+      writeFileSync(join(out, "guard.json"), JSON.stringify(seen, null, 2));
+      return res.text.startsWith("paused:") && res.text;
+    }, 90000);
+    assert.match(paused, /^paused: your player's game needs the computer\./);
+    const stopped = playtestProcesses().map((p) => p.state);
+    await game.evaluate(() => (window.hog = false));
+    const resumed = await until("the playtest to resume", async () => {
+      const res = await call("play", { ms: 10 });
+      const host = JSON.parse((await call("perf")).text.split("\n\n")[0]).players.host;
+      seen.push({ status: res.status, text: res.text.slice(0, 60), fps: host?.fps, secondsOld: host?.secondsOld, resuming: true });
+      writeFileSync(join(out, "guard.json"), JSON.stringify(seen, null, 2));
+      return res.status === 200;
+    }, 120000);
+    const log = JSON.parse(readFileSync(join(out, "frametime.json"), "utf8"));
+    writeFileSync(join(out, "frametime.json"), JSON.stringify({ ...log, guard: { stoppedStates: stopped, resumed: !!resumed } }, null, 2));
+    assert.ok(stopped.length >= 2 && stopped.every((s) => s === "T"), JSON.stringify(stopped));
+  });
+
+  test("quitting the app ends a running playtest", async () => {
+    assert.ok(playtestProcesses().length >= 2);
+    await close(app);
+    app = null;
+    await until("the playtest's processes gone", async () => !playtestProcesses().length, 15000);
+  });
+});
+
+describe("world list", () => {
+  let app, shell, state, own, hostKey, hosted;
+  before(async () => ({ app, shell, state } = await launch("lister", {}, "lister")));
+  after(() => close(app));
+  const worldsDir = () => join(dir, "lister", "Sandbox", "data", "worlds");
+  const coversDir = () => join(dir, "lister", "Sandbox", "covers");
+  const hostState = () => menu(`http://127.0.0.1:${own}`, hostKey, "state");
+  const picturesNow = async () => (await shell.evaluate(() => dispatchEvent(new Event("focus"))), pictures(shell.locator("#games")));
+  const renaming = () => shell.locator("#games .renaming input");
+
+  test("a world played 25 seconds keeps a picture of its 3D view, and every world in Worlds shows its own, joined ones from this computer", async () => {
+    await shell.click("text=Host world");
+    const game = await gamePage(app);
+    await game.click("#create-go");
+    await playing(game);
+    own = state().port;
+    hostKey = JSON.parse(readFileSync(join(dir, "lister", "Sandbox", "data", "launcher.json"), "utf8")).hostKey;
+    hosted = (await hostState()).running;
+    const cover = join(worldsDir(), hosted.id, "cover.jpg");
+    assert.equal(existsSync(cover), false);
+    // The first picture comes while playing, about 20 s in, not only on leaving.
+    await until("the picture taken while playing", async () => existsSync(cover), 40000);
+    assert.deepEqual([...readFileSync(cover).subarray(0, 2)], [0xff, 0xd8]);
+    await capture(game, "worldlist-playing");
+    await leave(app, shell);
+
+    await shell.click("text=Join world");
+    await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
+    await shell.press("#join-link", "Enter");
+    await playing(await gamePage(app));
+    await leave(app, shell);
+    await until("the joined world's picture on this computer", async () => existsSync(coversDir()) && readdirSync(coversDir()).length === 1);
+
+    await shell.click("text=Worlds");
+    await until("both worlds", async () => (await rows(shell)).length === 2);
+    assert.deepEqual(await until("both pictures", async () => ((await picturesNow()).every((w) => w === 480) ? picturesNow() : null)), [480, 480]);
+    await capture(shell, "worldlist-worlds");
+  });
+
+  test("F2 renames a hosted world and a joined one in place: Enter keeps a name, Esc and an empty name don't, and the world keeps its id, invite and players", async () => {
+    const hostedRow = `#games .item[data-key="local:${hosted.id}"]`;
+    const joinedRow = `#games .item[data-key="${other.url}"]`;
+    const name = (sel) => shell.locator(`${sel} .what`).textContent();
+    const before = await name(hostedRow);
+
+    await shell.focus(hostedRow);
+    await shell.keyboard.press("F2");
+    assert.equal(await renaming().inputValue(), before);
+    await renaming().fill("");
+    await renaming().press("Enter");
+    assert.equal(await renaming().isVisible(), true);
+    await renaming().fill("Lava Keep");
+    await capture(shell, "worldlist-renaming");
+    await renaming().press("Escape");
+    assert.equal(await renaming().count(), 0);
+    assert.equal(await name(hostedRow), before);
+    assert.equal(await shell.locator("#games").isVisible(), true);
+
+    await shell.keyboard.press("F2");
+    await renaming().fill("Lava Keep");
+    await renaming().press("Enter");
+    await until("the new name", async () => (await name(hostedRow)) === "Lava Keep");
+    assert.equal(await shell.evaluate(() => document.activeElement.dataset.key), `local:${hosted.id}`);
+    const after = await hostState();
+    assert.deepEqual([after.running.id, after.running.invite, after.running.link], [hosted.id, hosted.invite, hosted.link]);
+    assert.equal(JSON.parse(readFileSync(join(worldsDir(), hosted.id, "config.json"), "utf8")).name, "Lava Keep");
+    const friend = await guest(`http://127.0.0.1:${own}`, hosted.invite, "friend");
+    friend.close();
+
+    await shell.focus(joinedRow);
+    await shell.keyboard.press("F2");
+    await renaming().fill("Ana's race");
+    await renaming().press("Enter");
+    await until("the joined world's new name", async () => (await name(joinedRow)) === "Ana's race");
+    assert.equal(state().labels[other.url], "Ana's race");
+    assert.ok((await menu(other.base, other.key, "state")).worlds.some((w) => w.name === "Snow Race"));
+    assert.deepEqual(await picturesNow(), [480, 480]);
+    await capture(shell, "worldlist-renamed");
+
+    await shell.click(hostedRow);
+    const game = await gamePage(app);
+    await playing(game);
+    assert.equal(await game.textContent("#world-name"), "Lava Keep");
+    await leave(app, shell);
+  });
+});
+
+describe("a slow mod", () => {
+  const out = process.env.SANDBOX_CAPTURES ?? join(dir, "captures");
+  let app, shell, state, base, key, game;
+  before(async () => {
+    mkdirSync(out, { recursive: true });
+    ({ app, shell, state } = await launch("slowmod"));
+    await shell.click("text=Host world");
+    game = await gamePage(app);
+    await game.locator("#create-go").waitFor();
+    await game.keyboard.press("Enter");
+    await game.waitForURL(/:\d+\/(#.*)?$/);
+    await playing(game);
+    base = `http://127.0.0.1:${state().port}`;
+    key = await game.evaluate(() => Object.entries(localStorage).find(([k]) => k.startsWith("sandbox-key:"))[1]);
+  });
+  after(async () => {
+    await close(app);
+  });
+
+  const call = async (name, args = {}) => {
+    const form = new FormData();
+    for (const [k, v] of Object.entries(args)) form.append(k, typeof v === "string" ? v : JSON.stringify(v));
+    const res = await fetch(`${base}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form });
+    return (await res.text()).split("\n\nWhen you are done")[0];
+  };
+  const fps = async () => JSON.parse((await call("perf")).split("\n\n")[0]).players.host?.fps ?? 0;
+  const hog = `import type { ClientMod } from "../../api";\nexport default { frame() { for (const until = performance.now() + 400; performance.now() < until; ); } } satisfies ClientMod;`;
+  const calm = `import type { ClientMod } from "../../api";\nexport default {} satisfies ClientMod;`;
+  const timeline = [];
+  const note = async (what) => {
+    const at = await fps();
+    timeline.push({ what, fps: at, at: Date.now() });
+    writeFileSync(join(out, "slow-mod.json"), JSON.stringify(timeline, null, 2));
+    return at;
+  };
+
+  test("a mod whose frame hook takes 400 ms is fixed by its next reload, and unloaded by deleting it, each time back to the game's frame rate", async () => {
+    await sleep(6000);
+    const normal = await note("before");
+    // Overwriting a file takes the hash it was read at.
+    const write = async (content) => {
+      const read = await call("read_file", { path: "mods/hog/client.ts" });
+      const base_hash = read.startsWith("hash: ") ? read.split("\n")[0].slice(6) : undefined;
+      const res = await call("write_file", { path: "mods/hog/client.ts", content, ...(base_hash && { base_hash }) });
+      assert.doesNotMatch(res, /already exists|rejected/, res);
+    };
+    const slowDown = async (version) => {
+      await write(hog);
+      assert.match(await call("reload", { mod: "hog" }), new RegExp(`^hog v${version} is live`));
+      await until("the game to slow down", async () => (await fps()) <= 3, 30000);
+      await note(`hog v${version} slow`);
+    };
+    const recovered = (what) => until(what, async () => (await note(what)) >= normal * 0.8, 60000);
+
+    await slowDown(1);
+    await write(calm);
+    assert.match(await call("reload", { mod: "hog" }), /^hog v2 is live/);
+    await recovered("fixed by a reload");
+
+    await slowDown(3);
+    const base_hash = (await call("read_file", { path: "mods/hog/client.ts" })).split("\n")[0].slice(6);
+    assert.equal(await call("delete_file", { path: "mods/hog/client.ts", base_hash }), "Deleted mods/hog/client.ts.");
+    assert.match(await call("reload", { mod: "hog" }), /^Unloaded hog/);
+    await recovered("unloaded");
   });
 });

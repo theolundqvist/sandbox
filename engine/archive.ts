@@ -106,18 +106,21 @@ function snapshot(path: string, into: string, secrets: string[], community: bool
   return readFileSync(into);
 }
 
-async function pack(dir: string, community = false, publicSecrets?: unknown, publicContent: (string | Uint8Array)[] = []) {
+/**
+ * The world's files as an export holds them, by path; `leaveOut` names top-level files to skip. A Community export also
+ * refuses anything that looks like a key in `publicContent`, the files, the databases and the Git history.
+ */
+async function collect(dir: string, community: boolean, scratch: string, leaveOut: Record<string, true>, publicSecrets?: unknown, publicContent: (string | Uint8Array)[] = []) {
   const config = readJson(join(dir, "config.json"));
   const playerKeys = Object.keys(readJson(join(dir, "keys.json")));
   const secrets = [config.hostKey, config.invite, ...playerKeys].filter(Boolean);
   const guard = community ? publicGuard(config, playerKeys, publicSecrets) : null;
   if (guard) for (const content of publicContent) guard.check(content, "publication details");
-  const scratch = mkdtempSync(join(tmpdir(), "sandbox-export-"));
   const files: ArchiveFiles = {};
   const add = async (rel: string) => {
-    if (community && PRIVATE[rel]) return;
+    if (leaveOut[rel]) return;
     const path = join(dir, rel);
-    if (rel === "config.json") files[rel] = json({ name: config.name, rules: config.rules, start: config.start });
+    if (rel === "config.json") files[rel] = json({ name: config.name, rules: config.rules, start: config.start, ...(config.forkOf && { forkOf: config.forkOf }) });
     else if (rel === "mods.json") {
       // Server builds are named by absolute path; relative to build/ they point at the builds wherever the world lands.
       const portable = (b: Build) => ({ ...b, server: b.server && relative(join(dir, "build"), resolve(dir, "build", b.server)).split(sep).join("/") });
@@ -154,13 +157,32 @@ async function pack(dir: string, community = false, publicSecrets?: unknown, pub
       else if (entry.isFile()) await add(child);
     }
   };
+  // Whatever points is read before what it points to, so a reload landing mid-export can't leave it dangling: mods.json before the builds, git's refs before its objects.
+  for (const part of [...FILES, ...DIRS]) if (existsSync(join(dir, part))) statSync(join(dir, part)).isDirectory() ? await walk(part) : await add(part);
+  if (existsSync(join(dir, "games"))) for (const id of readdirSync(join(dir, "games"))) if (GAME_ID.test(id) && existsSync(join(dir, "games", id, "world.sqlite"))) await add(`games/${id}/world.sqlite`);
+  for (const rel of objects) await walk(rel);
+  if (guard) await checkHistory(scratch, files, guard.check, guard.overlap);
+  return files;
+}
+
+async function pack(dir: string, community: boolean, publicSecrets?: unknown, publicContent: (string | Uint8Array)[] = []) {
+  const scratch = mkdtempSync(join(tmpdir(), "sandbox-export-"));
   try {
-    // Whatever points is read before what it points to, so a reload landing mid-export can't leave it dangling: mods.json before the builds, git's refs before its objects.
-    for (const part of [...FILES, ...DIRS]) if (existsSync(join(dir, part))) statSync(join(dir, part)).isDirectory() ? await walk(part) : await add(part);
-    if (existsSync(join(dir, "games"))) for (const id of readdirSync(join(dir, "games"))) if (GAME_ID.test(id) && existsSync(join(dir, "games", id, "world.sqlite"))) await add(`games/${id}/world.sqlite`);
-    for (const rel of objects) await walk(rel);
-    if (guard) await checkHistory(scratch, files, guard.check, guard.overlap);
-    return zipSync(files);
+    return zipSync(await collect(dir, community, scratch, community ? PRIVATE : {}, publicSecrets, publicContent));
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/** A running world's copy in another folder, as an export would carry it, without its record or picture: a playtest's own world. */
+export async function copyWorld(dir: string, into: string) {
+  const scratch = mkdtempSync(join(tmpdir(), "sandbox-copy-"));
+  try {
+    for (const [name, entry] of Object.entries(await collect(dir, false, scratch, { "record.sqlite": true, "cover.jpg": true }))) {
+      const path = join(into, name);
+      mkdirSync(name.endsWith("/") ? path : dirname(path), { recursive: true });
+      if (!name.endsWith("/")) writeFileSync(path, Array.isArray(entry) ? entry[0] : entry);
+    }
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -238,10 +260,10 @@ function unpack(zip: Uint8Array, into: string) {
     if (!name.endsWith("/")) writeFileSync(path, data);
   }
   if (existsSync(join(into, "world/.git/HEAD"))) writeFileSync(join(into, "world/.git/config"), gitConfig(files["world/.git/config"]));
-  return { name: config.name, rules: config.rules, start: config.start };
+  return { name: config.name, rules: config.rules, start: config.start, ...(typeof config.forkOf === "string" && { forkOf: config.forkOf }) };
 }
 
-self.onmessage = async ({ data: msg }) => {
+if (!Bun.isMainThread) self.onmessage = async ({ data: msg }) => {
   try {
     if (msg.t === "pack") {
       const zip = await pack(msg.dir, msg.community === true, msg.secrets, msg.publicContent);

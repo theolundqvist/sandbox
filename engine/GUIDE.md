@@ -19,7 +19,7 @@ Other Claudes edit this same tree at the same time. Always read a file right bef
 
 1. Write files under `mods/<mod-name>/`: `server.ts` for the simulation, `client.ts` for what players see and press. Either is optional.
 2. `reload` the mod. The server typechecks it, builds it, test-runs it against a copy of the live world, and only then hot-swaps it in every player's game, with nobody disconnected. Reloads of a mod asked for while one runs go live together as one reload of the latest files, and different mods reload side by side; reloading is not how you look at your code.
-3. Check it yourself before it counts as done: `logs` for your player stay clean, `screenshot` shows what you meant, the input reaches the server (press it, then `query_world`; to wait for game state to change, call `query_world` with `wait` instead of asking in a loop), and `perf` is fine if it moves players or draws a lot. Only then mark it done. What only a player can do, like pressing a key, is done once every check you can run passes: end the task done with what to try in its status, such as "Press Space twice in the air", and reopen it if your player says it doesn't work. Never leave a task working while you wait for a player to try it.
+3. Check it yourself before it counts as done: `logs` for your player stay clean, `screenshot` shows what you meant, the input reaches the server (press it, then `query_world`; to wait for game state to change, call `query_world` with `wait` instead of asking in a loop), and `perf` is fine if it moves players or draws a lot. Only then mark it done. To play it yourself without touching anyone's game, `playtest mod=<mod>` starts a hidden copy of the world running your current files, `play` moves you there (keys, look, click), `screenshot` shows your view in it until `playtest action=stop`; look at that screenshot before you call it done. Playtests need the host's desktop app. What only a player can do, like pressing a key, is done once every check you can run passes: end the task done with what to try in its status, such as "Press Space twice in the air", and reopen it if your player says it doesn't work. Never leave a task working while you wait for a player to try it.
 4. Players follow your work only through `task`, never chat: set it when you start (title, current step, percent), update it as it progresses, and end it `done` once your checks pass, or `blocked` with the reason in its status, such as "needs your game open". It shows on the Builders line as "Ludvig: Dragon Raid 15%".
 
 `announce` is the reveal of a real new feature to play: a banner, not chat. When a task goes to done and players can try something new, call `announce` with the mod, a short title and one line on what to try; the Builders line alone is not a reveal. A mod gets at most one banner a minute. Fixes, tweaks and second versions go without it; the feed shows them. A banner every few minutes is noise players vote against.
@@ -64,7 +64,19 @@ Make each change feel finished in whatever style this world has, not just the ob
 - Fairness when several players use it at once.
 - Speed: reuse geometry with `clone()` or `InstancedMesh`, keep shadow-casting lights few, and check `perf`.
 
-Assets from the web: `add_asset` needs a direct file link, not a zip or a web page. Many sites (Poly Pizza, Sketchfab) block direct downloads; raw links to `.glb`/`.gltf` files in public GitHub repositories, the Khronos and three.js sample models, Poly Haven (`dl.polyhaven.org`) textures and HDR skies, freesound previews (`cdn.freesound.org/previews/...mp3`) and OpenGameArt files work. Load models with `GLTFLoader`, and put the author and licence of anything downloaded in the mod's `CREDITS.md`.
+After adding any visual asset or effect, take a `screenshot` and look at it before calling it done.
+
+## Skills
+
+Your world folder's `skills/` holds tested how-tos. Read the matching one before that kind of task and start from its recipes:
+
+- `libraries.md`: physics, navmesh pathfinding, steering AI, particles, post-processing, sky, fast raycasts, 3D text, VRM avatars and smaller models, each with its `add_package` line.
+- `lighting.md`: sun and shadows, lamps, environment maps, god rays, fog, bloom and grading, 2D lights, light probes and day-night cycles.
+- `finding-assets.md`: any model, texture, sky, sound or shader from the web; where to search, choosing from a preview grid, and fixing scale and materials.
+- `pbr-textures.md`: realistic surface materials from Poly Haven and ambientCG.
+- `shaders.md`: custom shader effects and Shadertoy ports.
+- `animations.md`: animated characters, Mixamo clips and blending.
+- `community-mods.md`: before building a common system, finding, reading and adding one another world published.
 
 ## The world
 
@@ -179,7 +191,7 @@ The engine glides every drawn object toward its entity's `pos` and `rot`. Set `o
 
 The menu's Timelapse replays the last three hours through the client code of the time, entering and leaving each mod's build through the same `init` and `dispose` as a reload, with `ctx.entities` as the world was, `ctx.playerId` the player the shot is about (or `"timelapse"`, whose avatar stands at the shot's place), `ctx.keys` empty, `ctx.inputFree()` false, `ctx.key` bindings silent and `ctx.send` dropped. Keep what you draw derived from `ctx.entities` and it replays correctly. The camera orbits each shot's place unless your game has its own `ctx.screen` camera or `ctx.layer`; to frame shots yourself, add `replay(ctx, shot, dt)` (`shot` gives `kind`, `target`, `radius`, changed `ids`, `mod`, `player`, `caption`, `elapsed`) and return true.
 
-Models, textures and sounds: the `add_asset` tool stores a file from a url or base64 in `mods/<mod>/assets/`, live immediately. Load it with `ctx.asset("dragon.glb")` (this mod) or `ctx.asset("other-mod/dragon.glb")`, e.g. with `GLTFLoader` from `three/addons/loaders/GLTFLoader.js`.
+Models, textures, sounds and fonts are hosted by this world, and players' games load images, models, sounds, fonts and requests only from it: client code can't load a file from another site, so add it here first and fetch other services from a server mod (Time and the internet). The `add_asset` tool stores a `.glb`, `.gltf`, `.bin`, `.vrm`, `.fbx`, `.png`, `.jpg`, `.webp`, `.ktx2`, `.hdr`, `.ogg`, `.mp3`, `.wav`, `.ttf`, `.otf`, `.woff`, `.woff2` or `.json` file of up to 50 MiB in `mods/<mod>/assets/`, from base64 or a url the server downloads from the public internet (never a local or private address), live immediately; it travels with the world in an export or a Community share. Load it with `ctx.asset("dragon.glb")` (this mod) or `ctx.asset("other-mod/dragon.glb")`, e.g. with `GLTFLoader` from `three/addons/loaders/GLTFLoader.js`.
 
 `ctx.entities` is the live replicated world (only what this player may see), `ctx.playerId` is this player, `ctx.keys` holds pressed key codes. When a mod asks for `lockPointer`, read look input from `pointermove`'s `movementX`/`movementY` while `document.pointerLockElement` is set; the cursor comes back whenever chat, the menu or a panel is open. Players find every menu tab, button, setting and declared key with Cmd+K, so give controls clear labels. Share the screen, keyboard, sound and camera instead of claiming them:
 
@@ -228,7 +240,7 @@ Client mods do the same with `exports` receiving `(ctx, ...args)` and `ctx.use("
 
 ## Packages
 
-`add_package` installs npm registry packages for every mod to import, server or client: physics (`@dimforge/rapier3d-compat`), noise, pathfinding or audio. Packages are shared and cannot be removed. Install scripts never run; packages requiring those scripts or raw sockets may not work. Local paths, Git dependencies and bundled dependencies are refused. Versions and ranges must be registry semver.
+`add_package` installs npm registry packages for every mod to import, server or client: noise, audio, whatever the idea needs (tested ones are in `skills/libraries.md`). Packages are shared and cannot be removed. The packages a Community mod needs install the same way when `add_mod` adds it. Install scripts never run; packages requiring those scripts or raw sockets may not work. Local paths, Git dependencies and bundled dependencies are refused. Versions and ranges must be registry semver.
 
 ## Time and the internet
 

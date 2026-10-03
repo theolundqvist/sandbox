@@ -7,6 +7,7 @@ import { checkServerIdentity, connect as tlsConnect, type PeerCertificate } from
  * `{ t: "box-net" }` messages and only HTTP(S) and WS(S) to public addresses go out. Each name is resolved once and the
  * connection goes to the address that was checked, keeping the name's Host header and TLS server name, so DNS can't
  * swap a private address in between. Every redirect is checked the same way. Nothing a child sends can widen this.
+ * The host's own downloads from URLs a builder picks (add_asset) go out the same way through `publicGet`.
  */
 
 export const NET = "box-net";
@@ -73,8 +74,8 @@ const nativeFetch = globalThis.fetch;
 // lib DOM hides the constructor overload that takes Bun's options (headers).
 const NativeWebSocket = globalThis.WebSocket as unknown as { new (url: string, options: Bun.WebSocketOptions): WebSocket; readonly OPEN: number };
 
-/** A failure whose message is meant for the mod. */
-class NetError extends Error {}
+/** A refusal or failure whose message is meant for whoever asked: the mod, or the builder whose download it is. */
+export class EgressError extends Error {}
 
 function ipv4(address: string): number[] | null {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address);
@@ -189,25 +190,125 @@ function method(value: unknown) {
 }
 
 function failure(url: URL, error: unknown) {
-  if (error instanceof NetError) return error.message;
+  if (error instanceof EgressError) return error.message;
   const code = record(error)?.code;
   return `${url.protocol === "ws:" || url.protocol === "wss:" ? "WebSocket" : "fetch"} to ${url.origin} failed: ${typeof code === "string" ? code : error instanceof Error ? error.name : "error"}`;
 }
 
 type Target = { address: string; port: number };
+type FetchInit = { method: string; headers: Pairs; body: Uint8Array<ArrayBuffer> | null; redirect: RequestRedirect };
 type FetchJob = { kind: "fetch"; abort: AbortController };
 type SocketJob = { kind: "ws"; ws: WebSocket | null; ended: boolean; error?: string };
+/** Which non-public targets get through and how names resolve: both only ever set by the host's tests. */
+type Egress = { allowed: ReadonlySet<string>; lookup: (host: string) => Promise<{ address: string; family: number }[]> };
+
+function egressRules(options: BrokerOptions): Egress {
+  return {
+    allowed: new Set(
+      (options.allow ?? []).map((entry) => {
+        const m = /^(?:\[([^\]]+)\]|([^:[\]]+)):(\d{1,5})$/.exec(entry);
+        const key = m && targetKey(m[1] ?? m[2]!, Number(m[3]));
+        if (!key) throw new Error(`broker allow entry must be ip:port or [ipv6]:port, got ${JSON.stringify(entry)}`);
+        return key;
+      }),
+    ),
+    lookup: options.lookup ?? ((host: string) => lookup(host, { all: true })),
+  };
+}
+
+/** Resolves the URL's host once and checks every address it has, then names the one to connect to. */
+async function resolve(url: URL, schemes: ReadonlySet<string>, egress: Egress): Promise<Target> {
+  if (!schemes.has(url.protocol)) throw new EgressError(`egress refused: ${url.protocol} URLs are not allowed`);
+  if (url.username || url.password) throw new EgressError("egress refused: URLs with credentials are not allowed");
+  const port = url.port ? Number(url.port) : url.protocol === "https:" || url.protocol === "wss:" ? 443 : 80;
+  if (BAD_PORTS.has(port)) throw new EgressError(`egress refused: port ${port} is not allowed`);
+  const name = bareHost(url);
+  let found: { address: string; family: number }[];
+  if (isIP(name)) found = [{ address: name, family: isIP(name) }];
+  else {
+    try {
+      found = await egress.lookup(name);
+    } catch {
+      throw new EgressError(`could not resolve ${name}`);
+    }
+  }
+  if (!found.length) throw new EgressError(`could not resolve ${name}`);
+  for (const { address } of found) {
+    const key = targetKey(address, port);
+    if (!publicAddress(address) && !(key && egress.allowed.has(key))) throw new EgressError(`egress refused: ${name} is not a public address`);
+  }
+  // Pinned to one address, so no happy eyeballs: IPv4 first, as many hosts have no IPv6 route.
+  return { address: (found.find((a) => a.family === 4) ?? found[0]!).address, port };
+}
+
+/**
+ * One HTTP(S) request out: each hop's name resolved once and checked, the connection made to the checked address with
+ * the name's Host header and TLS identity, and redirects followed as `init.redirect` says, each checked the same way.
+ * Answers the last hop's response with its body unread.
+ */
+async function pinnedFetch(first: URL, init: FetchInit, signal: AbortSignal | undefined, egress: Egress): Promise<{ res: Response; url: URL; redirected: boolean }> {
+  let { method, headers, body } = init;
+  let url = first;
+  for (let hops = 0; ; hops++) {
+    const to = await resolve(url, HTTP, egress);
+    signal?.throwIfAborted();
+    const pinned = new URL(url);
+    pinned.hostname = isIP(to.address) === 6 ? `[${to.address}]` : to.address;
+    const name = bareHost(url);
+    if (PROXY_ENV.some((name) => process.env[name]))
+      throw new EgressError("Fetch is unavailable while a network proxy is configured; destination addresses cannot be pinned safely.");
+    const res = await nativeFetch(pinned, {
+      method,
+      headers: [...headers, ["host", url.host]],
+      body,
+      redirect: "manual",
+      // A pooled connection is keyed by the address, and could carry this request over another name's TLS session.
+      keepalive: false,
+      signal,
+      tls:
+        url.protocol === "https:"
+          ? { ...(isIP(name) ? {} : { serverName: name }), checkServerIdentity: (_host: string, cert: PeerCertificate) => checkServerIdentity(name, cert) }
+          : undefined,
+    });
+    const location = REDIRECTS.has(res.status) && init.redirect !== "manual" ? res.headers.get("location") : null;
+    if (location === null) return { res, url, redirected: hops > 0 };
+    await res.body?.cancel();
+    if (init.redirect === "error") throw new EgressError(`${url.origin} redirected, and redirect is "error"`);
+    if (hops >= MAX_REDIRECTS) throw new EgressError(`too many redirects from ${first.origin}`);
+    const next = parseUrl(location, url);
+    if (!next) throw new EgressError(`${url.origin} redirected to an invalid location`);
+    if (res.status === 303 ? method !== "HEAD" : (res.status === 301 || res.status === 302) && method === "POST") {
+      method = "GET";
+      body = null;
+      headers = headers.filter(([k]) => !BODY_HEADERS.has(k));
+    }
+    if (next.origin !== url.origin) headers = headers.filter(([k]) => !CREDENTIALS.has(k));
+    next.hash = "";
+    url = next;
+  }
+}
+
+/**
+ * The host's own GET of a URL someone else picked, like a builder's add_asset: the same checks, pinning and redirects as
+ * a mod's fetch, without the trip through IPC. Every refusal or failure is an EgressError worded for the builder; the
+ * caller reads the body and caps its size. `options` is for the host's tests only.
+ */
+export async function publicGet(raw: string, options: BrokerOptions = {}): Promise<{ res: Response; url: URL }> {
+  const url = parseUrl(raw);
+  if (!url) throw new EgressError("egress refused: not a URL");
+  url.hash = "";
+  const egress = egressRules(options);
+  try {
+    const { res, url: last } = await pinnedFetch(url, { method: "GET", headers: [], body: null, redirect: "follow" }, undefined, egress);
+    return { res, url: last };
+  } catch (error) {
+    throw new EgressError(failure(url, error));
+  }
+}
 
 /** Starts the egress broker for one child. `send` delivers a reply to that child; it may throw once the child is gone. */
 export function createBroker(send: (msg: NetReply) => void, options: BrokerOptions = {}): Broker {
-  const allowed = new Set(
-    (options.allow ?? []).map((entry) => {
-      const m = /^(?:\[([^\]]+)\]|([^:[\]]+)):(\d{1,5})$/.exec(entry);
-      const key = m && targetKey(m[1] ?? m[2]!, Number(m[3]));
-      if (!key) throw new Error(`broker allow entry must be ip:port or [ipv6]:port, got ${JSON.stringify(entry)}`);
-      return key;
-    }),
-  );
+  const egress = egressRules(options);
   const jobs = new Map<number, FetchJob | SocketJob>();
   /** The WebSocket endpoints and connections the broker opened, torn down when it closes. */
   const servers = new Set<Server>();
@@ -228,82 +329,16 @@ export function createBroker(send: (msg: NetReply) => void, options: BrokerOptio
   const fail = (id: number, message: string) => reply({ t: NET, op: "fail", id, message });
   const failSocket = (id: number, error: string) => reply({ t: NET, op: "closed", id, code: 1006, reason: "", clean: false, error });
 
-  /** Resolves the URL's host once and checks every address it has, then names the one to connect to. */
-  async function resolve(url: URL, schemes: ReadonlySet<string>): Promise<Target> {
-    if (!schemes.has(url.protocol)) throw new NetError(`egress refused: ${url.protocol} URLs are not allowed`);
-    if (url.username || url.password) throw new NetError("egress refused: URLs with credentials are not allowed");
-    const port = url.port ? Number(url.port) : url.protocol === "https:" || url.protocol === "wss:" ? 443 : 80;
-    if (BAD_PORTS.has(port)) throw new NetError(`egress refused: port ${port} is not allowed`);
-    const name = bareHost(url);
-    let found: { address: string; family: number }[];
-    if (isIP(name)) found = [{ address: name, family: isIP(name) }];
-    else {
-      try {
-        found = await (options.lookup ?? ((host: string) => lookup(host, { all: true })))(name);
-      } catch {
-        throw new NetError(`could not resolve ${name}`);
+  async function runFetch(id: number, signal: AbortSignal, first: URL, init: FetchInit) {
+    const { res, url, redirected } = await pinnedFetch(first, init, signal, egress);
+    reply({ t: NET, op: "head", id, status: res.status, statusText: res.statusText, headers: [...res.headers], url: url.href, redirected });
+    let total = 0;
+    if (res.body)
+      for await (const chunk of res.body) {
+        if ((total += chunk.byteLength) > MAX_BODY) throw new EgressError(`response from ${url.origin} is larger than ${MAX_BODY >> 20} MiB`);
+        for (let at = 0; at < chunk.byteLength; at += CHUNK) reply({ t: NET, op: "body", id, data: Buffer.from(chunk.subarray(at, at + CHUNK)).toString("base64") });
       }
-    }
-    if (!found.length) throw new NetError(`could not resolve ${name}`);
-    for (const { address } of found) {
-      const key = targetKey(address, port);
-      if (!publicAddress(address) && !(key && allowed.has(key))) throw new NetError(`egress refused: ${name} is not a public address`);
-    }
-    // Pinned to one address, so no happy eyeballs: IPv4 first, as many hosts have no IPv6 route.
-    return { address: (found.find((a) => a.family === 4) ?? found[0]!).address, port };
-  }
-
-  async function runFetch(id: number, signal: AbortSignal, first: URL, init: { method: string; headers: Pairs; body: Uint8Array<ArrayBuffer> | null; redirect: RequestRedirect }) {
-    let { method, headers, body } = init;
-    let url = first;
-    for (let hops = 0; ; hops++) {
-      const to = await resolve(url, HTTP);
-      signal.throwIfAborted();
-      const pinned = new URL(url);
-      pinned.hostname = isIP(to.address) === 6 ? `[${to.address}]` : to.address;
-      const name = bareHost(url);
-      if (PROXY_ENV.some((name) => process.env[name]))
-        throw new NetError("Mod fetch is unavailable while a network proxy is configured; destination addresses cannot be pinned safely.");
-      const res = await nativeFetch(pinned, {
-        method,
-        headers: [...headers, ["host", url.host]],
-        body,
-        redirect: "manual",
-        // A pooled connection is keyed by the address, and could carry this request over another name's TLS session.
-        keepalive: false,
-        signal,
-        tls:
-          url.protocol === "https:"
-            ? { ...(isIP(name) ? {} : { serverName: name }), checkServerIdentity: (_host: string, cert: PeerCertificate) => checkServerIdentity(name, cert) }
-            : undefined,
-      });
-      const location = REDIRECTS.has(res.status) && init.redirect !== "manual" ? res.headers.get("location") : null;
-      if (location !== null) {
-        await res.body?.cancel();
-        if (init.redirect === "error") throw new NetError(`${url.origin} redirected, and redirect is "error"`);
-        if (hops >= MAX_REDIRECTS) throw new NetError(`too many redirects from ${first.origin}`);
-        const next = parseUrl(location, url);
-        if (!next) throw new NetError(`${url.origin} redirected to an invalid location`);
-        if (res.status === 303 ? method !== "HEAD" : (res.status === 301 || res.status === 302) && method === "POST") {
-          method = "GET";
-          body = null;
-          headers = headers.filter(([k]) => !BODY_HEADERS.has(k));
-        }
-        if (next.origin !== url.origin) headers = headers.filter(([k]) => !CREDENTIALS.has(k));
-        next.hash = "";
-        url = next;
-        continue;
-      }
-      reply({ t: NET, op: "head", id, status: res.status, statusText: res.statusText, headers: [...res.headers], url: url.href, redirected: hops > 0 });
-      let total = 0;
-      if (res.body)
-        for await (const chunk of res.body) {
-          if ((total += chunk.byteLength) > MAX_BODY) throw new NetError(`response from ${url.origin} is larger than ${MAX_BODY >> 20} MiB`);
-          for (let at = 0; at < chunk.byteLength; at += CHUNK) reply({ t: NET, op: "body", id, data: Buffer.from(chunk.subarray(at, at + CHUNK)).toString("base64") });
-        }
-      reply({ t: NET, op: "end", id });
-      return;
-    }
+    reply({ t: NET, op: "end", id });
   }
 
   function startFetch(id: number, msg: Record<string, unknown>) {
@@ -378,13 +413,13 @@ export function createBroker(send: (msg: NetReply) => void, options: BrokerOptio
   }
 
   async function openSocket(id: number, job: SocketJob, url: URL, protocols: string[], headers: Pairs) {
-    const to = await resolve(url, WS);
-    if (job.ended || closed) throw new NetError("WebSocket closed before it opened");
+    const to = await resolve(url, WS, egress);
+    if (job.ended || closed) throw new EgressError("WebSocket closed before it opened");
     const local = await forward(to, url.protocol === "wss:" ? bareHost(url) : null, (error) => (job.error ??= failure(url, error)));
     const stop = () => local.server.listening && local.server.close();
     if (job.ended || closed) {
       stop();
-      throw new NetError("WebSocket closed before it opened");
+      throw new EgressError("WebSocket closed before it opened");
     }
     const merged = new Map<string, string>([["host", url.host]]);
     for (const [name, value] of headers) merged.set(name, merged.has(name) ? `${merged.get(name)}, ${value}` : value);

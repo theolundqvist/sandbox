@@ -64,6 +64,7 @@
 <section data-view="share" data-nav hidden>
   <label class="field"><span>Title</span><input type="text" id="share-title" maxlength="60" autocomplete="off" spellcheck="false"></label>
   <label class="field"><span>About</span><input type="text" id="share-description" maxlength="200" placeholder="One line" autocomplete="off"></label>
+  <label class="field" id="share-changes-field" hidden><span>What changed</span><input type="text" id="share-changes" maxlength="280" autocomplete="off"></label>
   <div class="field"><span>Who sees it</span><div class="pick" id="share-visibility" data-options="link:Link only,public:Everyone"></div></div>
   <p class="note" id="share-names" hidden>Player names in scores and items are shared with the world.</p>
   <div class="field"><span>Picture</span><div class="pick" id="share-cover" data-options="world:World picture,view:Current view"></div></div>
@@ -79,9 +80,9 @@
 </section>
 <script type="module">
   // The host's controls inside their own game: on the main menu's origin, framed only by the game at localhost, whose page and mods can't read in here.
-  // The game may ask for exactly four things, each about the world running now: join it as the host, take a picture of it, show or focus these controls, and fill in Share's About.
-  // Stopping, exporting, rewinding, sharing, stopping sharing and the speech key happen only from the buttons here. Share asks the game for its view and a clip of its timelapse, which only it can make; everything else it sends is typed or picked here.
-  // What goes back out is a toast, a size, the host's own player key, whether this is their world, and these requests.
+  // The game may ask for exactly five things, each about the world running now: join it as the host, take a picture of it, stage one of its mods for the app to publish, show or focus these controls, and fill in Share's About.
+  // Stopping, exporting, rewinding, sharing, stopping sharing and the speech key happen only from the buttons here. Share asks the game for its view and a clip of its timelapse, which only it can make, and for the app's dialog that publishes through the player's account; everything else it sends is typed or picked here.
+  // What goes back out is a toast, a size, whether this frame has drawn, the host's own player key, whether this is their world, and these requests.
   import { pick } from "/front.js";
   const $ = (id) => document.getElementById(id);
   const query = new URLSearchParams(location.search);
@@ -106,6 +107,11 @@
     // The game shows these controls only while they keep saying so from here, so a page it navigates this frame to never passes for them.
     setInterval(() => tell({ t: "beat" }), 500);
     addEventListener("pagehide", () => tell({ t: "gone" }));
+    // A frame the game hid is throttled and keeps its old drawing; a click before it draws again goes nowhere. Each time the game shows it, it says when it has drawn twice since.
+    const paint = (id) => {
+      tell({ t: "beat" });
+      requestAnimationFrame(() => requestAnimationFrame(() => tell({ t: "painted", id })));
+    };
     addEventListener("keydown", (e) => {
       const field = document.activeElement?.matches("input, textarea, select, .pick");
       if (e.code !== "Escape" && e.code !== "Tab" && !(e.code === "ArrowLeft" && !field)) return;
@@ -133,9 +139,17 @@
       });
     /** Share's page, set up below for that frame only, once the game opens it. */
     let showShare = null;
+    const base64 = (bytes) =>
+      new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1]);
+        reader.readAsDataURL(new Blob([bytes]));
+      });
+    const failed = async (res) => (res?.ok ? "" : ((await res?.json().catch(() => null))?.error ?? "Community didn't answer. Try again."));
+    const isJpeg = (bytes) => bytes instanceof Uint8Array && bytes.length <= 2 << 20 && bytes[0] === 0xff && bytes[1] === 0xd8;
     async function cover(msg) {
-      const jpeg = msg.jpeg instanceof Uint8Array ? msg.jpeg : null;
-      if (!jpeg || jpeg.length > 2 << 20 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return tell({ t: "covered", id: Number(msg.id), ok: false });
+      const jpeg = isJpeg(msg.jpeg) ? msg.jpeg : null;
+      if (!jpeg) return tell({ t: "covered", id: Number(msg.id), ok: false });
       // A keepalive request, up to the 64 KB one carries, outlives the game's page as it closes.
       const res = await fetch(`/api/menu/cover?id=${encodeURIComponent(bound)}`, { method: "POST", keepalive: jpeg.length <= 65_536, headers: { authorization: `Bearer ${key}` }, body: jpeg }).catch(() => null);
       lastView?.();
@@ -147,6 +161,11 @@
       const data = (await res?.json().catch(() => null)) ?? {};
       const id = Number(msg.id);
       tell(res?.ok ? { t: "joined", id, key: String(data.key), name: String(data.name) } : { t: "joined", id, error: String(data.error ?? "The host's controls didn't answer. Try again."), password: !!data.password });
+    }
+    /** A shared mod's preview and words, from the game's Mods page; the app publishes it only once the player confirms in its own dialog. */
+    async function stageMod(msg) {
+      const res = isJpeg(msg.jpeg) ? await api("mod-stage", { id: bound, name: String(msg.name ?? ""), title: String(msg.title ?? "").slice(0, 60), description: String(msg.description ?? "").slice(0, 200), cover: await base64(msg.jpeg) }).catch(() => null) : null;
+      tell({ t: "staged", id: Number(msg.id), error: res?.ok ? null : await failed(res) });
     }
 
     /** The host's own world: rewind it to a saved moment, export it, or stop hosting it. */
@@ -180,11 +199,13 @@
       const msg = e.data;
       if (msg.t === "layout") document.documentElement.classList.toggle("narrow", !!msg.narrow);
       else if (msg.t === "focus") focusFirst();
+      else if (msg.t === "paint") paint(Number(msg.id));
       else if (msg.t === "show" && view === "world") void showWorld();
       else if (msg.t === "show" && view === "share") showShare?.(String(msg.about ?? "").slice(0, 200));
       else if (msg.t === "join" && view === "world") void join(msg);
       else if (msg.t === "cover" && view === "world") void cover(msg);
-      else if ((msg.t === "view" || msg.t === "clip") && view === "share") asked.get(Number(msg.id))?.(msg);
+      else if (msg.t === "mod" && view === "world") void stageMod(msg);
+      else if (["view", "clip", "publish", "unpublish"].includes(msg.t) && view === "share") asked.get(Number(msg.id))?.(msg);
     });
 
     if (view === "world") {
@@ -210,14 +231,7 @@
       };
       void showWorld();
     } else if (view === "share") {
-      /** Share: this world to Community, as a link for friends or for everyone, with its picture and a clip of its timelapse. Sharing again updates it. */
-      const base64 = (bytes) =>
-        new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result).split(",")[1]);
-          reader.readAsDataURL(new Blob([bytes]));
-        });
-      const failed = async (res) => (res?.ok ? "" : ((await res?.json().catch(() => null))?.error ?? "Community didn't answer. Try again."));
+      /** Share: this world to Community through the app's account, as a link for friends or for everyone, with its picture and a clip of its timelapse. Sharing again updates it. */
       /** The game's view, once the host picks Current view: the picture that goes up. */
       let viewPicture = null;
       let shown = null;
@@ -236,7 +250,7 @@
         const viewing = $("share-cover").dataset.value === "view";
         const bytes = viewing ? (await askGame("view", 5000))?.jpeg : await api(`cover?id=${encodeURIComponent(bound)}`).then(async (res) => (res.ok ? new Uint8Array(await res.arrayBuffer()) : null), () => null);
         if (at !== picking) return;
-        if (viewing) viewPicture = bytes instanceof Uint8Array && bytes.length <= 2 << 20 && bytes[0] === 0xff && bytes[1] === 0xd8 ? bytes : null;
+        if (viewing) viewPicture = isJpeg(bytes) ? bytes : null;
         picture(viewing ? viewPicture : bytes);
       }
       const showNames = (value) => ($("share-names").hidden = value !== "public");
@@ -256,6 +270,8 @@
         $("share-link").textContent = shared?.link ?? "";
         $("share-stop").textContent = "Stop sharing";
         $("share-go").textContent = shared?.link ? "Update" : "Share";
+        $("share-changes-field").hidden = !shared?.link;
+        if (!status) $("share-changes").value = "";
         $("share-status").textContent = status || "The timelapse goes with it. Chat stays on this computer.";
         viewPicture = null;
         await showPicture();
@@ -266,24 +282,29 @@
       };
       $("share-go").onclick = async () => {
         if (busy) return;
+        // Only the app publishes, as the account signed in there.
+        if (!query.has("desktop")) return void (await open("Publish from the Sandbox app."));
         busy = true;
         $("share-go").disabled = true;
         const viewing = $("share-cover").dataset.value === "view";
         if (viewing && !viewPicture) await showPicture();
-        // Bound to the world running as these controls opened; the author is its host as the launcher knows them.
-        const form = { id: bound, title: $("share-title").value, description: $("share-description").value, visibility: $("share-visibility").dataset.value, cover: viewing && viewPicture ? await base64(viewPicture) : undefined };
+        // Bound to the world running as these controls opened.
+        const form = { id: bound, title: $("share-title").value, description: $("share-description").value, changelog: $("share-changes").value, visibility: $("share-visibility").dataset.value, cover: viewing && viewPicture ? await base64(viewPicture) : undefined };
         $("share-status").textContent = "Recording a clip of the timelapse…";
         const webm = (await askGame("clip", 120_000))?.webm;
         $("share-status").textContent = "Uploading…";
-        const res = await api("share", { ...form, clip: webm instanceof Uint8Array ? await base64(webm) : undefined }).catch(() => null);
-        const error = await failed(res);
+        const res = await api("publish-stage", { ...form, clip: webm instanceof Uint8Array ? await base64(webm) : undefined }).catch(() => null);
+        // The app asks the player in a dialog no world can draw, then publishes what was staged here.
+        const said = res?.ok ? (await askGame("publish", 10 * 60_000))?.said : await failed(res);
         busy = false;
         $("share-go").disabled = false;
-        await open(error);
+        await open(typeof said === "string" ? said : "");
       };
       $("share-stop").onclick = async () => {
         if ($("share-stop").textContent === "Stop sharing") return void ($("share-stop").textContent = "Remove from Community?");
-        await open(await failed(await api("unshare", { id: bound }).catch(() => null)));
+        // A world of the app's account comes down through the app; one shared before accounts, by its owner token here.
+        const said = query.has("desktop") ? (await askGame("unpublish", 10 * 60_000))?.said : await failed(await api("unshare", { id: bound }).catch(() => null));
+        await open(typeof said === "string" ? said : "");
       };
       $("share-copy").onclick = async () => {
         const code = $("share-link");

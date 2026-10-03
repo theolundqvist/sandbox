@@ -1,9 +1,11 @@
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash, createHmac } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { Server, ServerWebSocket, Subprocess } from "bun";
 import { frontFile } from "./front";
 import { GIT, GIT_ENV, hasGit } from "./mods";
+import { ORIGIN, packMod } from "./modshare";
 import { latencies, openRecord, route, type Recorder } from "./record";
 import type { Config } from "./server";
 import { identify, PROVIDERS, type Voice } from "./voice";
@@ -58,7 +60,9 @@ function worlds() {
         players: Object.keys(readJson(join(dir, "keys.json"))).length,
         played: statSync(saved).mtimeMs,
         cover: existsSync(join(dir, "cover.jpg")) ? statSync(join(dir, "cover.jpg")).mtimeMs : null,
-        shared: shared[id]?.link ? { link: shared[id].link, visibility: shared[id].visibility, title: shared[id].title, description: shared[id].description } : null,
+        shared: shared[id]?.link ? { id: shared[id].id, link: shared[id].link, visibility: shared[id].visibility, title: shared[id].title, description: shared[id].description } : null,
+        from: shared[id]?.from ?? null,
+        telemetry: config(id).telemetry ?? null,
       };
     })
     .sort((a, b) => b.played - a.played);
@@ -91,6 +95,8 @@ function crashedAfterReload(id: string) {
 async function host(id: string, notice?: string, revert?: string) {
   if (running?.id === id) return;
   if (!existsSync(join(WORLDS, id, "config.json"))) throw new Error("That world doesn't exist.");
+  // Worlds made before playtime counting get their random id the first time they're played.
+  if (!config(id).telemetry) writeFileSync(join(WORLDS, id, "config.json"), JSON.stringify({ ...config(id), telemetry: crypto.randomUUID() }, null, 2));
   await stop();
   let reportPort!: (port: number) => void;
   const started = Date.now();
@@ -196,7 +202,15 @@ function configure(id: string, body: any) {
 function create(body: any) {
   const name = String(body.name ?? "").trim().slice(0, 40) || freshName();
   const id = newId(name);
-  const world: Config = { name, ...settings(body), start: ["hills", "blank"].includes(body.start) ? body.start : "basics", invite: token(), hostKey: token() };
+  const world: Config = {
+    name,
+    ...settings(body),
+    start: ["hills", "blank"].includes(body.start) ? body.start : "basics",
+    invite: token(),
+    hostKey: token(),
+    telemetry: crypto.randomUUID(),
+    ...(COMMUNITY_ID.test(body.forkOf ?? "") && { forkOf: body.forkOf }),
+  };
   mkdirSync(join(WORLDS, id));
   writeFileSync(join(WORLDS, id, "config.json"), JSON.stringify(world, null, 2));
   return id;
@@ -219,12 +233,12 @@ async function packWorld(id: unknown) {
   return new Response(zip, { headers: { "content-type": "application/zip", "content-disposition": `attachment; filename="${slug(config(id).name)}.zip"` } });
 }
 
-/** A world exported elsewhere, as a new world here with its own id, invite and host key. */
-async function unpackWorld(zip: Uint8Array) {
+/** A world exported elsewhere, as a new world here with its own id, invite and host key, and the Community world it came from: the archive's, or the one it was just downloaded from. */
+async function unpackWorld(zip: Uint8Array, forkOf?: string) {
   const staging = join(DATA, `importing-${token()}`);
   try {
     const { world } = await archive({ t: "unpack", zip, into: staging }, [zip.buffer]);
-    const id = create(world);
+    const id = create({ ...world, forkOf: forkOf ?? world.forkOf });
     for (const part of readdirSync(staging)) if (part !== "config.json") renameSync(join(staging, part), join(WORLDS, id, part));
     return id;
   } finally {
@@ -349,9 +363,31 @@ async function world(action: string, body?: object) {
 /** A world's one invite: through the relay, which keeps the same room across restarts, or on this Wi-Fi alone while the relay can't be reached. */
 const invite = (id: string) => ({ link: `${tunnelError ? `http://${lan ?? "localhost"}:${PORT}` : `${RELAY}/r/${state.room}`}/#invite=${config(id).invite}`, wifiOnly: !!tunnelError });
 
-/** Tells the running world its invite, so its Invite page shows the link that works rather than wherever the host opened the world. */
+/** Who may join each world, chosen by its host: by invite link alone, anyone, friends, or anyone with a password, of which only a hash is kept. Never in a world's folder, so no export carries it. Unset, the app picks the default. */
+const ACCESS = join(DATA, "access.json");
+type Access = { mode: "invite" | "anyone" | "friends" | "password"; hash?: string };
+const accessOf = (id: string): Access | undefined => readJson(ACCESS)[id];
+async function setAccess(id: string, mode: unknown, password: unknown) {
+  if (!exists(id)) throw new Error("That world doesn't exist.");
+  if (!["invite", "anyone", "friends", "password"].includes(String(mode))) throw new Error("Pick who can join.");
+  const next: Access = { mode: mode as Access["mode"] };
+  if (mode === "password") {
+    const typed = String(password ?? "");
+    if (typed && (typed.length < 4 || typed.length > 40)) throw new Error("A password is 4 to 40 characters.");
+    next.hash = typed ? await Bun.password.hash(typed) : accessOf(id)?.hash;
+    if (!next.hash) throw new Error("Pick a password.");
+  }
+  writeFileSync(ACCESS, JSON.stringify({ ...readJson(ACCESS), [id]: next }, null, 2), { mode: 0o600 });
+  chmodSync(ACCESS, 0o600);
+  if (running?.id === id) await publish();
+}
+
+/** Tells the running world its invite, so its Invite page shows the link that works rather than wherever the host opened the world, and the relay the hashed password that gets that invite, while the world asks for one. */
 async function publish() {
-  if (running) await world("public", invite(running.id));
+  if (!running) return;
+  const access = accessOf(running.id);
+  if (tunnel?.ws.readyState === WebSocket.OPEN) tunnel.ws.send(JSON.stringify(access?.mode === "password" && access.hash ? { t: "lock", hash: access.hash, invite: config(running.id).invite } : { t: "lock" }));
+  await world("public", invite(running.id));
 }
 
 type Secrets = { voice?: Voice; elevenlabs?: { key: string; host: string }; install?: { token: string; host: string } };
@@ -383,6 +419,24 @@ async function signUp() {
   if (running) await world("voice", {});
 }
 
+/** Usage stats from this computer's menu pages, sent on to Community under this install, the way the desktop app sends its own (desktop/usage.cjs); its Share usage stats setting, in usage.json, stops both. Offline, they're dropped. */
+const USAGE = join(DATA, "usage.json");
+const sharingUsage = () => readJson(USAGE).share !== false;
+const reporting = new Set<Promise<unknown>>();
+function report(events: unknown) {
+  const { install } = secrets();
+  if (!sharingUsage() || !install || !Array.isArray(events) || !events.length) return;
+  const sent = fetch(`${install.host}/events`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${install.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ events: events.slice(0, 50), app: { version: ENGINE_VERSION, os: process.platform } }),
+    signal: AbortSignal.timeout(5_000),
+  })
+    .catch(() => {})
+    .finally(() => reporting.delete(sent));
+  reporting.add(sent);
+}
+
 /** How much of this computer's free voice is used, while it is the voice the host's worlds use. */
 async function freeVoiceUsed() {
   const { voice, install } = secrets();
@@ -398,25 +452,40 @@ async function menuState() {
     worlds: worlds(),
     running:
       running && live
-        ? { id: running.id, name: live.name, invite: live.invite, ...invite(running.id), players: await world("players"), snapshots: await world("snapshots") }
+        ? { id: running.id, name: live.name, invite: live.invite, ...invite(running.id), access: accessOf(running.id)?.mode ?? null, locked: accessOf(running.id)?.mode === "password", players: await world("players"), snapshots: await world("snapshots") }
         : null,
     relay: RELAY,
     voiceKey: voice ? `${voice.provider} ••••${voice.key.slice(-4)}` : null,
     voiceProviders: PROVIDERS.map(({ name, keys, free }) => ({ name, keys, free: !!free })),
+    shareUsage: sharingUsage(),
   };
 }
 
-/** A world's picture: its host's game sends a frame of their own view while it runs, and Worlds shows it. */
+/** A world's picture: its host's game sends a frame of their own view while it runs, and Worlds shows it. A picture the host picked when sharing stays, marked by cover.picked. */
 async function cover(req: Request, id: string) {
   const path = join(WORLDS, id, "cover.jpg");
-  if (!/^[a-z0-9-]+$/.test(id) || !existsSync(join(WORLDS, id, "config.json"))) return Response.json({ error: "That world doesn't exist." }, { status: 404 });
+  if (!exists(id)) return Response.json({ error: "That world doesn't exist." }, { status: 404 });
   if (req.method !== "POST") return existsSync(path) ? new Response(Bun.file(path), { headers: { "content-type": "image/jpeg", "cache-control": "no-cache" } }) : new Response(null, { status: 404 });
   if (running?.id !== id) return Response.json({ error: "Only the running world gets a new picture." }, { status: 409 });
+  if (existsSync(join(WORLDS, id, "cover.picked"))) return Response.json({ error: "The host picked this world's picture." }, { status: 409 });
   const jpeg = new Uint8Array(await req.arrayBuffer());
   if (jpeg.length > 2 << 20 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return Response.json({ error: "A cover is a JPEG under 2 MB." }, { status: 400 });
+  saveCover(id, jpeg);
+  return new Response(null, { status: 204 });
+}
+function saveCover(id: string, jpeg: Uint8Array) {
+  const path = join(WORLDS, id, "cover.jpg");
   writeFileSync(`${path}.tmp`, jpeg);
   renameSync(`${path}.tmp`, path);
-  return new Response(null, { status: 204 });
+}
+
+/** A new name for a world; its id, folder and invite stay. A running world keeps its config in memory, so it renames itself. */
+async function rename(id: unknown, raw: unknown) {
+  if (!exists(id)) throw new Error("That world doesn't exist.");
+  const name = String(raw ?? "").trim();
+  if (!name || name.length > 40) throw new Error("A name is 1 to 40 characters.");
+  if (running?.id === id) await world("rename", { name });
+  else writeFileSync(join(WORLDS, id, "config.json"), JSON.stringify({ ...config(id), name }, null, 2));
 }
 
 /**
@@ -447,6 +516,10 @@ async function menuApi(req: Request, action: string) {
   try {
     // The host's in-game controls name the world they were opened for, which must still be the one running; the main menu names none.
     if (["watch", "stop", "remove", "rewind"].includes(action) && body.id !== undefined && running?.id !== body.id) throw new Error("That world isn't running any more.");
+    if (action === "events") {
+      report(body.events);
+      return new Response(null, { status: 204 });
+    }
     if (action === "community") return Response.json(await communityList());
     if (action === "free-voice") return Response.json(await freeVoiceUsed());
     if (action === "community-world") return Response.json(await communityWorld(body.link));
@@ -455,8 +528,18 @@ async function menuApi(req: Request, action: string) {
       const id = await download(body.id, body.trust === true, body.host === true);
       if (body.host === true) await host(id);
       return Response.json({ ...(await menuState()), world: id });
-    } else if (action === "share") return Response.json(await shareWorld(body));
+    } else if (action === "publish-stage") return Response.json(await stagePublish(body));
+    else if (action === "publish-upload") return Response.json(await uploadStaged(body));
+    else if (action === "staged") return Response.json(staged.get(body.id)?.stage ?? null);
+    else if (action === "mod-stage") return Response.json(stageMod(body));
+    else if (action === "mod-staged") return Response.json(staged.get(modStage(body.id, body.name))?.stage ?? null);
+    else if (action === "mod-upload") return Response.json(await uploadStaged({ id: modStage(body.id, body.name), uploads: body.uploads }));
+    else if (action === "mod-published") modPublished(body);
+    else if (action === "builders") return Response.json(builders(body.id));
+    else if (action === "credit-checks") return Response.json(creditChecks(body.id, body.names));
+    else if (action === "published") published(body);
     else if (action === "unshare") await unshareWorld(body.id);
+    else if (action === "community-claimed") forgetOwnerTokens(body.ids);
     else if (action === "export") return await packWorld(body.id);
     else if (action === "import") await unpackWorld(await req.bytes());
     else if (action === "join") return await hostJoin(body);
@@ -475,12 +558,15 @@ async function menuApi(req: Request, action: string) {
       if (running?.id === body.id) throw new Error("Stop the world before deleting it.");
       if (!/^[a-z0-9-]+$/.test(body.id ?? "")) throw new Error("That world doesn't exist.");
       rmSync(join(WORLDS, body.id), { recursive: true, force: true });
-    } else if (action === "configure") {
+    } else if (action === "rename") await rename(body.id, body.name);
+    else if (action === "configure") {
       if (running?.id === body.id) throw new Error("Stop the world before changing it.");
       if (!exists(body.id)) throw new Error("That world doesn't exist.");
       configure(body.id, body);
     } else if (["remove", "rewind"].includes(action)) await world(action, body);
     else if (action === "voice") await setVoiceKey(body.key);
+    else if (action === "access") await setAccess(String(body.id), body.mode, body.password);
+    else if (action === "share-usage") writeFileSync(USAGE, JSON.stringify({ share: body.share !== false }));
     else if (action !== "state") return Response.json({ error: "Unknown action" }, { status: 404 });
     return Response.json(await menuState());
   } catch (e: any) {
@@ -542,7 +628,7 @@ async function download(id: unknown, trust: boolean, hosting: boolean) {
   const res = await fetch(world.zip, { signal: AbortSignal.timeout(300_000) }).catch(() => null);
   if (!res) throw new Error("Can't reach Community. Check your connection.");
   if (!res.ok) throw new Error(res.status === 404 ? "That world isn't in Community any more." : `Community answered ${res.status}. Try again.`);
-  const local = await unpackWorld(await res.bytes());
+  const local = await unpackWorld(await res.bytes(), id);
   saveShared(local, { from: id });
   return local;
 }
@@ -554,41 +640,138 @@ function launcherSecrets() {
   return [state.hostKey, state.relayToken, secrets().voice?.key, secrets().install?.token, ...owners, ...env].filter((x): x is string => !!x);
 }
 
-/** Shares a world's guarded export without player activity, with its picture and timelapse clip. Sharing again updates the same Community world. */
-async function shareWorld(body: any) {
+/**
+ * Publishing goes through the desktop app, which alone holds the account's session: this launcher packs a world and its pictures (stage), uploads them to the URLs Community signed (upload), then remembers where the world went (published).
+ * The pack is the world's export without what its players did and said, with a cover and the timelapse's clip.
+ */
+type Stage = { details: object; sizes: Record<string, number>; community: string | null };
+const staged = new Map<string, { files: Record<string, { bytes: Uint8Array<ArrayBuffer>; type: string }>; stage: Stage; picked: boolean }>();
+async function stagePublish(body: any) {
   if (!exists(body.id)) throw new Error("That world doesn't exist.");
   const visibility = body.visibility === "public" ? "public" : "link";
   const coverPath = join(WORLDS, body.id, "cover.jpg");
   const cover = body.cover ? Buffer.from(String(body.cover), "base64") : existsSync(coverPath) ? readFileSync(coverPath) : null;
   const before = sharedWorlds()[body.id] ?? {};
   // An update without a new picture keeps the one Community has.
-  if (!cover && !before.ownerToken) throw new Error("This world has no picture yet. Pick Current view.");
+  if (!cover && !before.id) throw new Error("This world has no picture yet. Host it once, or share it from the game with Current view.");
   const clip = body.clip ? Buffer.from(String(body.clip), "base64") : null;
-  // The trusted Share frame sends no author; the launcher uses the world's host.
-  const details = { title: String(body.title ?? "").trim() || config(body.id).name, description: String(body.description ?? "").trim(), author: String(body.author ?? "").trim() || (config(body.id).host ?? ""), visibility, remixOf: before.from, engineVersion: ENGINE_VERSION, mods: Object.keys(readJson(join(WORLDS, body.id, "mods.json"))).length };
+  const own = config(body.id);
+  const details = {
+    title: String(body.title ?? "").trim() || own.name,
+    description: String(body.description ?? "").trim(),
+    changelog: String(body.changelog ?? "").trim(),
+    visibility,
+    forkOf: own.forkOf ?? before.from,
+    origin: own.telemetry,
+    engineVersion: ENGINE_VERSION,
+    mods: Object.keys(readJson(join(WORLDS, body.id, "mods.json"))).length,
+  };
   const { zip } = await archive({ t: "pack", dir: join(WORLDS, body.id), community: true, secrets: launcherSecrets(), publicContent: [JSON.stringify(details), ...(cover ? [cover] : []), ...(clip ? [clip] : [])] });
   const files: Record<string, { bytes: Uint8Array<ArrayBuffer>; type: string }> = { zip: { bytes: zip, type: "application/zip" } };
   if (cover) files.cover = { bytes: cover, type: "image/jpeg" };
   if (clip) files.clip = { bytes: clip, type: "video/webm" };
-  const payload = JSON.stringify({ ...details, files: Object.fromEntries(Object.entries(files).map(([k, f]) => [k, f.bytes.length])) });
-  const headers = { "content-type": "application/json" };
-  // A world taken down from Community is shared again as a new one.
-  const updated = before.id && before.ownerToken && (await communityJson(`/worlds/${before.id}`, { method: "PUT", body: payload, headers: { ...headers, authorization: `Bearer ${before.ownerToken}` } }).catch((e) => (e.status === 404 ? null : Promise.reject(e))));
-  const started = updated ? { ...updated, ownerToken: before.ownerToken } : await communityJson("/worlds", { method: "POST", body: payload, headers });
+  const stage = { details, sizes: Object.fromEntries(Object.entries(files).map(([k, f]) => [k, f.bytes.length])), community: before.id ?? null };
+  staged.set(body.id, { files, stage, picked: !!body.cover });
+  return stage;
+}
+
+const modStage = (id: unknown, name: unknown) => `mod ${id} ${name}`;
+/** Every value that unlocks something here, so none leaves inside a shared mod: the world's invite, host key and password, its players' keys, and the paid services' keys. */
+function secretsOf(id: string) {
+  const values = (v: unknown): string[] => (typeof v === "string" ? [v] : v && typeof v === "object" ? Object.values(v).flatMap(values) : []);
+  const own = config(id);
+  return [own.invite, own.hostKey, own.password, ...Object.keys(readJson(join(WORLDS, id, "keys.json"))), ...values(secrets())].filter((s): s is string => typeof s === "string");
+}
+
+/** One mod of a world packed for Community, with its README, API and the picture the game took. A mod added from Community, or shared before, updates that one. */
+function stageMod(body: any) {
+  if (!exists(body.id)) throw new Error("That world doesn't exist.");
+  const root = join(WORLDS, body.id, "world");
+  const name = String(body.name ?? "");
+  const pack = packMod(root, name, secretsOf(body.id));
+  const cover = body.cover ? Buffer.from(String(body.cover), "base64") : null;
+  const origin = readJson(join(root, "mods", name, ORIGIN));
+  const files: Record<string, { bytes: Uint8Array<ArrayBuffer>; type: string }> = { zip: { bytes: pack.zip as Uint8Array<ArrayBuffer>, type: "application/zip" } };
+  if (cover) files.cover = { bytes: cover, type: "image/jpeg" };
+  const details = {
+    name,
+    title: String(body.title ?? "").trim().slice(0, 60) || name,
+    description: String(body.description ?? "").trim().slice(0, 200),
+    readme: pack.readme,
+    api: pack.api,
+    packages: pack.packages,
+    needs: pack.needs,
+    engineVersion: ENGINE_VERSION,
+  };
+  const stage = { details, sizes: Object.fromEntries(Object.entries(files).map(([k, f]) => [k, f.bytes.length])), community: origin.id ?? null };
+  staged.set(modStage(body.id, name), { files, stage, picked: false });
+  return stage;
+}
+
+/** Where a shared mod went, in its community.json: later shares update it. */
+function modPublished(body: any) {
+  if (!exists(body.id)) throw new Error("That world doesn't exist.");
+  const path = join(WORLDS, body.id, "world", "mods", String(body.name), ORIGIN);
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(String(body.name)) || !existsSync(join(path, ".."))) throw new Error("That mod doesn't exist.");
+  const m = body.mod ?? {};
+  writeFileSync(path, JSON.stringify({ ...readJson(path), id: m.id, name: body.name, title: m.title, author: m.author, link: m.link }, null, 2));
+}
+
+/** Everyone who has played in a world here, by name. */
+function builders(id: unknown) {
+  if (!exists(id)) throw new Error("That world doesn't exist.");
+  return [...new Set(Object.values(readJson(join(WORLDS, String(id), "keys.json")) as Record<string, string>))].sort();
+}
+/** For each named builder, a check per key they play with: Community credits a builder who shows a token made from one of those keys, which never leave this computer (see inviteBuilders in community/server/server.ts). */
+function creditChecks(id: unknown, names: unknown) {
+  if (!exists(id)) throw new Error("That world doesn't exist.");
+  const wanted = new Set(Array.isArray(names) ? names.map(String) : []);
+  const byName = new Map<string, string[]>();
+  for (const [key, name] of Object.entries(readJson(join(WORLDS, String(id), "keys.json")) as Record<string, string>)) {
+    if (!wanted.has(name)) continue;
+    const token = createHmac("sha256", key).update(`sandbox-credit:${id}`).digest("base64url");
+    byName.set(name, [...(byName.get(name) ?? []), createHash("sha256").update(token).digest("hex")]);
+  }
+  return [...byName].map(([name, checks]) => ({ name, checks: checks.slice(0, 10) }));
+}
+
+async function uploadStaged(body: any) {
+  const { files, picked } = staged.get(body.id) ?? {};
+  if (!files) throw new Error("Share it again.");
   await Promise.all(
     Object.entries(files).map(async ([kind, f]) => {
-      const res = await fetch(started.uploads[kind], { method: "PUT", body: f.bytes, headers: { "content-type": f.type }, signal: AbortSignal.timeout(600_000) }).catch(() => null);
+      const res = await fetch(String(body.uploads?.[kind]), { method: "PUT", body: f.bytes, headers: { "content-type": f.type }, signal: AbortSignal.timeout(600_000) }).catch(() => null);
       if (!res?.ok) throw new Error("The world didn't finish uploading. Check your connection and share it again.");
     }),
   );
-  const { link } = await communityJson(`/worlds/${started.id}/done`, { method: "POST", headers: { authorization: `Bearer ${started.ownerToken}` } });
-  saveShared(body.id, { ...before, id: started.id, ownerToken: started.ownerToken, link, visibility, title: details.title, description: details.description });
-  return { link, visibility };
+  staged.delete(body.id);
+  // The view picked for Community is the world's picture here too, and the game's own pictures no longer replace it.
+  if (picked && files.cover && exists(body.id)) {
+    saveCover(body.id, files.cover.bytes);
+    writeFileSync(join(WORLDS, body.id, "cover.picked"), "");
+  }
+  return {};
 }
 
+function published(body: any) {
+  if (!exists(body.id)) throw new Error("That world doesn't exist.");
+  const w = body.world ?? {};
+  const { ownerToken, ...before } = sharedWorlds()[body.id] ?? {};
+  saveShared(body.id, w.id ? { ...before, id: w.id, link: w.link, visibility: w.visibility, title: w.title, description: w.description } : before.from ? { from: before.from } : null);
+}
+
+/** Worlds the desktop app's account claimed: their owner tokens do nothing any more. */
+function forgetOwnerTokens(ids: unknown) {
+  for (const id of Array.isArray(ids) ? ids : []) {
+    const { ownerToken, ...rest } = sharedWorlds()[id] ?? {};
+    if (ownerToken) saveShared(id, rest);
+  }
+}
+
+/** Takes down a world shared before accounts, by its owner token; a world of an account is taken down through the desktop app. */
 async function unshareWorld(id: unknown) {
   const shared = typeof id === "string" ? sharedWorlds()[id] : undefined;
-  if (!shared?.id || !shared.ownerToken) throw new Error("That world isn't shared.");
+  if (!shared?.id || !shared.ownerToken) throw new Error("That world isn't shared from here.");
   const res = await community(`/worlds/${shared.id}`, { method: "DELETE", headers: { authorization: `Bearer ${shared.ownerToken}` } });
   if (!res.ok && res.status !== 404) throw new Error(`Community answered ${res.status}. Try again.`);
   saveShared(id as string, shared.from ? { from: shared.from } : null);
@@ -685,7 +868,7 @@ Bun.serve<Pipe>({
 
 async function shutdown() {
   tunnel?.ws.close();
-  await stop();
+  await Promise.all([stop(), Promise.allSettled(reporting)]);
   process.exit(0);
 }
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, shutdown);

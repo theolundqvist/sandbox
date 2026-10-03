@@ -1,11 +1,13 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { frontFile } from "./front";
-import { connectPrompt, createCli, type Task } from "./cli";
+import { createCli, joinCodes, joinCommand, joinScript, type Task } from "./cli";
 import { boxRefusal } from "./box";
 import { install, sanitizeManifest } from "./box/packages";
+import { assetType } from "./egress";
 import { ENGINE_KEYS, GIT, GIT_ENV, hasGit, Mods } from "./mods";
+import { playtests } from "./playtest";
 import { latencies, openRecord, route } from "./record";
 import { Sims } from "./sims";
 import type { Perf } from "./simhost";
@@ -20,7 +22,7 @@ const SPEECH = join(DATA, "speech");
 const DB = join(DATA, "db");
 const PORT = Number(process.env.PORT ?? 7777);
 
-export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "hills" | "blank"; invite: string; hostKey: string; host?: string; password?: string; agents?: false };
+export type Config = { name: string; rules: "open" | "additive"; start: "basics" | "hills" | "blank"; invite: string; hostKey: string; host?: string; password?: string; agents?: false; forkOf?: string; telemetry?: string };
 type Conn = { name: string; ua: string; at: number; spectator?: true };
 
 const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
@@ -80,9 +82,12 @@ const startNotices: string[] = [];
 if (packages.dropped.length) startNotices.push(`Left out packages that aren't plain npm registry versions: ${packages.dropped.join(", ")}.`);
 if (packages.dropped.length || !packageJson || Object.keys(packageJson).some((key) => key !== "private" && key !== "dependencies") || packageJson.private !== true)
   writeFileSync(join(ROOT, "package.json"), JSON.stringify(packages.manifest, null, 2));
-// An imported world comes without the packages its mods added; its lockfile pins the same versions, so mods that use them reload.
-if (packages.manifest.dependencies && !existsSync(join(ROOT, "node_modules")) && !boxRefusal())
+// An imported world comes without the packages its mods added; its lockfile pins the same versions, so mods that use them reload. A start whose install failed left the folder empty, so the next start tries again.
+const modules = join(ROOT, "node_modules");
+if (packages.manifest.dependencies && !(existsSync(modules) && readdirSync(modules).length) && !boxRefusal())
   await install(ROOT).catch((e: Error) => startNotices.push(`This world's packages couldn't be installed, so mods that import them won't load: ${e.message}`));
+// Bun's bundler remembers a folder without node_modules for the life of the process, so the first add_package would not build until a restart.
+mkdirSync(modules, { recursive: true });
 cpSync(join(ENGINE, "GUIDE.md"), join(ROOT, "GUIDE.md"));
 writeFileSync(
   join(ROOT, "tsconfig.json"),
@@ -120,6 +125,7 @@ if (hasGit) {
 }
 
 const record = openRecord(join(DATA, "record.sqlite"));
+const playtest = playtests(DATA, ROOT);
 const logs: { at: number; mod: string; level: string; text: string; player?: string }[] = [];
 const clientPerf = new Map<string, { at: number } & Record<string, unknown>>();
 /** Each player's last join: ms until their first frame and the mods that took longest to start. */
@@ -345,6 +351,7 @@ async function shutdown() {
   if (stopping) return;
   stopping = true;
   await mods.close();
+  playtest.stop();
   record.close();
   store.save(hub);
   sims.saveAll();
@@ -446,6 +453,7 @@ const joiningLine = new Map<string, ReturnType<typeof setTimeout>>();
 const leavingLine = new Map<string, ReturnType<typeof setTimeout>>();
 /** The world's one invite link, from the launcher, and whether it only works on the host's Wi-Fi because the relay is down. */
 let invite = { link: null as string | null, wifiOnly: false };
+const codes = joinCodes();
 const shots = new Map<string, (data: string) => void>();
 const cli = createCli({
   data: DATA,
@@ -472,8 +480,10 @@ const cli = createCli({
   status,
   perf,
   record,
+  playtest,
+  // While a playtest runs, agents look at it rather than at their player's game.
   screenshot: (who) =>
-    new Promise((resolve, reject) => {
+    playtest.running ? playtest.screenshot() : new Promise((resolve, reject) => {
       const ws = sockets.get(who);
       if (!ws) return reject(new Error(`${who} doesn't have the game open, so there is nothing to see. Check with query_world and logs instead, or set your task blocked with the status "needs your game open".`));
       const id = crypto.randomUUID();
@@ -539,7 +549,11 @@ function hostIs(body: { host?: string }, name: string) {
 /** The client builds a player in this game loads: every shared mod and the game's own. */
 const clientMods = (game: string | null) =>
   [...mods.running].filter(([, m]) => m.build.client && (!m.build.game || m.build.game === game)).map(([name, m]) => ({ name, url: m.build.client! }));
-const html = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });
+/**
+ * The game page loads media and makes requests only on this world's own origin: a mod's models, textures and sounds are
+ * add_asset files the world serves, never another site's. Data and blob URLs are what three.js makes of embedded textures.
+ */
+const GAME_PAGE_POLICY = ["img-src 'self' data: blob:", "media-src 'self' data: blob:", "connect-src 'self' data: blob:", "font-src 'self' data:"].join("; ");
 const bearer = (req: Request) => req.headers.get("authorization")?.replace(/^Bearer /, "") ?? new URL(req.url).searchParams.get("key");
 
 const server = Bun.serve<Conn>({
@@ -549,7 +563,7 @@ const server = Bun.serve<Conn>({
     const url = new URL(req.url);
     const path = url.pathname;
 
-    if (path === "/") return html("index.html");
+    if (path === "/") return new Response(Bun.file(join(ENGINE, "client", "index.html")), { headers: { "content-type": "text/html", "content-security-policy": GAME_PAGE_POLICY } });
     if (path === "/client.js") return new Response(clientJs, { headers: { "content-type": "text/javascript" } });
     const front = await frontFile(path);
     if (front) return front;
@@ -561,7 +575,8 @@ const server = Bun.serve<Conn>({
       const [mod, name] = path.slice("/assets/".length).split("/").map(decodeURIComponent);
       const file = Bun.file(join(ROOT, "mods", mod ?? "", "assets", name ?? ""));
       if (![mod, name].every((part) => /^\w[\w.-]*$/.test(part ?? "")) || !(await file.exists())) return new Response("not found", { status: 404 });
-      return new Response(file);
+      // As the kind of file add_asset took it for and never sniffed, so nothing in a mod's assets runs as a page or script on the game's origin.
+      return new Response(file, { headers: { "content-type": assetType(name!) ?? "application/octet-stream", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox" } });
     }
     if (/^\/speech\/[0-9a-f]{64}\.mp3$/.test(path)) {
       const file = Bun.file(join(SPEECH, path.slice("/speech/".length)));
@@ -588,6 +603,10 @@ const server = Bun.serve<Conn>({
         case "public":
           invite = { link: body.link ?? null, wifiOnly: !!body.wifiOnly };
           broadcast({ t: "public", ...invite });
+          return Response.json({});
+        case "rename":
+          config.name = String(body.name);
+          writeJson("config.json", config);
           return Response.json({});
         case "snapshots":
           return Response.json(store.snapshots());
@@ -640,13 +659,21 @@ const server = Bun.serve<Conn>({
       }
     }
     if (path === "/api/status") return nameByKey(bearer(req)) ? Response.json(status()) : new Response(null, { status: 401 });
-    if (path === "/api/prompt") {
-      const who = nameByKey(bearer(req));
-      if (!who) return new Response(null, { status: 401 });
+    if (path === "/api/join-code" && req.method === "POST") {
+      const key = bearer(req);
+      if (!nameByKey(key)) return new Response(null, { status: 401 });
       if (config.agents === false) return new Response("The host turned agents off for this world.\n", { status: 403 });
       // Players reach the world by its invite link; without one, at the address their game came from.
       const base = invite.link?.split("/#")[0] ?? url.searchParams.get("base");
-      return base ? new Response(connectPrompt(config.name, base, who, bearer(req)!)) : new Response("Give ?base=<this world's address>.\n", { status: 400 });
+      if (!base) return new Response("Give ?base=<this world's address>.\n", { status: 400 });
+      return Response.json(joinCommand(base, codes.mint(key!, base), config.name));
+    }
+    if (path.startsWith("/join/")) {
+      const entry = codes.take(path.slice(6));
+      const who = entry && config.agents !== false && nameByKey(entry.key);
+      // The player pipes this into sh, so a refusal is a script that says why.
+      if (!who) return new Response("echo 'This install command expired or was used already. Copy a new one from the Agent page of the game menu.' >&2\nexit 1\n");
+      return new Response(joinScript(config.name, entry.base, who, entry.key), { headers: { "content-type": "text/x-shellscript" } });
     }
     if (path === "/api/voice" && req.method === "POST") {
       const who = nameByKey(bearer(req));
@@ -719,7 +746,7 @@ const server = Bun.serve<Conn>({
     }
 
     if ((path === "/cli" || path.startsWith("/cli/")) && config.agents === false) return new Response("The host turned agents off for this world.\n", { status: 403 });
-    if (path === "/cli" || path.startsWith("/cli/")) return cli(req, nameByKey(bearer(req)) ?? null, path.slice(5) || "script", url.searchParams.get("url"), url.searchParams.get("name"));
+    if (path === "/cli" || path.startsWith("/cli/")) return cli(req, nameByKey(bearer(req)) ?? null, path.slice(5) || "help");
 
     if (path === "/ws") {
       const invite = url.searchParams.get("invite");
@@ -805,6 +832,7 @@ const server = Bun.serve<Conn>({
         clientPerf.set(ws.data.name, { ...report, at: Date.now() });
         ws.send(JSON.stringify({ t: "pong", at }));
         samplePlayer(ws.data.name, report);
+        playtest.frame(ws.data.name, report);
         const before = slowFrames.get(ws.data.name) ?? {};
         const slow = Object.entries<number>(report.modsMsPerFrame ?? {}).filter(([, ms]) => ms >= 16);
         slowFrames.set(ws.data.name, Object.fromEntries(slow.map(([mod]) => [mod, (before[mod] ?? 0) + 1])));

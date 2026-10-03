@@ -2,6 +2,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { S3Client } from "bun";
 
 const run = async (...args: string[]) => {
   const p = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
@@ -32,6 +33,10 @@ export async function startStack(site = "https://sandbox.example", extra: Record
   await until("Postgres", async () => (await run("docker", "exec", `${name}-db`, "pg_isready", "-h", "127.0.0.1"), true));
   await until("SeaweedFS", async () => (await run("bash", "-c", `echo "s3.bucket.create -name sandbox-worlds" | docker exec -i ${name}-s3 weed shell`), true));
   await until("the bucket", async () => (await fetch(`${endpoint}/sandbox-worlds`)).status !== 404);
+  // A fresh SeaweedFS grows its first volume on the first write, which can take seconds; do it here, not inside a test.
+  const bucket = new S3Client({ ...s3, endpoint, bucket: "sandbox-worlds", region: "us-east-1" });
+  await bucket.write("warm-up", "x");
+  await bucket.delete("warm-up");
   const env = { SITE: site, DATABASE_URL: db, R2_ENDPOINT: endpoint, R2_REGION: "us-east-1", R2_BUCKET: "sandbox-worlds", R2_ACCESS_KEY_ID: s3.accessKeyId, R2_SECRET_ACCESS_KEY: s3.secretAccessKey, ...extra };
   const port = 20000 + Math.floor(Math.random() * 10000);
   const server = Bun.spawn(["bun", "--no-env-file", join(import.meta.dir, "server.ts")], { env: { ...process.env, ...env, PORT: String(port) }, stdout: "inherit", stderr: "inherit" });
