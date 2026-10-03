@@ -71,7 +71,9 @@ const { zipSync } = createRequire(join(DESKTOP, "../package.json"))("fflate");
 const tinyIsle = Buffer.from(zipSync({ "config.json": Buffer.from(JSON.stringify({ name: "Tiny Isle", rules: "open", start: "blank" })), "cover.jpg": COVER, "world/mods/isle/server.ts": Buffer.from("export default { load() {} };") }));
 
 /** GitHub as the app sees it: the latest release and the installer script the app runs to update; Community, with one world and whatever the app shares; and ElevenLabs, which knows one key. */
-const releases = { latest: VERSION, installer: null };
+const releases = { latest: VERSION, installer: null, build: true };
+/** The release's build for this computer, sent slowly enough to watch it download. */
+const BUILD = Buffer.alloc(4 << 20, 7);
 const RELEASES = port();
 const isle = { id: "tinyisle0001", title: "Tiny Isle", description: "One small island.", author: "maker", cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, zip: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/zip`, clip: null, link: "https://site.example/w/tinyisle0001" };
 const community = { shared: null, files: {} };
@@ -98,6 +100,14 @@ const github = createServer(async (req, res) => {
   if (req.url === "/latest") return res.end(JSON.stringify({ tag_name: `v${releases.latest}` }));
   if (req.url === "/hang") return;
   if (req.url === "/install" && releases.installer) return res.end(releases.installer);
+  if (req.url === "/release/Sandbox-linux-x86_64.AppImage" && releases.build) {
+    res.setHeader("content-length", BUILD.length);
+    for (let at = 0; at < BUILD.length && !res.destroyed; at += 1 << 17) {
+      res.write(BUILD.subarray(at, at + (1 << 17)));
+      await sleep(100);
+    }
+    return res.end();
+  }
   if (req.url === "/v1/speech-to-text") {
     res.statusCode = req.headers["xi-api-key"] === VOICE_KEY ? 400 : 401;
     return res.end("{}");
@@ -156,7 +166,7 @@ async function launch(name, env = {}, player = "host") {
   const app = await _electron.launch({
     executablePath: ELECTRON,
     args: [DESKTOP, "--no-sandbox", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
-    env: { ...ownEnv, SANDBOX_STT: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_COMMUNITY: `http://127.0.0.1:${RELEASES}`, ...env },
+    env: { ...ownEnv, SANDBOX_STT: `http://127.0.0.1:${RELEASES}`, XDG_CONFIG_HOME: join(dir, name), SANDBOX_RELAY: relayUrl, SANDBOX_UPDATES: `http://127.0.0.1:${RELEASES}/latest`, SANDBOX_INSTALLER: `http://127.0.0.1:${RELEASES}/install`, SANDBOX_RELEASE: `http://127.0.0.1:${RELEASES}/release`, SANDBOX_UPDATE_EVERY: "500", SANDBOX_COMMUNITY: `http://127.0.0.1:${RELEASES}`, ...env },
   });
   await app.context().addInitScript(OPEN_UI);
   const shell = await until("the start screen", async () => app.windows().find((w) => w.url().startsWith("sandbox://app/shell.html")));
@@ -661,6 +671,7 @@ describe("starting up", () => {
   after(() => {
     releases.latest = VERSION;
     releases.installer = null;
+    releases.build = true;
   });
 
   test("offline, the menu shows and offers no update", async () => {
@@ -700,6 +711,7 @@ describe("starting up", () => {
 
   test("a download that fails at start opens the menu, offering Update", async () => {
     releases.latest = "9.9.9";
+    releases.build = false;
     const { app, shell, state } = await launch("start-fails");
     await until("the menu", () => menuShown(shell));
     assert.equal(await shown(shell, "#go-update"), true);
@@ -708,17 +720,23 @@ describe("starting up", () => {
     await close(app);
   });
 
-  test("a newer release installs before the menu shows, then the installer opens the new version", async () => {
+  test("a newer release downloads with a bar of the bytes received and installs before the menu shows, then the installer opens the new version", async () => {
     const marker = join(dir, "installed-at-start");
     releases.installer = installer(marker);
+    releases.build = true;
     const { app, shell, state } = await launch("start-updates");
     const pid = app.process().pid;
     const closed = new Promise((r) => app.once("close", r));
     await until("the progress", async () => (await shell.textContent("#busy")) === "Updating to 9.9.9…");
     assert.equal(await menuShown(shell), false);
+    const downloaded = () => shell.locator("#progress i").evaluate((bar) => bar.offsetWidth / bar.parentElement.offsetWidth);
+    await until("the download partway", async () => ((d) => d > 0.2 && d < 0.8)(await downloaded()));
+    await capture(shell, "update-downloading");
+    await until("Installing", async () => (await shell.textContent("#busy")) === "Installing…");
+    assert.equal(await downloaded(), 1);
     await closed;
     await until("the installer", async () => existsSync(marker) && readFileSync(marker, "utf8").trim() === String(pid));
-    assert.equal(readFileSync(`${marker}.release`, "utf8").trim(), "https://github.com/theolundqvist/sandbox/releases/download/v9.9.9");
+    assert.deepEqual(readFileSync(new URL(`${readFileSync(`${marker}.release`, "utf8").trim()}/Sandbox-linux-x86_64.AppImage`)), BUILD);
     assert.equal(state().updatedTo, "9.9.9");
   });
 
@@ -768,7 +786,7 @@ describe("updates", () => {
 
   test("a failed download says so and keeps the app and the game open", async () => {
     const own = state().port;
-    releases.installer = null;
+    releases.build = false;
     await answer(app, 0);
     await game.locator("#menu-update").evaluate((b) => b.click());
     await until("the error", async () => game.getByText("The update didn't download. Check your connection.").isVisible());
@@ -781,11 +799,15 @@ describe("updates", () => {
   test("an update downloads before the app quits, then the installer takes over", async () => {
     const marker = join(dir, "installed");
     releases.installer = installer(marker);
+    releases.build = true;
     const own = state().port;
     const pid = app.process().pid;
     await answer(app, 0);
     const closed = new Promise((r) => app.once("close", r));
-    await game.locator("#menu-update").evaluate((b) => b.click());
+    await game.locator("#menu-button").dispatchEvent("click");
+    await game.click("#menu-update");
+    await until("the download partway in the game's menu", () => game.locator("#menu-update").evaluate((b) => b.textContent === "Downloading…" && ((d) => d > 0.2 && d < 0.8)(b.querySelector(".bar i").offsetWidth / b.querySelector(".bar").offsetWidth)));
+    await capture(game, "update-in-game");
     await closed;
     await until("the installer", async () => existsSync(marker) && readFileSync(marker, "utf8").trim() === String(pid));
     assert.equal(await portAnswers(own), false);
@@ -1131,7 +1153,7 @@ describe("Continue", () => {
   before(async () => ({ app, shell, state } = await launch("continue", {}, "returner")));
   after(() => close(app));
 
-  test("the title starts on Continue, naming the world last played, hosted or joined and after a restart, and it opens that world; a forgotten world takes it away", async () => {
+  test("the title starts on Continue, which opens the world last played, hosted or joined and after a restart; a forgotten world takes it away", async () => {
     const title = () => shell.locator("#title .item:visible").allTextContents();
     const focused = () => shell.evaluate(() => document.activeElement.textContent);
     /** The game view just opened, not the one just left, which closes as it goes. */
@@ -1143,7 +1165,7 @@ describe("Continue", () => {
     const world = await game.textContent("#world-name");
     await shell.click("#leave");
     // The title comes back under the pointer, which moves the focus as it hovers; click rather than press Enter.
-    await until("Continue on the hosted world", async () => (await title())[0] === `Continue${world}`);
+    await until("Continue on the hosted world", async () => (await title())[0] === "Continue");
     await shell.click("#go-last");
     game = await opened(game);
     await playing(game);
@@ -1158,8 +1180,8 @@ describe("Continue", () => {
     await shell.click("#leave");
     await close(app);
     ({ app, shell, state } = await launch("continue", {}, "returner"));
-    await until("Continue on the joined world", async () => (await focused()) === "ContinueSnow Race");
-    assert.deepEqual(await title(), ["ContinueSnow Race", "Worlds", "Join world", "Host world", "Settings", "Quit"]);
+    await until("Continue on the joined world", async () => (await focused()) === "Continue");
+    assert.deepEqual(await title(), ["Continue", "Worlds", "Join world", "Host world", "Settings", "Quit"]);
     await shell.keyboard.press("Enter");
     game = await gamePage(app);
     await playing(game);

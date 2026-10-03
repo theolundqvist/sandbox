@@ -8,6 +8,10 @@ ipcRenderer.on("update", (_, v) => {
   version = v;
   for (const fn of listeners) fn(v);
 });
+const progress = [];
+ipcRenderer.on("updating", (_, p) => {
+  for (const fn of progress) fn(p);
+});
 
 contextBridge.exposeInMainWorld("sandboxDesktop", {
   name: ipcRenderer.sendSync("player-name"),
@@ -15,6 +19,7 @@ contextBridge.exposeInMainWorld("sandboxDesktop", {
   agents: ipcRenderer.sendSync("agents"),
   build: (id, key) => ipcRenderer.invoke("build", id, key),
   leave: () => ipcRenderer.send("leave"),
+  onUpdating: (fn) => progress.push(fn),
   onUpdate: (fn) => {
     listeners.push(fn);
     fn(version);
