@@ -1,0 +1,34 @@
+name: Playtest proof
+
+on:
+  push:
+    branches: [playtest]
+
+jobs:
+  playtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: desktop
+      - run: bunx playwright-core install --with-deps chromium
+        working-directory: desktop
+      - run: sudo apt-get install -y xdotool
+      - run: bun test engine/playtest.test.ts
+      - run: xvfb-run -a node --test --test-force-exit --test-name-pattern="a slow mod" app.test.mjs
+        working-directory: desktop
+        env:
+          SANDBOX_CAPTURES: ${{ runner.temp }}/captures
+      - if: always()
+        run: ps -eo pid,pgid,ppid,stat,args | grep -iE "electron|bun|sandbox" | grep -v grep | cut -c1-250 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playtest-captures
+          path: ${{ runner.temp }}/captures
