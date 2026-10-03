@@ -11,6 +11,7 @@
   html, body { margin: 0; height: 100%; background: #1b1b1d; color: var(--text); font: 15px/1.45 system-ui, sans-serif; overflow: hidden; user-select: none; }
   #title .logo { margin-bottom: 64px; }
   .front { top: 36px; bottom: 96px; padding-top: 60px; padding-bottom: 0; }
+  .lock { width: 12px; height: 14px; margin-left: 10px; vertical-align: -1px; fill: currentColor; }
   .status { margin: 0; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .16em; text-transform: uppercase; }
   #down .lead, #waiting .status { margin: -16px 0 32px; }
   #progress { width: 360px; max-width: 100%; height: 3px; margin-top: 16px; background: rgba(255,255,255,.2); }
@@ -101,6 +102,7 @@
 
   <section id="community" class="screen" data-nav hidden>
     <h1>Community</h1>
+    <div class="items" id="live-list"></div>
     <div class="field"><span>Show</span><div class="pick" id="community-tab" data-options="top:Most played,new:Newest,mine:My worlds"></div></div>
     <div class="items"><button class="item" id="go-publish">Publish a world</button><button class="item" id="go-inbox">Messages<span class="value" id="unread"></span></button><button class="item" id="go-friends">Friends<span class="value" id="friend-requests"></span></button><button class="item" id="go-me">Your profile</button></div>
     <div class="items" id="community-list"></div>
@@ -150,6 +152,12 @@
     <h1>Messages</h1>
     <div class="items" id="thread-list"></div>
     <p class="status" id="inbox-none" hidden>No messages yet. Message a builder from their profile.</p>
+  </section>
+
+  <section id="unlock" class="screen" data-nav hidden>
+    <h1 id="unlock-title"></h1>
+    <label class="item entry"><input type="password" id="unlock-password" maxlength="40" placeholder="Password" autocomplete="off" spellcheck="false"></label>
+    <div class="items"><button class="item" id="unlock-go">Join</button></div>
   </section>
 
   <section id="thread" class="screen" data-nav hidden>
@@ -572,6 +580,39 @@
     b.dataset.key = w.id;
     return b;
   }
+  /** Worlds hosted right now, for anyone to join, for the host's friends, or behind a password the world's relay checks. */
+  const LOCK = '<svg class="lock" viewBox="0 0 12 14" aria-label="Password"><path d="M3 6V4a3 3 0 0 1 6 0v2h1.5v8h-9V6zm1.5 0h3V4a1.5 1.5 0 0 0-3 0z"/></svg>';
+  async function loadLive() {
+    const rows = await communityCall("live").catch(() => []);
+    $("live-list").replaceChildren(...rows.map((w) => {
+      const value = el("span", { className: "value live", textContent: `${w.players} playing` });
+      if (w.access === "password") value.insertAdjacentHTML("beforeend", LOCK);
+      const b = el("button", { className: "item pictured", onclick: () => joinLive(w) }, el("span", { className: "what", textContent: w.title }, el("small", { textContent: `${w.access === "friends" ? "Friends · " : ""}hosted by ${w.host}` })), value);
+      b.dataset.key = `live-${w.room}`;
+      return b;
+    }));
+  }
+  let unlocking = null;
+  function joinLive(w) {
+    if (w.access !== "password") return open(w.link);
+    unlocking = w;
+    $("unlock-title").textContent = w.title;
+    $("unlock-password").value = "";
+    show("unlock");
+  }
+  async function unlock() {
+    try {
+      const { link } = await communityCall("unlock", { room: unlocking.room, password: $("unlock-password").value });
+      $("error").textContent = "";
+      await open(link);
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+  }
+  $("unlock-go").onclick = unlock;
+  $("unlock-password").addEventListener("keydown", (e) => e.key === "Enter" && unlock());
+  $("go-community").addEventListener("click", () => loadLive());
+
   pick($("community-tab"), () => loadCommunity());
   $("go-community").addEventListener("click", () => loadCommunity());
   $("community-more").onclick = () => loadCommunity(true);

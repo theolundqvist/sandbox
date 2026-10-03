@@ -75,6 +75,42 @@ function worldRow(w) {
   return row;
 }
 
+/** Worlds hosted right now: anyone's, the visitor's friends', and those behind a password, which only the world's relay checks. */
+const LOCK = '<svg class="lock" viewBox="0 0 12 14" aria-label="Password"><path d="M3 6V4a3 3 0 0 1 6 0v2h1.5v8h-9V6zm1.5 0h3V4a1.5 1.5 0 0 0-3 0z"/></svg>';
+async function showLive() {
+  const rows = await api("/live").catch(() => []);
+  $("live-list").replaceChildren(...rows.map(liveRow));
+}
+function liveRow(w) {
+  const playing = el("span", { className: "playing", textContent: `${w.players} playing` });
+  const locked = w.access === "password";
+  const row = el(locked ? "div" : "a", locked ? { className: "world", tabIndex: 0 } : { className: "world", href: w.link }, el("span", { className: "what" }, el("b", { textContent: w.title }), el("small", { textContent: `${w.access === "friends" ? "Friends · " : ""}hosted by ${w.host}` })), playing);
+  row.dataset.event = "live-join";
+  if (!locked) return row;
+  playing.insertAdjacentHTML("beforeend", LOCK);
+  const input = el("input", { type: "password", placeholder: "Password", maxLength: 40, autocomplete: "off" });
+  const error = el("div", { className: "error" });
+  const form = el("form", { className: "unlock", hidden: true }, el("label", { className: "item entry" }, input), error);
+  row.append(form);
+  const ask = () => {
+    if (!form.hidden) return;
+    form.hidden = false;
+    input.focus();
+  };
+  row.onclick = ask;
+  row.onkeydown = (e) => {
+    if (e.key === "Enter" && e.target === row) ask();
+  };
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const res = await fetch(`${new URL(w.link).origin}/_unlock`, { method: "POST", body: JSON.stringify({ room: w.room, password: input.value }) }).catch(() => null);
+    const data = await res?.json().catch(() => ({}));
+    if (res?.ok) return location.assign(`${w.link}#invite=${data.invite}`);
+    error.textContent = data?.error ?? "The world didn't answer.";
+  };
+  return row;
+}
+
 let listed = [];
 async function showWorlds(more = false) {
   if (!more) listed = [];
@@ -395,7 +431,7 @@ async function route() {
   $("error").textContent = "";
   document.title = "Sandbox";
   try {
-    if (screen === "worlds") await showWorlds();
+    if (screen === "worlds") await Promise.all([showWorlds(), showLive()]);
     if (screen === "world") await showWorld(id);
     if (screen === "account") await showAccount();
     if (screen === "profile") await showProfile(user);

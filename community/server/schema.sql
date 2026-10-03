@@ -208,3 +208,18 @@ create table if not exists friends (
   check (requester <> addressee)
 );
 create index if not exists friends_addressee on friends (addressee);
+
+-- Worlds hosted right now, one per relay room, kept fresh by their host's app every 30 s; listed while seen in the last 90 s.
+create table if not exists live (
+  room text primary key,
+  install text not null references installs (id) on delete cascade,
+  account uuid not null references accounts (id) on delete cascade,
+  title text not null,
+  world text references worlds (id) on delete set null,
+  invite text not null,
+  access text not null check (access in ('anyone', 'friends', 'password')),
+  players integer not null default 0,
+  started_at timestamptz not null default now(),
+  seen_at timestamptz not null default now()
+);
+create index if not exists live_seen on live (seen_at);

@@ -36,6 +36,12 @@
   .world .quiet { margin: 10px 0 0; padding-left: 0; }
   .cover video, .cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
   #empty { margin-top: 8px; }
+  /* Worlds hosted right now: join in a click, or with the host's password. */
+  #live-list { margin-bottom: 24px; }
+  #live-list .world { flex-wrap: wrap; }
+  .playing { color: var(--ok); font: 700 13px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; }
+  .lock { width: 12px; height: 14px; margin-left: 10px; vertical-align: -1px; fill: currentColor; }
+  .unlock { flex-basis: 100%; }
 
   /* A world's own page. */
   #world .stage { width: min(960px, 100%); aspect-ratio: 16 / 9; background: #1b1c1f; margin-bottom: 28px; }
@@ -106,6 +112,7 @@
 
   <section id="worlds" class="screen" data-nav hidden>
     <h1>Community</h1>
+    <div class="worlds" id="live-list"></div>
     <div class="field"><span>Show</span><div class="pick" id="world-sort" data-options="top:Most played,new:Newest"></div></div>
     <div class="worlds" id="world-list"></div>
     <p id="empty" class="status" hidden></p>

@@ -12,7 +12,7 @@ type PlayerData = { kind: "player"; room: string; id: number; path: string; head
 type Data = HostData | PlayerData;
 type Pending = { resolve(res: Response): void; stream?: ReadableStreamDefaultController<Uint8Array> };
 /** A room outlives its host's connection by a few seconds, so players stay while the host reconnects. */
-type Host = { ws: ServerWebSocket<Data> | null; binary: boolean; pending: Map<number, Pending>; players: Map<number, ServerWebSocket<Data>>; gone?: Timer };
+type Host = { ws: ServerWebSocket<Data> | null; binary: boolean; pending: Map<number, Pending>; players: Map<number, ServerWebSocket<Data>>; gone?: Timer; lock?: { hash: string; invite: string } };
 
 /** Each room's owner, so only its host can take it again. */
 const claims: Record<string, { token: string; seen: number }> = existsSync(CLAIMS) ? JSON.parse(readFileSync(CLAIMS, "utf8")) : {};
@@ -71,6 +71,24 @@ function failPending(host: Host) {
   host.pending.clear();
 }
 
+/** Password tries per IP and room, a minute at a time. */
+const tries = new Map<string, { n: number; since: number }>();
+const open = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type" };
+/** A world listed with a password: its host gave the relay a hash of it and the world's invite, which the right password gets. The password itself is never kept or logged. */
+async function unlock(req: Request, ip: string) {
+  const body = await req.json().catch(() => ({}));
+  const room = String(body.room ?? "");
+  const host = ROOM.test(room) ? hosts.get(room) : undefined;
+  if (!host?.ws || !host.lock) return Response.json({ error: "This world isn't asking for a password right now." }, { status: 404, headers: open });
+  const key = `${ip} ${room}`;
+  const t = tries.get(key);
+  const now = Date.now();
+  if (!t || now - t.since > 60_000) tries.set(key, { n: 1, since: now });
+  else if (++t.n > 10) return Response.json({ error: "Too many tries. Wait a minute." }, { status: 429, headers: open });
+  if (!(await Bun.password.verify(String(body.password ?? ""), host.lock.hash).catch(() => false))) return Response.json({ error: "That password isn't right." }, { status: 403, headers: open });
+  return Response.json({ invite: host.lock.invite }, { headers: open });
+}
+
 const text = (body: string, status: number) => new Response(body, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
 const forwarded = (headers: Headers) => Object.fromEntries([...headers].filter(([k]) => !["host", "cookie", "connection", "upgrade", "content-length"].includes(k) && !k.startsWith("sec-websocket") && !k.startsWith("x-forwarded")));
@@ -87,6 +105,10 @@ Bun.serve<Data>({
   idleTimeout: 255,
   async fetch(req, server) {
     const url = new URL(req.url);
+    if (url.pathname === "/_unlock") {
+      if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: open });
+      if (req.method === "POST") return unlock(req, req.headers.get("x-real-ip") ?? server.requestIP(req)?.address ?? "");
+    }
     if (url.pathname === "/_host") {
       const room = url.searchParams.get("room") ?? "";
       const token = url.searchParams.get("token") ?? "";
@@ -180,6 +202,7 @@ Bun.serve<Data>({
       } else if (msg.t === "msg") toPlayer(host, msg.id, msg.data);
       else if (msg.t === "close") host.players.get(msg.id)?.close(msg.code >= 3000 || msg.code === 1000 ? msg.code : 1011, msg.reason);
       else if (msg.t === "ping") ws.send(JSON.stringify({ t: "pong" }));
+      else if (msg.t === "lock") host.lock = typeof msg.hash === "string" && typeof msg.invite === "string" ? { hash: msg.hash, invite: msg.invite } : undefined;
     },
     close(ws) {
       const d = ws.data;

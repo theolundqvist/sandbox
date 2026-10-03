@@ -396,6 +396,8 @@
     <section data-tab="invite" hidden>
       <div class="copy-row"><span>Link</span><code id="invite-link"></code><button data-copy="invite-link">Copy</button></div>
       <p class="note" id="invite-wifi" hidden>Internet invites are down. Friends on your Wi-Fi can still join.</p>
+      <div class="field" id="access-field" hidden><span>Who can join</span><div class="pick" id="access" data-options="friends:Friends,anyone:Anyone,password:Password,invite:Invite link only"></div></div>
+      <label class="field" id="access-password-field" hidden><span>Password</span><input type="password" id="access-password" maxlength="40" autocomplete="new-password" spellcheck="false"></label>
       <div class="gap"></div>
       <ul id="menu-players"></ul>
     </section>

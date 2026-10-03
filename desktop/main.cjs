@@ -472,6 +472,32 @@ const sendBeat = (p) =>
 let beating = Promise.resolve();
 const beatNow = () => (beating = beating.then(beat, beat));
 
+/** The world hosted here, in Community's Live now while its host lets in more than the people holding its invite: sent every 30 s and on each change, and taken down once it stops, goes Wi-Fi only, or the app quits. Unchosen, a signed-in host's world is for their friends. */
+/** @type {{ token: string, host: string } | null} */ let listed = null;
+const accessOf = (running) => running.access ?? (sessionToken() ? "friends" : "invite");
+async function live() {
+  const s = server && !quitting ? await hostState() : null;
+  const r = s?.running;
+  const session = sessionToken();
+  const to = r && session && accessOf(r) !== "invite" && !r.wifiOnly && (await usage.install());
+  if (to && to.host === COMMUNITY) {
+    const world = s.worlds.find((w) => w.id === r.id);
+    listed = to;
+    await fetch(`${COMMUNITY}/live`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${to.token}`, "content-type": "application/json", "x-session": session },
+      body: JSON.stringify({ link: r.link, title: r.name, players: r.players.filter((p) => p.online).length, access: accessOf(r), world: world?.shared?.id ?? world?.from ?? null }),
+      signal: AbortSignal.timeout(10000),
+    }).catch(() => null);
+  } else if (listed) {
+    const from = listed;
+    listed = null;
+    await fetch(`${COMMUNITY}/live`, { method: "DELETE", headers: { authorization: `Bearer ${from.token}` }, signal: AbortSignal.timeout(10000) }).catch(() => null);
+  }
+}
+let living = Promise.resolve();
+const liveNow = () => (living = living.then(live, live));
+
 /** Community from the launch screen, as the signed-in account. Ids are checked here, since they go into the API's paths. */
 const worldId = (id) => {
   if (!/^[a-z0-9]{12}$/.test(String(id))) throw new Error("That world isn't in Community.");
@@ -526,6 +552,15 @@ const COMMUNITY_ACTIONS = {
   accept: ({ token }) => community("/credits/accept", { method: "POST", body: { token: String(token) } }),
   "drop-credit": ({ id }) => community(`/worlds/${worldId(id)}/credits`, { method: "DELETE" }),
   profile: ({ name }) => community(`/users/${userName(name)}`),
+  live: () => community("/live"),
+  /** A password world's invite, from its relay, which alone checks the password. */
+  unlock: async ({ room, password }) => {
+    if (!/^[a-z0-9-]{3,32}$/.test(String(room))) throw new Error("That world isn't live.");
+    const res = await fetch(`${RELAY}/_unlock`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room, password: String(password ?? "") }), signal: AbortSignal.timeout(10000) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error ?? "The world didn't answer."), { status: res.status });
+    return { link: `${RELAY}/r/${room}/#invite=${data.invite}` };
+  },
   inbox: () => community("/messages"),
   unread: () => community("/account/unread"),
   thread: ({ name, before }) => community(`/messages/${userName(name)}${before ? `?before=${commentId(before)}` : ""}`),
@@ -793,6 +828,7 @@ function createWindow() {
   });
   if (win.isFocused()) focusedSince = Date.now();
   setInterval(beatNow, 60000);
+  setInterval(liveNow, 30000);
   win.on("close", (event) => {
     if (quitting) return;
     event.preventDefault();
@@ -872,6 +908,18 @@ app.whenReady().then(() => {
     if (!fromGame(event) || !/^[A-Za-z0-9_-]{43}$/.test(String(token)) || state.creditTokens.includes(token)) return;
     state.creditTokens = [...state.creditTokens, token].slice(-500);
     save();
+  });
+  /** Who can join the world this app hosts, picked on its Invite page: a listed choice needs an account, so only a signed-in host sees one. */
+  ipcMain.handle("access", async (event, id, mode, password) => {
+    if (!(await hostingHere(event, String(id)))) return "Only the host picks who can join.";
+    try {
+      if (mode !== undefined) await menu("access", { id: String(id), mode, password });
+    } catch (e) {
+      return e.message;
+    }
+    void liveNow();
+    const { running } = await hostState();
+    return { mode: accessOf(running), locked: running.locked, signedIn: !!sessionToken() };
   });
   ipcMain.handle("share-usage", (event, on) => {
     if (!fromShell(event)) return null;
@@ -1049,7 +1097,7 @@ async function install() {
   state.updatedTo = update;
   quitting = true;
   stopAgent();
-  await Promise.all([beatNow(), usage.drain()]);
+  await Promise.all([beatNow(), liveNow(), usage.drain()]);
   await stopServer();
   save();
   app.quit();
@@ -1068,7 +1116,7 @@ function quit() {
     }
     quitting = true;
     stopAgent();
-    await Promise.all([beatNow(), usage.drain()]);
+    await Promise.all([beatNow(), liveNow(), usage.drain()]);
     await stopServer();
     app.quit();
   })().finally(() => (confirming = null));

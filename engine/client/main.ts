@@ -2669,6 +2669,39 @@ computerPick($("agent-os"), (os) => {
 });
 showAgentGuide(agentGuide);
 
+/** Who can join, picked by a signed-in host in the app: listed in Community for their friends, for anyone, or with a password the relay checks. The invite link always works. */
+type Access = { mode: string; locked: boolean; signedIn: boolean };
+const accessApp = () => (window as { sandboxDesktop?: { access?(id: string, mode?: string, password?: string): Promise<Access | string> } }).sandboxDesktop?.access;
+let accessLocked = false;
+/** Only the newest answer shows, so stepping through the choices quickly lands on the last one. */
+let accessAsked = 0;
+const accessPick = front.pick($("access"), (mode: string) => {
+  $("access-password-field").hidden = mode !== "password";
+  if (mode === "password" && !accessLocked) {
+    accessAsked++;
+    return $<HTMLInputElement>("access-password").focus();
+  }
+  void setAccess(mode);
+});
+async function setAccess(mode?: string, password?: string) {
+  const asked = ++accessAsked;
+  const got = await accessApp()?.(info.id, mode, password);
+  if (asked !== accessAsked) return;
+  if (typeof got === "string") return toast(got, "error");
+  if (!got) return;
+  accessLocked = got.locked;
+  accessPick.set(got.mode);
+  $("access-field").hidden = !got.signedIn;
+  $("access-password-field").hidden = !got.signedIn || got.mode !== "password";
+  $<HTMLInputElement>("access-password").placeholder = got.locked ? "Change" : "Pick one";
+}
+const loadAccess = () => setAccess();
+$<HTMLInputElement>("access-password").addEventListener("keydown", (e) => {
+  const input = e.target as HTMLInputElement;
+  if (e.key !== "Enter" || !input.value) return;
+  void setAccess("password", input.value).then(() => (input.value = ""));
+});
+
 function showInvite() {
   $("invite-link").textContent = link ?? `${origin}/#invite=${invite}`;
   $("invite-wifi").hidden = !wifiOnly;
@@ -2691,6 +2724,7 @@ async function openMenu() {
   $("menu-world").textContent = world;
   if (info.agents !== false) void loadJoin();
   showBuilders();
+  if (hostsThisWorld) void loadAccess();
   await refreshMenu();
 }
 

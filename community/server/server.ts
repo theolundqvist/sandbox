@@ -34,10 +34,12 @@ const RATE = {
   credits: [30, "1 minute"],
   "agent-usage": [30, "1 minute"],
   friend: [20, "1 day"],
+  live: [10, "1 minute"],
 } as const;
 const ID = /^[a-z0-9]{12}$/;
 
 const SITE = process.env.SITE!;
+const RELAY = process.env.RELAY ?? "https://sandbox-relay.lundqvistliss.com";
 const worlds = bucketFromEnv(process.env.R2_BUCKET!);
 const STORAGE = !!worlds.endpoint;
 const files = s3(worlds);
@@ -776,6 +778,61 @@ async function friendList(req: Request) {
   return json({ friends: names((r) => r.accepted_at), received: names((r) => !r.accepted_at && r.requester !== me.id), sent: names((r) => !r.accepted_at && r.requester === me.id) });
 }
 
+// ---------- live ----------
+
+/** A world its host's app says is hosted now: its relay link (room and invite), a title, how many play, and who may join. A room stays with the computer that listed it first. */
+async function goLive(req: Request) {
+  const install = await installOf(req);
+  await limit(install.id, "live", "Too many updates from this computer.");
+  const account = await sender(req);
+  if (!account) throw new Refusal("Sign in first.", 401);
+  allowed(account);
+  const b = await req.json();
+  const m = String(b.link ?? "").match(/^(.+)\/r\/([a-z0-9-]{3,32})\/#invite=([A-Za-z0-9_-]{8,64})$/);
+  if (!m || m[1] !== RELAY) throw new Refusal("That isn't a Sandbox relay link.");
+  const title = String(b.title ?? "").trim();
+  if (!title || title.length > 40) throw new Refusal("A title is 1 to 40 characters.");
+  const access = ["anyone", "friends", "password"].includes(b.access) ? b.access : null;
+  if (!access) throw new Refusal("Pick who can join.");
+  const players = Math.min(1000, Math.max(0, Math.floor(Number(b.players) || 0)));
+  const world = ID.test(b.world ?? "") ? (await sql`select id from worlds where id = ${b.world} and zip_key is not null and removed_at is null`)[0]?.id ?? null : null;
+  const [row] = await sql`insert into live (room, install, account, title, world, invite, access, players) values (${m[2]}, ${install.id}, ${account.id}, ${title}, ${world}, ${m[3]}, ${access}, ${players})
+    on conflict (room) do update set account = excluded.account, title = excluded.title, world = excluded.world, invite = excluded.invite, access = excluded.access, players = excluded.players, seen_at = now(),
+      started_at = case when live.seen_at < now() - interval '90 seconds' then now() else live.started_at end
+    where live.install = excluded.install returning room`;
+  if (!row) throw new Refusal("That world is hosted from another computer.", 409);
+  return json({ room: row.room });
+}
+
+async function endLive(req: Request) {
+  const install = await installOf(req);
+  await sql`delete from live where install = ${install.id}`;
+  return new Response(null, { status: 204, headers: cors });
+}
+
+/** Worlds hosted right now: Anyone and Password ones for everybody, a host's Friends ones only for their friends. A password world's invite stays with the relay, which gives it for the right password. */
+async function liveNow(req: Request) {
+  const viewer = await sessionOf(req);
+  const me = viewer?.id ?? null;
+  const rows = await sql`select l.*, a.username from live l join accounts a on a.id = l.account
+    where l.seen_at > now() - interval '90 seconds' and a.banned_at is null
+      and (l.access <> 'friends' or l.account = ${me}::uuid
+        or exists (select 1 from friends f where f.accepted_at is not null and ((f.requester = l.account and f.addressee = ${me}::uuid) or (f.addressee = l.account and f.requester = ${me}::uuid))))
+    order by l.players desc, l.started_at, l.room limit 100`;
+  return json(
+    rows.map((r: any) => ({
+      room: r.room,
+      title: r.title,
+      host: r.username,
+      players: r.players,
+      access: r.access,
+      world: r.world,
+      since: new Date(r.started_at).getTime(),
+      link: `${RELAY}/r/${r.room}/${r.access === "password" ? "" : `#invite=${r.invite}`}`,
+    })),
+  );
+}
+
 // ---------- messages ----------
 
 /** Messages are read only by their two parties. A block stops new ones from the blocked account; it is checked in the same statement that stores a message. */
@@ -926,6 +983,9 @@ async function route(req: Request, ip: string) {
     return json({ unread: (await sql`select count(*)::int as n from messages where recipient = ${me.id} and read_at is null`)[0].n });
   }
   if (at === "GET /friends") return friendList(req);
+  if (at === "GET /live") return liveNow(req);
+  if (at === "PUT /live") return goLive(req);
+  if (at === "DELETE /live") return endLive(req);
   if (at === "POST /playtime") return playtime(req);
   if (at === "POST /agent-usage") return agentUsage(req);
   const [, part, part2, part3] = url.pathname.split("/");

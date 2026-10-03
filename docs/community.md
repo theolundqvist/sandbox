@@ -58,6 +58,8 @@ Deleting an account needs its password. Its sessions end at once and its worlds 
 | `GET /account/unread` | `{ unread }` messages. |
 | `PUT /friends/:username` | Signed in: asks to be friends, or accepts when they asked first. 20 new requests a day. Answers `{ friend }`: `sent`, `received`, `friends` or `null`, as profiles show it. |
 | `DELETE /friends/:username`, `GET /friends` | Unfriends, takes back or declines a request. `{ friends, received, sent }` by username. |
+| `PUT /live` | The host's app, with its install token and `x-session`, every 30 s while a world it hosts lets in more than its invite holders: `{ link, title, players, access, world? }`, with `access` one of `anyone`, `friends`, `password`. A room stays with the computer that listed it first (409). |
+| `DELETE /live`, `GET /live` | Unlists this computer's world. Worlds seen in the last 90 s, most players first: `anyone` and `password` ones for everybody, `friends` ones only for the host's friends. A `password` world's link has no invite; its relay hands that out for the right password at `POST /_unlock { room, password }`, 10 tries a minute, and keeps only the hash the host's launcher sent it. |
 | `PUT /blocks/:username`, `DELETE /blocks/:username` | Block or unblock: a blocked account can't message the blocker or ask to be friends either way, a block ends a friendship, and earlier messages stay. |
 | `POST /messages/:id/report` | Its recipient only: shares that message with the moderators. |
 

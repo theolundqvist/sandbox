@@ -117,6 +117,31 @@ test("a hosted world has one invite link, the same when hosted again, and a Wi-F
   await menu("stop", {});
 }, 30_000);
 
+test("a world that asks for a password gets its invite only from the relay, for that password, and the choice stays with the world while only a hash is kept", async () => {
+  const menu = await hostMenu();
+  const s = await menu("create", { name: "Lock Test" });
+  const { id, invite, link } = s.running;
+  const room = link.match(/\/r\/([a-z0-9-]+)\//)[1];
+  const unlock = (password: string) => fetch(`http://127.0.0.1:${RELAY}/_unlock`, { method: "POST", body: JSON.stringify({ room, password }) });
+  await until("the relay link", async () => (await fetch(link.split("#")[0])).status === 200);
+  expect(s.running.access).toBe(null);
+  expect((await unlock("hunter22")).status).toBe(404);
+  expect(await menu("access", { id, mode: "password" })).toMatchObject({ status: 400, error: "Pick a password." });
+  const locked = await menu("access", { id, mode: "password", password: "hunter22" });
+  expect([locked.running.access, locked.running.locked]).toEqual(["password", true]);
+  expect(readFileSync(join(dir, "data", "access.json"), "utf8")).not.toContain("hunter22");
+  expect((await unlock("wrong one")).status).toBe(403);
+  expect(await (await unlock("hunter22")).json()).toEqual({ invite });
+
+  // Hosted again, the world still asks; once open to friends, the relay holds nothing back.
+  await menu("stop", {});
+  await menu("host", { id });
+  expect(await until("the lock again", async () => (await unlock("hunter22")).status === 200)).toBe(true);
+  expect((await menu("access", { id, mode: "friends" })).running.access).toBe("friends");
+  expect((await unlock("hunter22")).status).toBe(404);
+  await menu("stop", {});
+}, 30_000);
+
 test("worlds made without a name each get their own", async () => {
   const { key } = await (await localKey(`http://127.0.0.1:${LAUNCHER}`)).json();
   const create = async () => (await fetch(`http://127.0.0.1:${LAUNCHER}/api/menu/create`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: "{}" })).json();

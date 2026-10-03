@@ -352,9 +352,31 @@ async function world(action: string, body?: object) {
 /** A world's one invite: through the relay, which keeps the same room across restarts, or on this Wi-Fi alone while the relay can't be reached. */
 const invite = (id: string) => ({ link: `${tunnelError ? `http://${lan ?? "localhost"}:${PORT}` : `${RELAY}/r/${state.room}`}/#invite=${config(id).invite}`, wifiOnly: !!tunnelError });
 
-/** Tells the running world its invite, so its Invite page shows the link that works rather than wherever the host opened the world. */
+/** Who may join each world, chosen by its host: by invite link alone, anyone, friends, or anyone with a password, of which only a hash is kept. Never in a world's folder, so no export carries it. Unset, the app picks the default. */
+const ACCESS = join(DATA, "access.json");
+type Access = { mode: "invite" | "anyone" | "friends" | "password"; hash?: string };
+const accessOf = (id: string): Access | undefined => readJson(ACCESS)[id];
+async function setAccess(id: string, mode: unknown, password: unknown) {
+  if (!exists(id)) throw new Error("That world doesn't exist.");
+  if (!["invite", "anyone", "friends", "password"].includes(String(mode))) throw new Error("Pick who can join.");
+  const next: Access = { mode: mode as Access["mode"] };
+  if (mode === "password") {
+    const typed = String(password ?? "");
+    if (typed && (typed.length < 4 || typed.length > 40)) throw new Error("A password is 4 to 40 characters.");
+    next.hash = typed ? await Bun.password.hash(typed) : accessOf(id)?.hash;
+    if (!next.hash) throw new Error("Pick a password.");
+  }
+  writeFileSync(ACCESS, JSON.stringify({ ...readJson(ACCESS), [id]: next }, null, 2), { mode: 0o600 });
+  chmodSync(ACCESS, 0o600);
+  if (running?.id === id) await publish();
+}
+
+/** Tells the running world its invite, so its Invite page shows the link that works rather than wherever the host opened the world, and the relay the hashed password that gets that invite, while the world asks for one. */
 async function publish() {
-  if (running) await world("public", invite(running.id));
+  if (!running) return;
+  const access = accessOf(running.id);
+  if (tunnel?.ws.readyState === WebSocket.OPEN) tunnel.ws.send(JSON.stringify(access?.mode === "password" && access.hash ? { t: "lock", hash: access.hash, invite: config(running.id).invite } : { t: "lock" }));
+  await world("public", invite(running.id));
 }
 
 type Secrets = { voice?: Voice; elevenlabs?: { key: string; host: string }; install?: { token: string; host: string } };
@@ -419,7 +441,7 @@ async function menuState() {
     worlds: worlds(),
     running:
       running && live
-        ? { id: running.id, name: live.name, invite: live.invite, ...invite(running.id), hostKey: live.hostKey, players: await world("players"), snapshots: await world("snapshots") }
+        ? { id: running.id, name: live.name, invite: live.invite, ...invite(running.id), access: accessOf(running.id)?.mode ?? null, locked: accessOf(running.id)?.mode === "password", hostKey: live.hostKey, players: await world("players"), snapshots: await world("snapshots") }
         : null,
     relay: RELAY,
     voiceKey: voice ? `${voice.provider} ••••${voice.key.slice(-4)}` : null,
@@ -502,6 +524,7 @@ async function menuApi(req: Request, action: string) {
       configure(body.id, body);
     } else if (["remove", "rewind"].includes(action)) await world(action, body);
     else if (action === "voice") await setVoiceKey(body.key);
+    else if (action === "access") await setAccess(String(body.id), body.mode, body.password);
     else if (action === "share-usage") writeFileSync(USAGE, JSON.stringify({ share: body.share !== false }));
     else if (action !== "state") return Response.json({ error: "Unknown action" }, { status: 404 });
     return Response.json(await menuState());
