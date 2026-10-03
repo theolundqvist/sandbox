@@ -18,8 +18,6 @@ const DOWNLOADS = (version) => process.env.SANDBOX_RELEASE ?? `https://github.co
 const ALLOWED = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"]);
 /** Pages a game may open in the browser: where the host gets a speech key, from each provider in engine/voice.ts, and where a player downloads an agent app from the Agent page. */
 const OUTSIDE = /^https:\/\/((console\.groq\.com|platform\.openai\.com|aistudio\.google\.com|elevenlabs\.io|console\.deepgram\.com)\/|(claude|chatgpt)\.com\/download$)/;
-/** The Agent page's Open in ChatGPT, which only types the prompt into a new Codex chat. */
-const AGENT_LINK = /^codex:\/\/new\?prompt=/;
 /** The agents this app starts in its own terminal, each from its maker's installer, in the world's folder where its allow rule for the world's command sits. The game asks only by id; what runs is decided here. */
 const AGENTS = {
   "claude-code": { name: "Claude Code", maker: "Anthropic", bin: "claude", install: "curl -fsSL https://claude.ai/install.sh | bash" },
@@ -143,9 +141,7 @@ function play(raw) {
   // Lets the web client skip its "get the desktop app" offer.
   wc.setUserAgent(`${wc.getUserAgent()} SandboxDesktop`);
   const stayHome = (event, to) => {
-    if (new URL(to).origin === url.origin) return;
-    event.preventDefault();
-    if (AGENT_LINK.test(to)) void desktop.openExternal(to);
+    if (new URL(to).origin !== url.origin) event.preventDefault();
   };
   wc.on("will-navigate", stayHome);
   wc.on("will-redirect", stayHome);

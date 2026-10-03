@@ -18,6 +18,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Below the kernel's ephemeral range (32768 and up), where outgoing connections already hold ports.
 const port = () => 20000 + Math.floor(Math.random() * 12000);
 const children = [];
+/** Where the run saves screenshots for review, when it is given a folder. */
+const CAPTURES = process.env.SANDBOX_CAPTURES;
+const capture = (page, name) => CAPTURES && page.screenshot({ path: join(CAPTURES, `${name}.png`) });
 
 async function until(what, check, ms = 20000) {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) {
@@ -222,6 +225,8 @@ describe("hosting and joining", () => {
   test("the title menu, no update, and no worlds yet", async () => {
     await until("the menu", () => menuShown(shell));
     assert.deepEqual(await shell.locator("#title .item:visible").allTextContents(), ["Worlds", "Join world", "Host world", "Settings", "Quit"]);
+    assert.equal(await shell.textContent("#version"), `Sandbox ${VERSION}`);
+    await capture(shell, "title");
     await shell.click("text=Worlds");
     assert.equal(await shown(shell, "#no-games"), true);
   });
@@ -356,6 +361,7 @@ describe("hosting and joining", () => {
     const [, folder] = await until("the world's folder", async () => (await game.textContent("#agent-start")).match(/^cd (~\/Sandbox\/[a-z0-9-]+) && claude$/));
     assert.deepEqual([await game.textContent("#agent-install"), await game.textContent("#agent-start")], ["curl -fsSL https://claude.ai/install.sh | bash", `cd ${folder} && claude`]);
     assert.deepEqual([await game.textContent("#agent-os output"), await game.textContent("#agent-terminal")], ["Linux", "Press Ctrl+Alt+T. Paste this line and press Enter."]);
+    await capture(game, "agent-page");
     await game.click("#agent-os i:last-child");
     assert.deepEqual([await game.textContent("#agent-os output"), await game.textContent("#agent-install")], ["Windows", "irm https://claude.ai/install.ps1 | iex"]);
     assert.match(await game.textContent("#agent-terminal"), /^Press the Windows key, type PowerShell, press Enter\./);
