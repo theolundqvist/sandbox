@@ -155,7 +155,7 @@ function play(raw) {
   // Lets the web client skip its "get the desktop app" offer.
   wc.setUserAgent(`${wc.getUserAgent()} SandboxDesktop`);
   const stayHome = (event, to) => {
-    if (OUTSIDE.test(to) || AGENT_LINK.test(to)) {
+    if (OUTSIDE.test(to)) {
       event.preventDefault();
       void desktop.openExternal(to);
     } else if (menuBase(new URL(to).origin) !== menuBase(url.origin)) event.preventDefault();
