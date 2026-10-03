@@ -13,6 +13,19 @@ Document.prototype.exitPointerLock = function () {
 };
 Object.defineProperty(Document.prototype, "hidden", { get: () => false, configurable: true });
 Object.defineProperty(Document.prototype, "visibilityState", { get: () => "visible", configurable: true });
-// The playtest moves the mouse off the centre and back each look step; only the move away counts.
-for (const type of ["pointermove", "mousemove"])
-  addEventListener(type, (e) => locked && e.clientX === innerWidth / 2 && e.clientY === innerHeight / 2 && e.stopImmediatePropagation(), true);
+// The playtest moves the mouse off the centre and back each look step. Only the move away counts, and as Chromium reports no movement for moves it didn't lock, the page gets each move's distance as its movement.
+for (const type of ["pointermove", "mousemove"]) {
+  let last = null;
+  addEventListener(
+    type,
+    (e) => {
+      const at = [e.clientX, e.clientY];
+      const moved = last ? [at[0] - last[0], at[1] - last[1]] : [0, 0];
+      last = at;
+      if (!locked) return;
+      if (at[0] === innerWidth / 2 && at[1] === innerHeight / 2) return e.stopImmediatePropagation();
+      Object.defineProperties(e, { movementX: { value: moved[0] }, movementY: { value: moved[1] } });
+    },
+    true,
+  );
+}

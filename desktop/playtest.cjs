@@ -44,9 +44,9 @@ app.whenReady().then(() => {
       for (let i = 0; i < steps; i++) {
         const [dx, dy] = [Math.round(look[0] / steps), Math.round(look[1] / steps)];
         // Waiting for a frame after each move keeps Chromium from merging the pair into no move at all.
-        send("mouseMove", { x: W / 2 + dx, y: H / 2 + dy, movementX: dx, movementY: dy });
+        send("mouseMove", { x: W / 2 + dx, y: H / 2 + dy });
         await drawn();
-        send("mouseMove", { movementX: -dx, movementY: -dy });
+        send("mouseMove");
         await drawn();
       }
     }
