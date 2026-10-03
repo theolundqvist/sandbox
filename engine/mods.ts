@@ -84,9 +84,10 @@ export class Mods {
   }
   /** Server builds this process made from the engine's own seed files, the only ones a computer without the sandbox runs. */
   private trusted = new Set<string>();
-  /** The world's typecheck, kept running from loadAll until close. */
+  /** The world's typecheck, kept running from its warm-up or first reload until close. */
   private checker: Checker;
   private closed = false;
+  private warmUpStarted = false;
 
   constructor(
     private root: string,
@@ -109,6 +110,19 @@ export class Mods {
    */
   warm() {
     return this.refusal ? Promise.resolve() : this.checker.warm();
+  }
+
+  /**
+   * Starts the typecheck's warm-up in the background, the first time only; the server calls this when the hub first ticks, so the world opens and players join before the checker takes the CPU.
+   * One that can't warm up is reported and the world runs anyway: every reload's check runs it again and is refused while it can't, and a mod can't keep its world down.
+   * A warm-up the world's own stop cut short is no news, and none starts after it.
+   */
+  startWarmUp() {
+    if (this.warmUpStarted || this.closed) return;
+    this.warmUpStarted = true;
+    void this.warm().catch((e) => {
+      if (!this.closed) this.events.feed(`The typecheck couldn't start; each reload tries it again and is refused until it runs:\n${e instanceof Error ? e.message : String(e)}`, "error");
+    });
   }
 
   list(): RunningMod[] {
@@ -140,16 +154,11 @@ export class Mods {
    * Restores exactly the builds that were live at shutdown; a fresh world builds its seed mods.
    * A saved build is used only when its server file is a plain file inside build/; any other (an imported world with doctored state) is built again from the mod's files.
    * Without the sandbox only the engine's unchanged seed mods load, built afresh from the engine's own files, since the saved builds are the world's.
-   * Neither waits for the typecheck, which starts warming up here: the world opens and players join at once, and the first reload waits for the warm-up and says so.
+   * Neither waits for the typecheck: the world opens and players join at once, its warm-up starts when the hub first ticks (startWarmUp), and the first reload waits for the warm-up and says so.
    */
   async loadAll(owners: Record<string, string>) {
     const refusal = this.refusal;
     if (refusal) this.events.feed(refusal, "error");
-    // One that can't warm up is reported and the world runs anyway: every reload's check runs it again and is refused while it can't, and a mod can't keep its world down.
-    // A warm-up the world's own stop cut short is no news.
-    void this.warm().catch((e) => {
-      if (!this.closed) this.events.feed(`The typecheck couldn't start; each reload tries it again and is refused until it runs:\n${e instanceof Error ? e.message : String(e)}`, "error");
-    });
     await this.restore(owners, refusal);
   }
 
@@ -500,16 +509,17 @@ export class Mods {
   }
 
   /**
-   * Bundles a mod in the sandbox, filling in spent. Without one, only an unchanged seed mod builds, here, from the engine's own copy, and its server build is the one kind this process trusts.
-   * Whether the sandbox works is read once, so a build it made is never trusted, nor a changed mod built as its seed, when it fails partway.
+   * Bundles a mod in the sandbox, filling in spent. An unchanged seed mod builds here instead, from the engine's own copy, which is all its build reads: the world's files only count as equal to it.
+   * Without the sandbox only those build, and their server builds are the one kind this process trusts. Whether the sandbox works is read once, so a build is never trusted, nor a changed mod built as its seed, when it fails partway.
    */
   private async build(name: string, spent?: BuildSpent): Promise<Build | string> {
     const dir = join(this.root, "mods", name);
     if (!existsSync(join(dir, "server.ts")) && !existsSync(join(dir, "client.ts"))) return `mods/${name}/ needs a server.ts or a client.ts`;
     const refusal = this.refusal;
-    if (refusal && !this.unchangedSeed(name)) return refusal;
+    const seed = this.unchangedSeed(name);
+    if (refusal && !seed) return refusal;
     const out = join(this.buildDir, name, `${Date.now().toString(36)}`);
-    const built = refusal ? await buildSeed(join(SEEDS, name), out) : await buildMod(this.root, dir, out, spent);
+    const built = seed ? await buildSeed(join(SEEDS, name), out) : await buildMod(this.root, dir, out, spent);
     if (typeof built === "string") return built;
     const result: Build = { server: built.server ?? null, client: built.client ? `/build/${relative(this.buildDir, built.client).split(sep).join("/")}` : null };
     if (refusal && result.server) this.trusted.add(result.server);

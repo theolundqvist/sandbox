@@ -244,15 +244,17 @@ test("a checker leaves no process behind, whether its world closes it or dies", 
   expect(alive(orphan)).toBe(false);
 }, 60_000);
 
-test("a world loads without waiting for its typecheck, whose first reload waits for the warm-up in that same process and says so, and whose next reload doesn't", async () => {
+test("a world loads without starting its typecheck; the warm-up the hub's first tick starts is the one the first reload waits for in that same process and says so, and the next reload doesn't", async () => {
   expect(boxReason()).toBeNull();
   const root = world();
   const mods = modsOf(root);
   await mods.loadAll({});
+  mods.startWarmUp();
+  mods.startWarmUp();
   const pid = await checkerPid(process.pid, root);
   const warming = "Warming up the type checker, first reload takes a few seconds";
   put(root, "mods/solo/server.ts", `export const n: number = 1;\nexport default {};\n`);
-  // Loading TypeScript alone takes the typecheck about a second, so the world loaded while it was warming up and this reload waited for it.
+  // Loading TypeScript alone takes the typecheck about a second, so this reload waited for the warm-up.
   const first = (await mods.reload("solo", "ada", "ada")).report;
   expect(first).toStartWith("solo v1 is live");
   expect(first.split("\n").at(-1)).toBe(warming);
@@ -263,15 +265,29 @@ test("a world loads without waiting for its typecheck, whose first reload waits 
   expect(next).not.toContain(warming);
 }, 60_000);
 
+test("a reload before the warm-up started starts the typecheck itself, waits for it, and says so", async () => {
+  expect(boxReason()).toBeNull();
+  const root = world();
+  const mods = modsOf(root);
+  await mods.loadAll({});
+  put(root, "mods/solo/server.ts", `export const n: number = 1;\nexport default {};\n`);
+  const first = (await mods.reload("solo", "ada", "ada")).report;
+  expect(first).toStartWith("solo v1 is live");
+  expect(first.split("\n").at(-1)).toBe("Warming up the type checker, first reload takes a few seconds");
+}, 60_000);
+
 test("a world stopped while its typecheck warms up stops it quietly and leaves no process behind", async () => {
   expect(boxReason()).toBeNull();
   const feeds: string[] = [];
   const root = world();
   const mods = modsOf(root, feeds);
   await mods.loadAll({});
+  mods.startWarmUp();
   const pid = await checkerPid(process.pid, root);
   await mods.close();
   expect(alive(pid)).toBe(false);
+  // A tick after the stop starts no warm-up of its own.
+  mods.startWarmUp();
   // The cut-short warm-up settles in promise callbacks, which all run before the next macrotask.
   const turn = Promise.withResolvers<void>();
   setImmediate(turn.resolve);
@@ -287,8 +303,9 @@ test("a world whose typecheck can't warm up still loads and says why, and its re
   const mods = modsOf(root, feeds);
   await expect(mods.warm()).rejects.toThrow("TS5024");
   await mods.loadAll({});
+  mods.startWarmUp();
   put(root, "mods/solo/server.ts", `export const n: number = 1;\nexport default {};\n`);
-  // This reload's check waits for the warm-up loading started, which fails first and is reported once.
+  // This reload's check waits for the warm-up the hub's first tick started, which fails first and is reported once.
   expect((await mods.reload("solo", "ada", "ada")).report).toStartWith("The typecheck couldn't run, nothing changed:");
   const couldnt = feeds.filter((text) => text.startsWith("The typecheck couldn't start;"));
   expect(couldnt).toHaveLength(1);

@@ -100,7 +100,7 @@ export async function buildMod(root: string, dir: string, out: string, spent?: B
   }
 }
 
-/** Bundles one of the engine's seed mods in this process, from the engine's own copy: for a computer without the sandbox, where only those run. */
+/** Bundles one of the engine's seed mods in this process, from the engine's own copy: for a world whose seed mod is unchanged, and a computer without the sandbox, where only those run. */
 export async function buildSeed(dir: string, out: string): Promise<Built> {
   const wanted = entries(dir);
   const result: Bundled = await bundle(wanted);

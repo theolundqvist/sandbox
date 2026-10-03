@@ -10,6 +10,10 @@ on:
         description: Run desktop behavior checks without packaging releases
         type: boolean
         default: false
+      tests:
+        description: Test name pattern (empty runs every desktop group)
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -33,9 +37,10 @@ jobs:
         working-directory: .
       - run: bun install --frozen-lockfile
       - run: bunx playwright-core install --with-deps chromium
-      - run: nice -n 19 bun run test
+      - run: nice -n 19 xvfb-run -a node --test --test-name-pattern="$TEST_PATTERN" app.test.mjs
         env:
           SANDBOX_CAPTURES: ${{ runner.temp }}/captures
+          TEST_PATTERN: ${{ inputs.tests || '.*' }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:

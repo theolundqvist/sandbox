@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import { after, before, describe, test } from "node:test";
+import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { _electron, chromium } from "playwright-core";
 
@@ -22,6 +22,32 @@ const children = [];
 /** Where the run saves screenshots for review, when it is given a folder. */
 const CAPTURES = process.env.SANDBOX_CAPTURES;
 const capture = (page, name) => CAPTURES && page.screenshot({ path: join(CAPTURES, `${name}.png`) });
+/**
+ * Keeps an install's launcher log and its worlds' logs where CI uploads captures, so a failed run says what the launcher saw. Every value that opens
+ * something there is blanked first: the menu and relay keys, each world's invite, host key and password, its players' keys, and the stand-in services' keys.
+ */
+function keepLogs(name) {
+  if (!CAPTURES) return;
+  const home = join(dir, name, "Sandbox");
+  const worlds = join(home, "data", "worlds");
+  const read = (path) => {
+    try {
+      return JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      return {};
+    }
+  };
+  const ids = existsSync(worlds) ? readdirSync(worlds) : [];
+  const launcher = read(join(home, "data", "launcher.json"));
+  const secrets = [launcher.hostKey, launcher.relayToken, VOICE_KEY, community.session, "lava-keep-9", ...ids.flatMap((id) => {
+    const config = read(join(worlds, id, "config.json"));
+    return [config.invite, config.hostKey, config.password, ...Object.keys(read(join(worlds, id, "keys.json")))];
+  })].filter((s) => typeof s === "string" && s.length >= 6);
+  const keep = (from, to) => existsSync(from) && writeFileSync(join(CAPTURES, to), secrets.reduce((text, s) => text.replaceAll(s, "[secret]"), readFileSync(from, "utf8")));
+  mkdirSync(CAPTURES, { recursive: true });
+  keep(join(home, "server.log"), `${name}-server.log`);
+  for (const id of ids) keep(join(worlds, id, "world.log"), `${name}-${id}-world.log`);
+}
 
 async function until(what, check, ms = 20000) {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) {
@@ -274,8 +300,16 @@ const portAnswers = (p) => fetch(`http://127.0.0.1:${p}/api/local-key`).then(() 
 
 describe("hosting and joining", () => {
   let app, shell, state;
+  /** Why the world every later test here plays in wasn't hosted: once set, they fail at once with it rather than each waiting out its own timeout. */
+  let unhosted = null;
   before(async () => ({ app, shell, state } = await launch("host", {}, null)));
-  after(() => close(app));
+  beforeEach(() => {
+    if (unhosted) throw new Error(`No hosted world: ${unhosted}`);
+  });
+  after(async () => {
+    await close(app);
+    keepLogs("host");
+  });
 
   test("first launch asks the player's name once, starting from this computer's user name", async () => {
     await shell.locator("#name-first").waitFor();
@@ -376,9 +410,14 @@ describe("hosting and joining", () => {
     });
     assert.deepEqual(host, { focused: true, clickable: true, aboveHints: true });
     assert.equal(await game.textContent("#enter-hint"), "EnterHost");
+    unhosted = "Host untouched didn't get into its new world";
+    await game.evaluate(() => (document.getElementById("error").textContent = ""));
     await game.keyboard.press("Enter");
-    await game.waitForURL(/:\d+\/(#.*)?$/);
+    // The menu goes to the world, or says why it couldn't.
+    const outcome = await until("the hosted world or the menu's error", async () => (/:\d+\/(#.*)?$/.test(game.url()) ? "hosted" : (await game.evaluate(() => document.getElementById("error")?.textContent).catch(() => null)) || false), 30000);
+    if (outcome !== "hosted") assert.fail((unhosted = `the menu said: ${outcome}`));
     await playing(game);
+    unhosted = null;
     const world = await game.textContent("#world-name");
     assert.notEqual(world, "Sandbox");
     await until("the world's name in the title bar", async () => (await shell.textContent("#world")) === world);

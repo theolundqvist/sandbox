@@ -3,7 +3,7 @@ import { basename, join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { frontFile } from "./front";
 import { createCli, joinCodes, joinCommand, joinScript, type Task } from "./cli";
-import { boxRefusal } from "./box";
+import { boxRefusal, prepareBox } from "./box";
 import { install, sanitizeManifest } from "./box/packages";
 import { assetType } from "./egress";
 import { ENGINE_KEYS, GIT, GIT_ENV, hasGit, Mods } from "./mods";
@@ -29,6 +29,8 @@ const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 const readJson = <T>(file: string, fallback: T): T => (existsSync(join(DATA, file)) ? JSON.parse(readFileSync(join(DATA, file), "utf8")) : fallback);
 const writeJson = (file: string, value: unknown) => writeFileSync(join(DATA, file), JSON.stringify(value, null, 2));
 
+// The sandbox's probe runs while the world's files are set up; nothing below asks whether mods can run until it has answered.
+const boxPrepared = prepareBox();
 mkdirSync(DB, { recursive: true });
 const config = readJson<Config>("config.json", { name: "Sandbox", rules: "open", start: "basics", invite: token(), hostKey: token() });
 writeJson("config.json", config);
@@ -82,6 +84,7 @@ const startNotices: string[] = [];
 if (packages.dropped.length) startNotices.push(`Left out packages that aren't plain npm registry versions: ${packages.dropped.join(", ")}.`);
 if (packages.dropped.length || !packageJson || Object.keys(packageJson).some((key) => key !== "private" && key !== "dependencies") || packageJson.private !== true)
   writeFileSync(join(ROOT, "package.json"), JSON.stringify(packages.manifest, null, 2));
+await boxPrepared;
 // An imported world comes without the packages its mods added; its lockfile pins the same versions, so mods that use them reload. A start whose install failed left the folder empty, so the next start tries again.
 const modules = join(ROOT, "node_modules");
 if (packages.manifest.dependencies && !(existsSync(modules) && readdirSync(modules).length) && !boxRefusal())
@@ -275,7 +278,11 @@ const sims = new Sims(DATA, DB, () => mods.list(), {
   },
   unavailable: (reason) => feed(reason, "error"),
   reloadedJustBefore: (game) => mods.reloadedJustBefore(game),
-  hubTick: (diff) => store.track(diff),
+  // The typecheck warms up once the world is open and its hub ticking, not before players can join.
+  hubTick: (diff) => {
+    mods.startWarmUp();
+    store.track(diff);
+  },
   changed: () => broadcast(gamesMessage()),
 });
 mods.sims = sims;

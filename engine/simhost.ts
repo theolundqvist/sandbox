@@ -236,8 +236,9 @@ export class SimHost {
 
   /** The mod running when the process died is blamed, as for a freeze, else one reloaded within the last minute; the game restarts from the last state it sent. */
   private crashed(code: number | string) {
-    if (code === 125) {
-      const reason = boxRefusal()!;
+    // Exit 125 is the sandbox failing only when the box's fresh probe, run before this, found it broken; a mod that exits with it just crashed.
+    const reason = code === 125 ? boxRefusal() : null;
+    if (reason) {
       this.channel = null;
       this.ready = false;
       this.on.log("engine", "error", reason);
@@ -389,7 +390,8 @@ export class SimHost {
       proc.exited.then((code) => {
         broker.close();
         rmSync(scratch, { recursive: true, force: true });
-        done(code === 125 ? boxRefusal()! : `the test run crashed (exit ${proc.signalCode ?? code})`);
+        // As for a crash: 125 is a refusal only when the box's fresh probe found the sandbox broken, and never a pass.
+        done((code === 125 ? boxRefusal() : null) ?? `the test run crashed (exit ${proc.signalCode ?? code})`);
       });
       void drain(proc.stderr as ReadableStream<Uint8Array>);
       void drain(proc.stdout as ReadableStream<Uint8Array>);

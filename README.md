@@ -38,7 +38,7 @@ bun start
 
 Open the menu link the terminal prints (on a Mac or Windows it opens automatically), choose **Host world**, name it, pick house rules and a starting scene, and press **Create**. The world runs on your machine while `bun start` is running.
 
-Hosting custom mods requires macOS or Linux with Landlock. On Windows or when confinement is unavailable, only unchanged starter mods run; other mods and reloads are refused.
+Hosting custom mods requires macOS or Linux with Landlock. Without confinement, only unchanged starter mods run; other mods and reloads are refused. Exporting, sharing or playtesting a world with mod databases also requires confinement.
 
 ![The Host world screen: name, house rules, starting scene and a Create button](docs/readme/menu-new.jpg)
 

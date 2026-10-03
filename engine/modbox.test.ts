@@ -130,3 +130,52 @@ export default {
   }
   throw new Error("The legitimate cross-mod export never reached the world");
 }, 45_000);
+
+/** Polls until check gives a value, or throws why after ms. Real time: the world server is another process, which no fake timer reaches, and it reports a crash recovery through no event. */
+async function until<T>(check: () => Promise<T | undefined>, ms: number, why: string): Promise<T> {
+  for (const end = Date.now() + ms; Date.now() < end; await Bun.sleep(100)) {
+    const found = await check();
+    if (found !== undefined) return found;
+  }
+  throw new Error(why);
+}
+
+/** Reloads a mod that must go live, failing with the world's own report when it doesn't. */
+async function goesLive(mod: string) {
+  const reloaded = await tool("reload", { mod });
+  if (reloaded.status !== 200) throw new Error(`${mod} didn't go live (${reloaded.status}):\n${reloaded.text}`);
+}
+
+/** Reloads a mod whose load spawns { f2legit: version }, and resolves once the live hub holds that entity. */
+async function legitimate(version: number) {
+  const mod = join(data, "world/mods/legit");
+  mkdirSync(mod, { recursive: true });
+  writeFileSync(join(mod, "server.ts"), `import type { ServerMod } from "../../api";\nexport default { load(world) { world.spawn({ f2legit: ${version} }); } } satisfies ServerMod;\n`);
+  await goesLive("legit");
+  await until(async () => {
+    const found = JSON.parse((await tool("query_world", { components: '["f2legit"]' })).text.split("\n")[0]!) as Record<string, { f2legit?: number }>;
+    return Object.values(found).some((entity) => entity.f2legit === version) || undefined;
+  }, 15_000, `The legitimate mod's version ${version} never reached the live hub`);
+}
+
+test("a mod whose test run exits 125 itself is only that reload failing: the next legitimate reload goes live", async () => {
+  await legitimate(1);
+  const rogue = join(data, "world/mods/rogue");
+  mkdirSync(rogue, { recursive: true });
+  writeFileSync(join(rogue, "server.ts"), "process.exit(125);\nexport default {};\n");
+  expect((await tool("reload", { mod: "rogue" })).status).toBe(422);
+  await legitimate(2);
+}, 90_000);
+
+test("a live mod that exits its hub with 125 is a crash it is blamed for: it is taken out, the hub restarts, and reloads keep going live", async () => {
+  const late = join(data, "world/mods/late");
+  mkdirSync(late, { recursive: true });
+  // A test run never fires later(), so this passes its test run and exits only the live hub.
+  writeFileSync(join(late, "server.ts"), `import type { ServerMod } from "../../api";\nexport default { load(world) { world.later(100, () => process.exit(125)); } } satisfies ServerMod;\n`);
+  await goesLive("late");
+  await until(async () => {
+    const live = JSON.parse((await tool("status", {})).text.split("\n\n")[0]!) as { mods: { name: string }[] };
+    return live.mods.some((mod) => mod.name === "late") ? undefined : true;
+  }, 15_000, "The hub's exit 125 never came back as a crash that took the mod out");
+  await legitimate(3);
+}, 90_000);
