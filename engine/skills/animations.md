@@ -66,7 +66,7 @@ const [dance] = (await loader.loadAsync(ctx.asset("dance.fbx"))).animations; // 
 mixer.clipAction(dance!).play();
 ```
 
-Clips bind to bones by name, so a Mixamo clip plays on any Mixamo-rigged model, FBX or glTF. If a clip loads but nothing moves, compare `clip.tracks[0].name` with the model's bone names and rename the tracks to match. FBX files are large: import them into Blender and export `.glb` before upload when they near the 20 MB `add_asset` limit.
+Clips bind to bones by name, so a Mixamo clip plays on any Mixamo-rigged model, FBX or glTF. If a clip loads but nothing moves, compare `clip.tracks[0].name` with the model's bone names and rename the tracks to match. FBX files are large: import them into Blender and export `.glb` before upload when they near the 50 MiB `add_asset` limit.
 
 ## Check it
 

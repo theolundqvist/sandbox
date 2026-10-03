@@ -107,6 +107,8 @@ const BUILD = Buffer.alloc(4 << 20, 7);
 const RELEASES = port();
 const isle = { id: "tinyisle0001", title: "Tiny Isle", description: "One small island.", author: "maker", visibility: "public", votes: 2, plays: 5, players: 3, forks: 0, cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, zip: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/zip`, clip: null, link: "https://site.example/w/tinyisle0001" };
 const community = { shared: null, mod: null, files: {}, session: "session-token-1" };
+/** Another site with a picture and an answer anyone may read, which the game's page must never reach. */
+const canary = { hits: 0 };
 const jetpack = { id: "jetpack00001", kind: "mod", name: "jetpack", title: "Jetpack", description: "Fly with space.", author: "maker", votes: 4, uses: 12, forks: 0, cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, link: "https://site.example/m/jetpack00001", readme: "# Jetpack\nHold space to fly. Fuel refills on the ground.", api: '// server.ts, reached with world.use("jetpack")\n/** Fuel left for a player, 0 to 1. */\nfuel(world, player: string): number', builders: ["maker"], parent: null };
 const ACCOUNT = { username: "ana", email: "ana@example.com" };
 const body = (req) => new Promise((resolve) => {
@@ -148,6 +150,11 @@ const github = createServer(async (req, res) => {
   if (req.url.split("?")[0] === "/worlds") return res.end(JSON.stringify([isle]));
   if (req.url === "/worlds/tinyisle0001") return res.end(JSON.stringify(isle));
   if (req.url === "/files/tinyisle0001/cover") return res.end(COVER);
+  if (req.url.startsWith("/canary")) {
+    canary.hits++;
+    res.setHeader("access-control-allow-origin", "*");
+    return res.end(COVER);
+  }
   if (req.url === "/files/tinyisle0001/zip") return res.end(tinyIsle);
   if (req.url === "/latest") return res.end(JSON.stringify({ tag_name: `v${releases.latest}` }));
   if (req.url === "/hang") return;
@@ -1149,6 +1156,70 @@ export default {
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
     await until("the menu to close", () => page.locator("#menu").isHidden());
+  });
+
+  test("a mod's model loads through GLTFLoader from its own world, while the game's page reaches no other site", async () => {
+    const key = await join("modeller");
+    // A real glTF binary: one triangle, named dragon.
+    const positions = Buffer.from(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]).buffer);
+    const gltf = JSON.stringify({
+      asset: { version: "2.0" },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ name: "dragon", mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: "VEC3", min: [0, 0, 0], max: [1, 1, 0] }],
+      bufferViews: [{ buffer: 0, byteLength: positions.length }],
+      buffers: [{ byteLength: positions.length }],
+    });
+    const chunk = (type, data) => Buffer.concat([Buffer.from(new Uint32Array([data.length]).buffer), Buffer.from(type, "latin1"), data]);
+    const chunks = Buffer.concat([chunk("JSON", Buffer.from(gltf.padEnd(Math.ceil(gltf.length / 4) * 4, " "))), chunk("BIN\0", positions)]);
+    const glb = Buffer.concat([Buffer.from("glTF"), Buffer.from(new Uint32Array([2, 12 + chunks.length]).buffer), chunks]);
+    assert.match(await tool(key, "add_asset", { mod: "model", name: "dragon.glb", base64: glb.toString("base64") }), /^Saved mods\/model\/assets\/dragon\.glb/);
+    const content = `import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import type { ClientMod } from "../../api";
+export default {
+  init(ctx) {
+    const seen: Record<string, unknown> = ((window as any).modelTest = {});
+    new GLTFLoader().loadAsync(ctx.asset("dragon.glb")).then((gltf) => {
+      const dragon = gltf.scene.getObjectByName("dragon") as THREE.Mesh;
+      ctx.scene.add(gltf.scene);
+      (window as any).drawn = () => ctx.renderer.info.render.frame;
+      Object.assign(seen, { mesh: dragon.isMesh === true, points: dragon.geometry.getAttribute("position").count, inScene: ctx.scene.getObjectByName("dragon") === dragon });
+    }, (e) => (seen.error = String(e)));
+    const img = new Image();
+    img.onload = () => (seen.image = "loaded");
+    img.onerror = () => (seen.image = "blocked");
+    img.src = "http://127.0.0.1:${RELEASES}/canary.jpg";
+    fetch("http://127.0.0.1:${RELEASES}/canary").then(() => (seen.fetched = "answered"), () => (seen.fetched = "refused"));
+  },
+} satisfies ClientMod;`;
+    await page.evaluate(() => {
+      window.violations = [];
+      document.addEventListener("securitypolicyviolation", (e) => window.violations.push([e.effectiveDirective, e.blockedURI]));
+    });
+    await tool(key, "write_file", { path: "mods/model/client.ts", content });
+    assert.match(await tool(key, "reload", { mod: "model" }), /^model v1 is live/);
+    const seen = await until("the model and both loads from another site", () => page.evaluate(() => {
+      const t = window.modelTest;
+      return t && ("mesh" in t || "error" in t) && t.image && t.fetched && t;
+    }));
+    assert.deepEqual(seen, { mesh: true, points: 3, inScene: true, image: "blocked", fetched: "refused" });
+    const violated = await until("the violations reported", async () => {
+      const all = await page.evaluate(() => window.violations);
+      const canaries = all.filter(([, uri]) => uri.startsWith(`http://127.0.0.1:${RELEASES}`)).map(([directive]) => directive).sort();
+      return canaries.length === 2 && canaries;
+    });
+    assert.deepEqual(violated, ["connect-src", "img-src"]);
+    assert.equal(canary.hits, 0);
+    // The same-origin scene keeps drawing, the model in it.
+    const drawn = () => page.evaluate(() => window.drawn());
+    const before = await drawn();
+    await until("the scene drawing on", async () => (await drawn()) > before);
+    await capture(page, "csp-glb");
+    // `join` here joins a player, so the path is spelled out; the screenshot made the folder.
+    if (CAPTURES) writeFileSync(`${CAPTURES}/csp-glb.json`, JSON.stringify({ seen, violated, canaryHits: canary.hits }, null, 2));
   });
 
   test("a mod may remove the vote bar and the chat, hide everything and cover the screen, but Tab still opens the menu and its votes", async () => {

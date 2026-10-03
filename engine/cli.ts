@@ -2,8 +2,9 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { box } from "./box";
+import { EgressError } from "./box/broker";
 import { install } from "./box/packages";
-import { download, EgressError } from "./egress";
+import { ASSET_FILES, ASSET_LIMIT, assetType, download } from "./egress";
 import { GIT, GIT_ENV, hasGit, type Mods } from "./mods";
 import { brief, type Recorder } from "./record";
 import type { GameCard } from "./games";
@@ -114,7 +115,7 @@ const tools = [
   {
     name: "add_asset",
     description:
-      "Add a model, texture, sound or other file to mods/<mod>/assets/<name>, from a url the server downloads or from base64. It is live immediately: client code loads it from ctx.asset(\"<name>\") (or \"<other-mod>/<name>\"). Max 20 MB.",
+      `Add a model, texture, sound or data file to mods/<mod>/assets/<name>, from a url on the public internet the server downloads or from base64. Players' games load media only from this world, never from another site, so add every model, texture and sound here first. It is live immediately: client code loads it from ctx.asset("<name>") (or "<other-mod>/<name>"). Takes ${ASSET_FILES} files up to ${ASSET_LIMIT >> 20} MiB.`,
     inputSchema: {
       type: "object",
       properties: { mod: { type: "string" }, name: { type: "string", description: "File name, e.g. dragon.glb" }, url: { type: "string" }, base64: { type: "string" } },
@@ -516,15 +517,16 @@ export function createCli(ctx: CliContext) {
       }
       case "add_asset": {
         if (!/^[\w.-]{1,64}$/.test(args.name ?? "") || args.name.startsWith(".")) throw new ToolError("name must be a plain file name like dragon.glb.");
+        if (!assetType(args.name)) throw new ToolError(`add_asset takes only ${ASSET_FILES} files.`);
         const { abs, rel } = writable(`mods/${args.mod}/assets/${args.name}`, who);
         let bytes: Uint8Array;
         if (args.url) {
-          bytes = await download(args.url, 20 << 20).catch((e) => {
+          bytes = await download(String(args.url), args.name).catch((e) => {
             throw e instanceof EgressError ? new ToolError(e.message) : e;
           });
         } else if (args.base64) bytes = Buffer.from(args.base64, "base64");
         else throw new ToolError("Pass url or base64.");
-        if (bytes.length > 20 << 20) throw new ToolError(`${bytes.length} bytes is over the 20 MB limit.`);
+        if (bytes.length > ASSET_LIMIT) throw new ToolError(`${bytes.length} bytes is over the ${ASSET_LIMIT >> 20} MiB limit.`);
         claim(args.mod, who);
         mkdirSync(dirname(abs), { recursive: true });
         writeFileSync(abs, bytes);

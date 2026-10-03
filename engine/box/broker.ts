@@ -7,6 +7,7 @@ import { checkServerIdentity, connect as tlsConnect, type PeerCertificate } from
  * `{ t: "box-net" }` messages and only HTTP(S) and WS(S) to public addresses go out. Each name is resolved once and the
  * connection goes to the address that was checked, keeping the name's Host header and TLS server name, so DNS can't
  * swap a private address in between. Every redirect is checked the same way. Nothing a child sends can widen this.
+ * The host's own downloads from URLs a builder picks (add_asset) go out the same way through `publicGet`.
  */
 
 export const NET = "box-net";
@@ -286,6 +287,25 @@ async function pinnedFetch(first: URL, init: FetchInit, signal: AbortSignal | un
     url = next;
   }
 }
+
+/**
+ * The host's own GET of a URL someone else picked, like a builder's add_asset: the same checks, pinning and redirects as
+ * a mod's fetch, without the trip through IPC. Every refusal or failure is an EgressError worded for the builder; the
+ * caller reads the body and caps its size. `options` is for the host's tests only.
+ */
+export async function publicGet(raw: string, options: BrokerOptions = {}): Promise<{ res: Response; url: URL }> {
+  const url = parseUrl(raw);
+  if (!url) throw new EgressError("egress refused: not a URL");
+  url.hash = "";
+  const egress = egressRules(options);
+  try {
+    const { res, url: last } = await pinnedFetch(url, { method: "GET", headers: [], body: null, redirect: "follow" }, undefined, egress);
+    return { res, url: last };
+  } catch (error) {
+    throw new EgressError(failure(url, error));
+  }
+}
+
 /** Starts the egress broker for one child. `send` delivers a reply to that child; it may throw once the child is gone. */
 export function createBroker(send: (msg: NetReply) => void, options: BrokerOptions = {}): Broker {
   const egress = egressRules(options);

@@ -302,7 +302,7 @@ knot.raycast(ray, hits); // or ray.intersectObject(knot)
 
 ## 3D text with troika-three-text (client)
 
-`./world add_package name=troika-three-text` and a `types.d.ts` with `declare module "troika-three-text";`. Sharp at any distance, with outlines and any script (it fetches fallback fonts for characters the default font lacks).
+`./world add_package name=troika-three-text`, a `types.d.ts` with `declare module "troika-three-text";`, and a `.ttf`, `.otf` or `.woff` font added with `add_asset` (troika can't read `.woff2`; open-licence fonts in the google/fonts repository on GitHub work as raw links). Sharp at any distance, with outlines. The game loads fonts only from the world, and troika looks up characters its font lacks on a CDN the game can't reach, so pick a font that has every character you show.
 
 ```ts
 import { Text } from "troika-three-text";
@@ -312,6 +312,7 @@ let sign: any;
 export default {
   init(ctx) {
     sign = new Text();
+    sign.font = ctx.asset("sign.ttf"); // the font you added with add_asset
     sign.text = "Welcome to the arena";
     sign.fontSize = 0.6; sign.anchorX = "center"; sign.anchorY = "middle";
     sign.color = "#ffffff"; sign.outlineWidth = 0.03; sign.outlineColor = "#000000";
@@ -359,7 +360,7 @@ export default {
 
 ## Smaller models with glTF-Transform and meshopt (your machine)
 
-No package in the world. Shrink a model on your machine before `add_asset` (which takes at most 20 MB), then load it with three's meshopt decoder:
+No package in the world. Shrink a model on your machine before `add_asset` (which takes at most 50 MiB), then load it with three's meshopt decoder:
 
 ```sh
 bunx @gltf-transform/cli optimize model.glb model.opt.glb --compress meshopt --texture-compress webp

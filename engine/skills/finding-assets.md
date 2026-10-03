@@ -50,7 +50,7 @@ Then open `grid.png` and look at it. Bun installs `sharp` on first run when no `
 
 ## After downloading
 
-1. Upload: `./world add_asset mod=<mod> name=<file> url=<direct link>`, or for files on your machine `base64=@<file>`. `add_asset` takes one file of at most 20 MB. Pack a `.gltf` with separate files into one `.glb`, and shrink big models, with glTF-Transform (libraries.md, "Smaller models").
+1. Upload: `./world add_asset mod=<mod> name=<file> url=<direct link>`, or for files on your machine `base64=@<file>`. `add_asset` takes one `.glb`, `.gltf`, `.bin`, `.vrm`, `.fbx`, `.png`, `.jpg`, `.webp`, `.ktx2`, `.hdr`, `.ogg`, `.mp3`, `.wav`, `.ttf`, `.otf`, `.woff`, `.woff2` or `.json` file of at most 50 MiB, and the game loads files only from the world, never from another site. Pack a `.gltf` with separate files into one `.glb`, and shrink big models, with glTF-Transform (libraries.md, "Smaller models").
 2. Place it where the player will see it, take a screenshot, and look at it.
 3. Fix what's wrong, then screenshot again:
    - Scale: compare it with the player (about 1.8 m tall). Measure with `new THREE.Box3().setFromObject(model).getSize(v)` and scale to the size you want.

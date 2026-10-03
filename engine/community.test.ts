@@ -35,6 +35,8 @@ const voiceStub = Bun.serve({
 const env = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.endsWith("_API_KEY"))), SANDBOX_RELAY: "http://127.0.0.1:1", SANDBOX_COMMUNITY: COMMUNITY, SANDBOX_STT: voiceStub.url.origin, SANDBOX_NO_OPEN: "1" });
 const COVER = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]).toString("base64");
 const CLIP = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 4, 5, 6]).toString("base64");
+/** The smallest real binary glTF: the glTF 2.0 header, then one JSON chunk with a scene holding one empty node. */
+const GLB = new Uint8Array([...Buffer.from("glTF"), 2, 0, 0, 0, 112, 0, 0, 0, 92, 0, 0, 0, ...Buffer.from('JSON{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"dragon"}]}  ')]);
 
 /** The main menu answers at 127.0.0.1; the game, where worlds' code runs, at localhost. */
 type Launcher = { base: string; game: string; key: string; data: string };
@@ -98,6 +100,9 @@ test("a shared world goes up as its export, comes down on another computer as a 
   saved.run("insert into timelapse (at, full, data, activity) values (1, 1, x'00', ?)", [JSON.stringify(moment)]);
   saved.close();
   writeFileSync(join(folder, "seats.json"), JSON.stringify({ "SEAT-CANARY-player": { game: null, lastPos: {} } }));
+  // A mod's model, hosted by the world itself, travels with it.
+  mkdirSync(join(folder, "world", "mods", "lava", "assets"), { recursive: true });
+  writeFileSync(join(folder, "world", "mods", "lava", "assets", "dragon.glb"), GLB);
 
   // A new world has no picture until its host plays it, so sharing asks for the current view.
   expect((await menu(ana, "publish-stage", { id, visibility: "link" })).error).toBe("This world has no picture yet. Host it once, or share it from the game with Current view.");
@@ -118,6 +123,7 @@ test("a shared world goes up as its export, comes down on another computer as a 
   expect(Object.keys(files)).toContain("world.sqlite");
   expect(Object.keys(files)).not.toContain("record.sqlite");
   expect(Object.keys(files)).not.toContain("seats.json");
+  expect(files["world/mods/lava/assets/dragon.glb"]).toEqual(GLB);
   // The Timelapse goes with it, every moment kept but what players said in them.
   const timelapse = join(dir, "shared.sqlite");
   writeFileSync(timelapse, files["world.sqlite"]!);
@@ -138,6 +144,7 @@ test("a shared world goes up as its export, comes down on another computer as a 
   expect(forked.worlds.find((w: any) => w.id === forked.world).name).toBe("Lava Keep");
   // The copy carries the world it came from inside itself, so it survives export and import.
   expect(JSON.parse(readFileSync(join(ben.data, "worlds", forked.world, "config.json"), "utf8")).forkOf).toBe(communityId);
+  expect(new Uint8Array(readFileSync(join(ben.data, "worlds", forked.world, "world", "mods", "lava", "assets", "dragon.glb")))).toEqual(GLB);
 
   // Ben's fork, shared for everyone, keeps the world it came from, but never names Ana's link-only one; another account can't change Ana's.
   const benShared = await publish(ben, benSession, { id: forked.world, title: "Lava Keep, colder", visibility: "public", cover: COVER });
@@ -158,6 +165,10 @@ test("a shared world goes up as its export, comes down on another computer as a 
   const hosted = await menu(ben, "community-get", { id: communityId, trust: true, host: true });
   expect(hosted.running.id).toBe(hosted.world);
   expect((await menu(ben, "community-get", { id: communityId, trust: true, host: true })).world).toBe(hosted.world);
+  // Its model comes from the world that hosts it, as the kind of file it is and never sniffed.
+  const model = await fetch(`${ben.game}/assets/lava/dragon.glb`);
+  expect([model.status, model.headers.get("content-type"), model.headers.get("x-content-type-options")]).toEqual([200, "model/gltf-binary", "nosniff"]);
+  expect(new Uint8Array(await model.arrayBuffer())).toEqual(GLB);
 
   // Taking it down leaves a tombstone its fork still points at; Ben's fork stays.
   expect((await fetch(`${COMMUNITY}/worlds/${communityId}`, { method: "DELETE", headers: { authorization: `Bearer ${anaSession}` } })).status).toBe(204);

@@ -1,121 +1,82 @@
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
-import { checkServerIdentity, type PeerCertificate } from "node:tls";
+import { EgressError, publicGet, type BrokerOptions } from "./box/broker";
 
-/** Builder URLs must never reach the host's launcher, other worlds or the home network; requests go to the checked address so DNS can't swap it. */
+/** The largest file add_asset stores, from a url or base64. */
+export const ASSET_LIMIT = 50 << 20;
 
-const MAX_REDIRECTS = 10;
-const REDIRECTS = new Set([301, 302, 303, 307, 308]);
-const PROXY_ENV = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
-const NAT64 = [0, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0];
+/** Types any asset may arrive as from a server that doesn't know better, like GitHub raw links and object stores. A response without a type counts as one of these. */
+const GENERIC = ["application/octet-stream", "binary/octet-stream"];
 
-export class EgressError extends Error {}
+/**
+ * What add_asset stores, by file extension: the type the world serves it as, and the content types a download of it may
+ * arrive with besides the generic ones. Only inert models, images, sounds, fonts and data: nothing taken becomes a page
+ * or script on the game's origin.
+ */
+const ASSETS: Record<string, { type: string; accept: string[] }> = {
+  glb: { type: "model/gltf-binary", accept: ["model/gltf-binary"] },
+  gltf: { type: "model/gltf+json", accept: ["model/gltf+json", "application/json", "text/plain"] },
+  bin: { type: "application/octet-stream", accept: [] },
+  // Models the guide's skills load as they are: VRM is binary glTF, FBX a model file; neither is a page or a script.
+  vrm: { type: "model/gltf-binary", accept: ["model/gltf-binary"] },
+  fbx: { type: "application/octet-stream", accept: ["text/plain"] },
+  png: { type: "image/png", accept: ["image/png"] },
+  jpg: { type: "image/jpeg", accept: ["image/jpeg"] },
+  webp: { type: "image/webp", accept: ["image/webp"] },
+  ktx2: { type: "image/ktx2", accept: ["image/ktx2"] },
+  hdr: { type: "image/vnd.radiance", accept: ["image/vnd.radiance", "image/x-hdr"] },
+  ogg: { type: "audio/ogg", accept: ["audio/ogg", "application/ogg"] },
+  mp3: { type: "audio/mpeg", accept: ["audio/mpeg", "audio/mp3"] },
+  wav: { type: "audio/wav", accept: ["audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"] },
+  // The game page takes fonts from the world alone: CSS reads all four, troika-three-text all but woff2.
+  ttf: { type: "font/ttf", accept: ["font/ttf", "font/sfnt", "application/x-font-ttf", "application/font-sfnt"] },
+  otf: { type: "font/otf", accept: ["font/otf", "font/sfnt", "application/x-font-opentype", "application/font-sfnt", "application/vnd.ms-opentype"] },
+  woff: { type: "font/woff", accept: ["font/woff", "application/font-woff"] },
+  woff2: { type: "font/woff2", accept: ["font/woff2", "application/font-woff2"] },
+  json: { type: "application/json", accept: ["application/json", "text/plain"] },
+};
 
-function ipv4(address: string): number[] | null {
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address);
-  const bytes = m?.slice(1).map(Number);
-  return bytes && bytes.every((b) => b <= 255) ? bytes : null;
+/** The kinds of file add_asset takes, for messages. */
+export const ASSET_FILES = Object.keys(ASSETS)
+  .map((ext) => `.${ext}`)
+  .join(", ");
+
+function asset(name: string) {
+  const ext = /\.([a-z0-9]+)$/i.exec(name)?.[1]?.toLowerCase();
+  return ext && Object.hasOwn(ASSETS, ext) ? ASSETS[ext]! : null;
 }
 
-function ipv6(address: string): number[] | null {
-  let text = address.replace(/%.*$/, "");
-  if (isIP(text) !== 6) return null;
-  const tail = /(\d+\.\d+\.\d+\.\d+)$/.exec(text)?.[1];
-  if (tail) {
-    const v4 = ipv4(tail);
-    if (!v4) return null;
-    text = `${text.slice(0, -tail.length)}${((v4[0]! << 8) | v4[1]!).toString(16)}:${((v4[2]! << 8) | v4[3]!).toString(16)}`;
-  }
-  const [head, rest] = text.split("::");
-  const left = head ? head.split(":") : [];
-  const right = rest ? rest.split(":") : [];
-  const groups = rest === undefined ? left : [...left, ...Array<string>(8 - left.length - right.length).fill("0"), ...right];
-  return groups.length === 8 ? groups.flatMap((g) => [parseInt(g, 16) >> 8, parseInt(g, 16) & 0xff]) : null;
+/** The content type the world serves an asset file as, or null when add_asset doesn't take files like it. */
+export function assetType(name: string): string | null {
+  return asset(name)?.type ?? null;
 }
 
-function publicV4([a, b, c]: number[]) {
-  if (a === 0 || a === 10 || a === 127 || a! >= 224) return false; // this network, private, loopback, multicast, reserved and broadcast
-  if (a === 100 && (b! & 0xc0) === 64) return false; // 100.64/10 carrier-grade NAT
-  if (a === 169 && b === 254) return false; // link-local, cloud metadata
-  if (a === 172 && (b! & 0xf0) === 16) return false;
-  if (a === 192 && b === 168) return false;
-  if (a === 192 && b === 0 && (c === 0 || c === 2)) return false; // protocol assignments, TEST-NET-1
-  if (a === 192 && b === 88 && c === 99) return false; // 6to4 relay anycast
-  if (a === 198 && (b! & 0xfe) === 18) return false; // benchmarking
-  if (a === 198 && b === 51 && c === 100) return false; // TEST-NET-2
-  if (a === 203 && b === 0 && c === 113) return false; // TEST-NET-3
-  return true;
-}
-
-/** Whether an IP address is ordinary public unicast. */
-export function publicAddress(address: string): boolean {
-  const v4 = ipv4(address);
-  if (v4) return publicV4(v4);
-  const v6 = ipv6(address);
-  if (!v6) return false;
-  // NAT64's well-known prefix carries an IPv4 address, and may only carry a public one.
-  if (NAT64.every((b, i) => v6[i] === b)) return publicV4(v6.slice(12));
-  // Only 2000::/3 is global unicast: that leaves out IPv4-mapped and -compatible, loopback, unique-local, link-local and multicast.
-  const [a, b, c, d] = v6;
-  if ((a! & 0xe0) !== 0x20) return false;
-  if (a === 0x20 && b === 0x01 && (c! & 0xfe) === 0) return false; // 2001::/23 protocol assignments: Teredo, benchmarking, ORCHID
-  if (a === 0x20 && b === 0x01 && c === 0x0d && d === 0xb8) return false; // documentation
-  if (a === 0x20 && b === 0x02) return false; // 6to4
-  if (a === 0x3f && b === 0xff && (c! & 0xf0) === 0) return false; // documentation
-  return true;
-}
-
-/** Downloads `raw` with GET from public addresses only, up to `limit` bytes. */
-export async function download(raw: string, limit: number): Promise<Uint8Array> {
-  let url: URL;
+/**
+ * Downloads a builder's asset, to be stored as `name`, the way a mod's fetch goes out: public addresses only, every
+ * redirect checked again, each connection pinned to the address that was checked (box/broker's publicGet). Refuses
+ * names add_asset doesn't take, responses whose type says they are something else, and anything over `limit` bytes.
+ * `options` is for tests only.
+ */
+export async function download(raw: string, name: string, limit = ASSET_LIMIT, options: BrokerOptions = {}): Promise<Uint8Array> {
+  const kind = asset(name);
+  if (!kind) throw new EgressError(`add_asset takes only ${ASSET_FILES} files.`);
+  const { res, url } = await publicGet(raw, options);
+  const refuse = async (message: string): Promise<never> => {
+    await res.body?.cancel();
+    throw new EgressError(message);
+  };
+  const tooBig = `The file is larger than the ${Math.round(limit / 2 ** 20)} MiB add_asset takes.`;
+  if (!res.ok) return refuse(`Download failed: HTTP ${res.status}`);
+  const type = res.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase() || GENERIC[0]!;
+  if (!GENERIC.includes(type) && !kind.accept.includes(type)) return refuse(`${url.origin} sent ${type}, not a ${name.slice(name.lastIndexOf("."))} file.`);
+  if (Number(res.headers.get("content-length")) > limit) return refuse(tooBig);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
   try {
-    url = new URL(raw);
-  } catch {
-    throw new EgressError(`${raw} is not a URL.`);
-  }
-  if (PROXY_ENV.some((name) => process.env[name])) throw new EgressError("Downloads are off while a network proxy is set.");
-  for (let hops = 0; ; hops++) {
-    if (url.protocol !== "http:" && url.protocol !== "https:") throw new EgressError("Only http and https URLs can be downloaded.");
-    if (url.username || url.password) throw new EgressError("URLs with a password can't be downloaded.");
-    const name = url.hostname.replace(/^\[(.*)\]$/, "$1").replace(/\.$/, "");
-    let found: { address: string; family: number }[];
-    try {
-      found = isIP(name) ? [{ address: name, family: isIP(name) }] : await lookup(name, { all: true });
-    } catch {
-      throw new EgressError(`Couldn't find ${name}.`);
-    }
-    if (!found.length) throw new EgressError(`Couldn't find ${name}.`);
-    if (!found.every(({ address }) => publicAddress(address))) throw new EgressError(`${name} is not on the public internet.`);
-    const to = (found.find((a) => a.family === 4) ?? found[0]!).address;
-    const pinned = new URL(url);
-    pinned.hostname = isIP(to) === 6 ? `[${to}]` : to;
-    const res = await fetch(pinned, {
-      headers: { host: url.host },
-      redirect: "manual",
-      // A pooled connection is keyed by the address, and could carry this request over another name's TLS session.
-      keepalive: false,
-      tls:
-        url.protocol === "https:"
-          ? { ...(isIP(name) ? {} : { serverName: name }), checkServerIdentity: (_host: string, cert: PeerCertificate) => checkServerIdentity(name, cert) }
-          : undefined,
-    }).catch((e: Error) => {
-      throw new EgressError(`Download failed: ${e.message}`);
-    });
-    const location = REDIRECTS.has(res.status) ? res.headers.get("location") : null;
-    if (location !== null) {
-      await res.body?.cancel();
-      if (hops >= MAX_REDIRECTS) throw new EgressError("Too many redirects.");
-      url = new URL(location, url);
-      continue;
-    }
-    if (!res.ok) throw new EgressError(`Download failed: HTTP ${res.status}`);
-    const chunks: Uint8Array[] = [];
-    let total = 0;
     for await (const chunk of res.body ?? []) {
-      total += chunk.length;
-      if (total > limit) throw new EgressError(`The file is over the ${limit >> 20} MB limit.`);
+      if ((total += chunk.byteLength) > limit) throw new EgressError(tooBig);
       chunks.push(chunk);
     }
-    return Buffer.concat(chunks);
+  } catch (error) {
+    throw error instanceof EgressError ? error : new EgressError(`Download from ${url.origin} failed: ${error instanceof Error ? error.message : String(error)}`);
   }
+  return Buffer.concat(chunks);
 }

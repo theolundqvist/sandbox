@@ -7,6 +7,7 @@ import { frontFile } from "./front";
 import { createCli, joinCodes, joinCommand, joinScript, type Task } from "./cli";
 import { boxRefusal } from "./box";
 import { install, sanitizeManifest } from "./box/packages";
+import { assetType } from "./egress";
 import { ENGINE_KEYS, GIT, GIT_ENV, hasGit, Mods } from "./mods";
 import { playtests } from "./playtest";
 import { latencies, openRecord, route } from "./record";
@@ -557,7 +558,11 @@ function hostIs(body: { host?: string }, name: string) {
 /** The client builds a player in this game loads: every shared mod and the game's own. */
 const clientMods = (game: string | null) =>
   [...mods.running].filter(([, m]) => m.build.client && (!m.build.game || m.build.game === game)).map(([name, m]) => ({ name, url: m.build.client! }));
-const html = (file: string) => new Response(Bun.file(join(ENGINE, "client", file)), { headers: { "content-type": "text/html" } });
+/**
+ * The game page loads media and makes requests only on this world's own origin: a mod's models, textures and sounds are
+ * add_asset files the world serves, never another site's. Data and blob URLs are what three.js makes of embedded textures.
+ */
+const GAME_PAGE_POLICY = ["img-src 'self' data: blob:", "media-src 'self' data: blob:", "connect-src 'self' data: blob:", "font-src 'self' data:"].join("; ");
 const bearer = (req: Request) => req.headers.get("authorization")?.replace(/^Bearer /, "") ?? new URL(req.url).searchParams.get("key");
 
 const server = Bun.serve<Conn>({
@@ -567,7 +572,7 @@ const server = Bun.serve<Conn>({
     const url = new URL(req.url);
     const path = url.pathname;
 
-    if (path === "/") return html("index.html");
+    if (path === "/") return new Response(Bun.file(join(ENGINE, "client", "index.html")), { headers: { "content-type": "text/html", "content-security-policy": GAME_PAGE_POLICY } });
     if (path === "/client.js") return new Response(clientJs, { headers: { "content-type": "text/javascript" } });
     const front = await frontFile(path);
     if (front) return front;
@@ -579,7 +584,8 @@ const server = Bun.serve<Conn>({
       const [mod, name] = path.slice("/assets/".length).split("/").map(decodeURIComponent);
       const file = Bun.file(join(ROOT, "mods", mod ?? "", "assets", name ?? ""));
       if (![mod, name].every((part) => /^\w[\w.-]*$/.test(part ?? "")) || !(await file.exists())) return new Response("not found", { status: 404 });
-      return new Response(file);
+      // As the kind of file add_asset took it for and never sniffed, so nothing in a mod's assets runs as a page or script on the game's origin.
+      return new Response(file, { headers: { "content-type": assetType(name!) ?? "application/octet-stream", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox" } });
     }
     if (/^\/speech\/[0-9a-f]{64}\.mp3$/.test(path)) {
       const file = Bun.file(join(SPEECH, path.slice("/speech/".length)));
