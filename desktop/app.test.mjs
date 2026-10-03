@@ -1730,3 +1730,70 @@ describe("world list", () => {
     await leave(app, shell);
   });
 });
+
+describe("a slow mod", () => {
+  const out = process.env.SANDBOX_CAPTURES ?? join(dir, "captures");
+  let app, shell, state, base, key, game;
+  before(async () => {
+    mkdirSync(out, { recursive: true });
+    ({ app, shell, state } = await launch("slowmod"));
+    await shell.click("text=Host world");
+    game = await gamePage(app);
+    await game.locator("#create-go").waitFor();
+    await game.keyboard.press("Enter");
+    await game.waitForURL(/:\d+\/(#.*)?$/);
+    await playing(game);
+    base = `http://127.0.0.1:${state().port}`;
+    key = await game.evaluate(() => Object.entries(localStorage).find(([k]) => k.startsWith("sandbox-key:"))[1]);
+  });
+  after(async () => {
+    await close(app);
+  });
+
+  const call = async (name, args = {}) => {
+    const form = new FormData();
+    for (const [k, v] of Object.entries(args)) form.append(k, typeof v === "string" ? v : JSON.stringify(v));
+    const res = await fetch(`${base}/cli/${name}`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: form });
+    return (await res.text()).split("\n\nWhen you are done")[0];
+  };
+  const fps = async () => JSON.parse((await call("perf")).split("\n\n")[0]).players.host?.fps ?? 0;
+  const hog = `import type { ClientMod } from "../../api";\nexport default { frame() { for (const until = performance.now() + 400; performance.now() < until; ); } } satisfies ClientMod;`;
+  const calm = `import type { ClientMod } from "../../api";\nexport default {} satisfies ClientMod;`;
+  const timeline = [];
+  const note = async (what) => {
+    const at = await fps();
+    timeline.push({ what, fps: at, at: Date.now() });
+    writeFileSync(join(out, "slow-mod.json"), JSON.stringify(timeline, null, 2));
+    return at;
+  };
+
+  test("a mod whose frame hook takes 400 ms is fixed by its next reload, and unloaded by deleting it, each time back to the game's frame rate", async () => {
+    await sleep(6000);
+    const normal = await note("before");
+    // Overwriting a file takes the hash it was read at.
+    const write = async (content) => {
+      const read = await call("read_file", { path: "mods/hog/client.ts" });
+      const base_hash = read.startsWith("hash: ") ? read.split("\n")[0].slice(6) : undefined;
+      const res = await call("write_file", { path: "mods/hog/client.ts", content, ...(base_hash && { base_hash }) });
+      assert.doesNotMatch(res, /already exists|rejected/, res);
+    };
+    const slowDown = async (version) => {
+      await write(hog);
+      assert.match(await call("reload", { mod: "hog" }), new RegExp(`^hog v${version} is live`));
+      await until("the game to slow down", async () => (await fps()) <= 3, 30000);
+      await note(`hog v${version} slow`);
+    };
+    const recovered = (what) => until(what, async () => (await note(what)) >= normal * 0.8, 60000);
+
+    await slowDown(1);
+    await write(calm);
+    assert.match(await call("reload", { mod: "hog" }), /^hog v2 is live/);
+    await recovered("fixed by a reload");
+
+    await slowDown(3);
+    const base_hash = (await call("read_file", { path: "mods/hog/client.ts" })).split("\n")[0].slice(6);
+    assert.equal(await call("delete_file", { path: "mods/hog/client.ts", base_hash }), "Deleted mods/hog/client.ts.");
+    assert.match(await call("reload", { mod: "hog" }), /^Unloaded hog/);
+    await recovered("unloaded");
+  });
+});
