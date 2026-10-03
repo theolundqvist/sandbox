@@ -806,7 +806,7 @@ describe("updates", () => {
     const closed = new Promise((r) => app.once("close", r));
     await game.locator("#menu-button").dispatchEvent("click");
     await game.click("#menu-update");
-    await until("the download partway in the game's menu", () => game.locator("#menu-update").evaluate((b) => b.textContent === "Downloading…" && ((d) => d > 0.2 && d < 0.8)(b.querySelector(".bar i").offsetWidth / b.querySelector(".bar").offsetWidth)));
+    await until("the download partway in the game's menu", () => game.locator("#menu-update").evaluate((b) => b.textContent === "Updating…" && ((d) => d > 0.2 && d < 0.8)(b.querySelector(".bar i").offsetWidth / b.querySelector(".bar").offsetWidth)));
     await capture(game, "update-in-game");
     await closed;
     await until("the installer", async () => existsSync(marker) && readFileSync(marker, "utf8").trim() === String(pid));

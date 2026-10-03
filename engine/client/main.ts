@@ -2366,7 +2366,7 @@ const desktop = (window as { sandboxDesktop?: { update(): Promise<string | null>
 desktop?.onUpdate((version) => ($("menu-update").hidden = !version));
 // Apps before 0.2.9 don't tell how the update goes.
 desktop?.onUpdating?.((progress) => {
-  $("menu-update").querySelector("span")!.textContent = progress?.installing ? "Installing…" : progress ? "Downloading…" : "Update";
+  $("menu-update").querySelector("span")!.textContent = progress?.installing ? "Installing…" : progress ? "Updating…" : "Update";
   const bar = $("menu-update").querySelector<HTMLElement>(".bar")!;
   bar.hidden = !progress;
   bar.querySelector("i")!.style.width = `${(progress?.installing ? 1 : (progress?.downloaded ?? 0)) * 100}%`;
