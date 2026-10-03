@@ -75,15 +75,24 @@ const releases = { latest: VERSION, installer: null, build: true };
 /** The release's build for this computer, sent slowly enough to watch it download. */
 const BUILD = Buffer.alloc(4 << 20, 7);
 const RELEASES = port();
-const isle = { id: "tinyisle0001", title: "Tiny Isle", description: "One small island.", author: "maker", cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, zip: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/zip`, clip: null, link: "https://site.example/w/tinyisle0001" };
-const community = { shared: null, files: {} };
+const isle = { id: "tinyisle0001", title: "Tiny Isle", description: "One small island.", author: "maker", visibility: "public", votes: 2, plays: 5, players: 3, forks: 0, cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, zip: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/zip`, clip: null, link: "https://site.example/w/tinyisle0001" };
+const community = { shared: null, files: {}, session: "session-token-1" };
+const ACCOUNT = { username: "ana", email: "ana@example.com" };
 const body = (req) => new Promise((resolve) => {
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
   req.on("end", () => resolve(Buffer.concat(chunks)));
 });
 const github = createServer(async (req, res) => {
+  const signedIn = req.headers.authorization === `Bearer ${community.session}`;
+  if (req.url === "/sessions" && req.method === "POST") {
+    const { email, password } = JSON.parse(await body(req));
+    if (email !== ACCOUNT.email || password !== "lava-keep-9") return (res.statusCode = 401), res.end(JSON.stringify({ error: "That email and password don't match." }));
+    return res.end(JSON.stringify({ token: community.session, account: ACCOUNT }));
+  }
+  if (req.url === "/account") return signedIn ? res.end(JSON.stringify({ account: ACCOUNT })) : ((res.statusCode = 401), res.end("{}"));
   if (req.url === "/worlds" && req.method === "POST") {
+    if (!signedIn) return (res.statusCode = 401), res.end("{}");
     community.shared = JSON.parse(await body(req));
     const uploads = Object.fromEntries(Object.keys(community.shared.files).map((kind) => [kind, `http://127.0.0.1:${RELEASES}/upload/${kind}`]));
     return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001", ownerToken: "owner", uploads }));
@@ -92,8 +101,11 @@ const github = createServer(async (req, res) => {
     community.files[req.url.slice(8)] = await body(req);
     return res.end();
   }
-  if (req.url === "/worlds/shared000001/done" && req.method === "POST") return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001" }));
-  if (req.url === "/worlds") return res.end(JSON.stringify([isle]));
+  if (req.url === "/worlds/shared000001/done" && req.method === "POST") {
+    const { title, description, visibility } = community.shared;
+    return res.end(JSON.stringify({ id: "shared000001", link: "https://site.example/w/shared000001", title, description, visibility }));
+  }
+  if (req.url.split("?")[0] === "/worlds") return res.end(JSON.stringify([isle]));
   if (req.url === "/worlds/tinyisle0001") return res.end(JSON.stringify(isle));
   if (req.url === "/files/tinyisle0001/cover") return res.end(COVER);
   if (req.url === "/files/tinyisle0001/zip") return res.end(tinyIsle);
@@ -454,18 +466,28 @@ describe("hosting and joining", () => {
     assert.equal(bare, "https://sandbox-relay.example.com/r/ab12cd/");
   });
 
-  test("Community hosts a shared world after the trust question, and Share sends a world up with its picture and a clip of its timelapse", async () => {
+  test("Community plays a shared world from the launch screen after the trust question, and the game's Share publishes a world as the signed-in account with its picture and a clip of its timelapse", async () => {
+    await shell.click("[data-to=settings]");
+    await shell.click("#go-account");
+    await shell.fill("#signin-email", ACCOUNT.email);
+    await shell.fill("#signin-password", "lava-keep-9");
+    await shell.click("#signin-go");
+    await until("the account", async () => (await shell.inputValue("#account-username")) === "ana");
+    await shell.keyboard.press("Escape");
+    await shell.keyboard.press("Escape");
+    await until("the app's title", () => menuShown(shell));
+
     await shell.click("text=Worlds");
     await shell.click("#go-community");
-    const game = await gamePage(app);
-    const listed = game.locator("#community-list .item");
+    const listed = shell.locator("#community-list .item");
     await until("the community worlds", async () => (await listed.count()) === 1);
-    assert.equal(await listed.first().textContent(), "Tiny Isleby makerHostRemix");
-    await listed.first().locator("button", { hasText: "Host" }).click();
-    await until("the trust question", async () => (await game.textContent("#ask-note")) === "This world runs code from maker. Only play worlds from people you trust.");
-    await game.click("#ask-yes");
-    await until("Stop the hosted world?", async () => /^Stop .+\?$/.test(await game.textContent("#ask-title")));
-    await game.click("#ask-yes");
+    assert.equal(await listed.first().locator(".what").textContent(), "Tiny Isleby maker · 5 plays · 2 votes");
+    await listed.first().click();
+    await until("the world's screen", async () => (await shell.textContent("#cworld-title")) === "Tiny Isle");
+    await shell.click("#cworld-play");
+    await until("the trust question", async () => (await shell.textContent("#trust-text")) === "This world runs code from maker. Only play worlds from people you trust.");
+    await shell.click("#trust-yes");
+    const game = await gamePage(app);
     await playing(game);
     assert.equal(await game.textContent("#world-name"), "Tiny Isle");
     const worlds = join(dir, "host", "Sandbox", "data", "worlds");
@@ -479,9 +501,11 @@ describe("hosting and joining", () => {
     await game.click("#world-share");
     await until("the share page", async () => (await game.inputValue("#share-title")) === "Tiny Isle");
     await game.fill("#share-description", "One small island, remixed.");
+    await answer(app, 0);
     await game.click("#share-go");
     await until("the shared link", async () => (await game.textContent("#share-link")) === "https://site.example/w/shared000001", 60_000);
-    assert.deepEqual([community.shared.title, community.shared.visibility, community.shared.remixOf], ["Tiny Isle", "link", "tinyisle0001"]);
+    assert.deepEqual((await asked(app)).map((q) => q.message), ["Publish Tiny Isle as ana?"]);
+    assert.deepEqual([community.shared.title, community.shared.visibility, community.shared.forkOf], ["Tiny Isle", "link", "tinyisle0001"]);
     assert.deepEqual(community.files.cover, COVER, "the world's picture");
     assert.deepEqual([...community.files.clip.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3]);
     assert.equal(community.files.zip.subarray(0, 2).toString(), "PK");
