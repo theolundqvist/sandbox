@@ -123,7 +123,7 @@ function macRule(path: string) {
 
 function linuxArgv(cwd: string, read: string[], list: string[], write: string[], cmd: string[]) {
   if (!existsSync(LOADER)) throw new Error("Mod sandbox cannot find Bun's dynamic loader.");
-  const payload = Buffer.from(JSON.stringify({ bun: BUN, cwd, read: [LOADER, CONFIG, LOCK, ...read,
+  const payload = Buffer.from(JSON.stringify({ bin: BUN, cwd, exec: [], read: [LOADER, CONFIG, LOCK, ...read,
     "/usr/lib", "/lib", "/etc/ssl/certs", "/dev/null", "/dev/urandom",
     "/proc/self/maps", "/proc/self/cgroup"].filter(existsSync),
     list: [ROOT, ...list],
@@ -144,6 +144,58 @@ function macProfile(read: string[], list: string[], write: string[]) {
     "(allow sysctl-read)"].join("\n");
 }
 
+
+export type ShellBoxOptions = {
+  script: string;
+  cwd: string;
+  /** Folders the shell may change. */
+  write: string[];
+  /** Files it may read and run besides the system's programs. */
+  run?: string[];
+  env: Record<string, string>;
+  stdin?: Uint8Array;
+};
+
+const SHELL = "/bin/bash";
+/** The system's programs and libraries, readable and runnable in a shell box: nothing there is the player's. Bun is not: seccomp lets only the box's first process signal itself, and Bun aborts without that. */
+const PROGRAMS = ["/usr", "/bin", "/lib", "/lib64", "/sbin", "/opt/homebrew", "/usr/local"];
+const DEVICES = ["/dev/null", "/dev/zero", "/dev/urandom", "/dev/random"];
+
+function macShellProfile(run: string[], write: string[]) {
+  const quoted = (path: string) => `"${path.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+  const programs = [...PROGRAMS, "/System/Library", "/Library/Developer/CommandLineTools", "/private/var/db/dyld", "/private/var/db/timezone"].filter(existsSync).map(path => `(subpath ${quoted(realpathSync(path))})`);
+  const files = run.map(macRule);
+  return ["(version 1)", "(deny default)", "(allow process-fork)",
+    `(allow process-exec ${[...programs, ...files].join(" ")})`,
+    `(allow file-read* (literal "/") ${[...programs, ...files].join(" ")} ${DEVICES.filter(existsSync).map(path => `(literal ${quoted(path)})`).join(" ")})`,
+    "(allow file-read-metadata)",
+    ...[...write, "/dev/null"].map(path => `(allow file-read* file-write* ${macRule(path)})`),
+    "(allow signal (target same-sandbox))",
+    "(allow process-info* (target same-sandbox))",
+    "(allow sysctl-read)"].join("\n");
+}
+
+/** Bash that can run the system's programs, change only `write`, reach no network and never leave its process group (kill -pid stops it all). */
+export function shellBox(options: ShellBoxOptions): Bun.Subprocess<"ignore" | Uint8Array, "pipe", "pipe"> {
+  const refusal = boxReason();
+  if (refusal) throw new Error(refusal);
+  const write = paths(options.write);
+  const run = paths(options.run ?? []);
+  const blocked = [sep, realpathSync(join(ROOT, "../..")), realpathSync(process.env.HOME || ROOT)];
+  if ([...write, ...run].some(path => blocked.includes(path))) throw new Error("Mod sandbox requires narrow filesystem grants.");
+  const cwd = realpathSync(options.cwd);
+  const io = { env: options.env, stdin: options.stdin ?? "ignore", stdout: "pipe", stderr: "pipe", detached: true } as const;
+  const cmd = ["--noprofile", "--norc", "-c", options.script];
+  if (process.platform === "darwin") return Bun.spawn(["/usr/bin/sandbox-exec", "-p", macShellProfile(run, write), SHELL, ...cmd], { ...io, cwd });
+  const payload = Buffer.from(JSON.stringify({
+    bin: SHELL, cwd, list: [],
+    read: [LOADER, ...DEVICES, "/etc/ssl/certs", "/etc/localtime", "/proc/self/maps", "/proc/self/cgroup"].filter(existsSync),
+    write: [...write, "/dev/null"],
+    exec: [...PROGRAMS.filter(existsSync).map(path => realpathSync(path)), ...run],
+    cmd,
+  })).toString("base64url");
+  return Bun.spawn([BUN, "--no-env-file", `--config=${CONFIG}`, CHILD, payload], { ...io, cwd: ROOT });
+}
 
 /** Start a Bun process with no ambient environment, filesystem grants or network access. */
 export function box(options: BoxOptions): Bun.Subprocess<"ignore", "pipe", "pipe"> {

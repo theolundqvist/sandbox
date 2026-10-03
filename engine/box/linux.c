@@ -31,6 +31,8 @@
 #define WRITE (LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE | LANDLOCK_ACCESS_FS_MAKE_DIR | LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK | LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_SYM)
 #define DENY (SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA))
 #define SYSCALL(nr) BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1), BPF_STMT(BPF_RET | BPF_K, DENY)
+/* Reading extended attributes answers "not supported", which tools like ls take quietly. */
+#define NO_XATTR(nr) BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1), BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EOPNOTSUPP)
 
 static const uint64_t FILE_RIGHTS = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE |
   LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_TRUNCATE;
@@ -164,12 +166,12 @@ static int filter_syscalls(void) {
     SYSCALL(__NR_request_key),
     SYSCALL(__NR_io_uring_setup),
     SYSCALL(__NR_io_uring_enter),
-    SYSCALL(__NR_getxattr),
-    SYSCALL(__NR_lgetxattr),
-    SYSCALL(__NR_fgetxattr),
-    SYSCALL(__NR_listxattr),
-    SYSCALL(__NR_llistxattr),
-    SYSCALL(__NR_flistxattr),
+    NO_XATTR(__NR_getxattr),
+    NO_XATTR(__NR_lgetxattr),
+    NO_XATTR(__NR_fgetxattr),
+    NO_XATTR(__NR_listxattr),
+    NO_XATTR(__NR_llistxattr),
+    NO_XATTR(__NR_flistxattr),
     SYSCALL(__NR_setxattr),
     SYSCALL(__NR_lsetxattr),
     SYSCALL(__NR_fsetxattr),
@@ -196,6 +198,9 @@ static int filter_syscalls(void) {
     SYSCALL(__NR_chroot),
     SYSCALL(__NR_setns),
     SYSCALL(__NR_unshare),
+    /* Everything a box starts stays in its process group, so stopping the group stops all of it. */
+    SYSCALL(__NR_setsid),
+    SYSCALL(__NR_setpgid),
     BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone3, 0, 1),
     BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
     SYSCALL(__NR_bpf),
@@ -243,9 +248,9 @@ static int filter_syscalls(void) {
 }
 
 /* Called only in the disposable child process. On any error, exit rather than return to unconstrained JS. */
-void box_enter(const char *bun, const char *cwd, const char *reads, int read_count,
+void box_enter(const char *bin, const char *cwd, const char *reads, int read_count,
                const char *lists, int list_count, const char *writes, int write_count,
-               const char *args, int arg_count) {
+               const char *execs, int exec_count, const char *args, int arg_count) {
   const char *stage = "landlock";
   int abi = syscall(__NR_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
   if (abi < 1) goto fail;
@@ -260,8 +265,9 @@ void box_enter(const char *bun, const char *cwd, const char *reads, int read_cou
   if (add_paths(ruleset, reads, read_count, READ) ||
       add_paths(ruleset, lists, list_count, LANDLOCK_ACCESS_FS_READ_DIR) ||
       add_paths(ruleset, writes, write_count, READ | WRITE | (abi >= 3 ? LANDLOCK_ACCESS_FS_TRUNCATE : 0)) ||
+      add_paths(ruleset, execs, exec_count, READ | LANDLOCK_ACCESS_FS_EXECUTE) ||
       add_path(ruleset, reads, LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_EXECUTE) ||
-      add_path(ruleset, bun, LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_EXECUTE)) goto fail;
+      add_path(ruleset, bin, LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_EXECUTE)) goto fail;
   stage = "working directory";
   if (chdir(cwd)) goto fail;
   stage = "no new privileges";
@@ -276,13 +282,13 @@ void box_enter(const char *bun, const char *cwd, const char *reads, int read_cou
   if (arg_count < 0 || arg_count > 4096) goto fail;
   char *argv[arg_count + 2];
   argv[arg_count + 1] = NULL;
-  argv[0] = (char *)bun;
+  argv[0] = (char *)bin;
   for (int i = 0; i < arg_count; i++) {
     argv[i + 1] = (char *)args;
     args += strlen(args) + 1;
   }
-  stage = "Bun execution";
-  execv(bun, argv);
+  stage = "execution";
+  execv(bin, argv);
 fail:
   fprintf(stderr, "box unavailable at %s: ", stage);
   perror("");
