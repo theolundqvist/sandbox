@@ -174,6 +174,12 @@ async function launch(name, env = {}, player = "host") {
   return { app, shell, state: () => (existsSync(saved) ? JSON.parse(readFileSync(saved, "utf8")) : {}) };
 }
 
+/** Leaves the game for the title, and waits for its page to close, which it does only once it has sent the host's view of the world. */
+async function leave(app, shell) {
+  const left = app.windows().filter((w) => /^https?:/.test(w.url()));
+  await shell.click("#leave");
+  await Promise.all(left.map((w) => w.isClosed() || w.waitForEvent("close")));
+}
 const gamePage = (app) => until("the game view", async () => app.windows().find((w) => /^https?:/.test(w.url())));
 const menuShown = (shell) => shell.locator("#title .items").isVisible();
 const shown = (page, sel) => page.locator(sel).isVisible();
@@ -396,7 +402,7 @@ describe("hosting and joining", () => {
   });
 
   test("leaving shows the hosted world, live, marked Hosted, with the host's view as its picture", async () => {
-    await shell.click("#leave");
+    await leave(app, shell);
     await shell.click("text=Worlds");
     const [row] = await until("the hosted world", async () => (await rows(shell)).length && rows(shell));
     assert.match(row, /^.+ \| Live \| Hosted$/);
@@ -422,7 +428,7 @@ describe("hosting and joining", () => {
     assert.match(game.url(), new RegExp(`^${other.url}/`));
     assert.deepEqual(stills, []);
     await until("the saved world", async () => state().recents.find((r) => r.url === other.url && r.name === "Snow Race"));
-    await shell.click("#leave");
+    await leave(app, shell);
   });
 
   test("the joined world is listed as Joined, and Forget removes it", async () => {
@@ -442,13 +448,8 @@ describe("hosting and joining", () => {
     await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.base}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
-    const g = await gamePage(app);
-    await playing(g).catch(async (e) => {
-      console.log("DEBUG", g.url(), JSON.stringify(await g.evaluate(() => { const r = document.querySelector("#ui")?.shadowRoot ?? document; const t = (id) => (r.getElementById?.(id) ?? document.getElementById(id))?.textContent; return { err: t("join-error"), status: t("status"), joinHidden: (r.getElementById?.("join") ?? document.getElementById("join"))?.hidden, ls: { ...localStorage } }; })));
-      await capture(g, "debug-invite");
-      throw e;
-    });
-    await shell.click("#leave");
+    await playing(await gamePage(app));
+    await leave(app, shell);
     const bare = await shell.evaluate(async () => (await import("/front.js")).joinLink("sandbox-relay.example.com/r/ab12cd/"));
     assert.equal(bare, "https://sandbox-relay.example.com/r/ab12cd/");
   });
@@ -485,7 +486,7 @@ describe("hosting and joining", () => {
     assert.deepEqual([...community.files.clip.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3]);
     assert.equal(community.files.zip.subarray(0, 2).toString(), "PK");
     assert.equal(await game.textContent("#share-go"), "Update");
-    await shell.click("#leave");
+    await leave(app, shell);
     await until("the host's view of Tiny Isle", async () => readFileSync(join(worlds, isleId, "cover.jpg")).length > COVER.length);
   });
 
@@ -531,7 +532,7 @@ describe("a friend in a browser", () => {
   };
   /** The host's Host screen with the world they're hosting picked, its settings changed, and hosted again. */
   async function rehost(change) {
-    await shell.click("#leave");
+    await leave(app, shell);
     await shell.click("text=Host world");
     game = await until("the Host screen", async () => app.windows().find((w) => /\/menu(#.*)?$/.test(w.url())));
     await game.locator("#create").waitFor();
@@ -829,7 +830,7 @@ describe("updates", () => {
   });
 
   test("an update while in a friend's world brings the player back into it", async () => {
-    await shell.click("#leave");
+    await leave(app, shell);
     await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
@@ -1163,21 +1164,21 @@ describe("Continue", () => {
     await game.click("#create-go");
     await playing(game);
     const world = await game.textContent("#world-name");
-    await shell.click("#leave");
+    await leave(app, shell);
     // The title comes back under the pointer, which moves the focus as it hovers; click rather than press Enter.
     await until("Continue on the hosted world", async () => (await title())[0] === "Continue");
     await shell.click("#go-last");
     game = await opened(game);
     await playing(game);
     assert.equal(await game.textContent("#world-name"), world);
-    await shell.click("#leave");
+    await leave(app, shell);
 
     await shell.click("text=Join world");
     await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
     await shell.press("#join-link", "Enter");
     await playing(await opened(game));
     await until("Snow Race played last", async () => state().last === other.url);
-    await shell.click("#leave");
+    await leave(app, shell);
     await close(app);
     ({ app, shell, state } = await launch("continue", {}, "returner"));
     await until("Continue on the joined world", async () => (await focused()) === "Continue");
@@ -1187,7 +1188,7 @@ describe("Continue", () => {
     await playing(game);
     assert.equal(await game.textContent("#world-name"), "Snow Race");
     assert.ok(game.url().startsWith(other.url));
-    await shell.click("#leave");
+    await leave(app, shell);
 
     await shell.click("text=Worlds");
     await until("Snow Race listed", async () => (await rows(shell)).some((r) => r.startsWith("Snow Race")));
@@ -1295,7 +1296,7 @@ describe("the host closes the game", () => {
   });
 
   test("opening it again from Worlds waits for the host, keeps its name, and goes back in by itself once the host is back", async () => {
-    await shell.click("#leave");
+    await leave(app, shell);
     await shell.click("text=Worlds");
     await until("the world", async () => (await rows(shell)).some((r) => r.startsWith("Snow Race")));
     await shell.click("#games .item >> text=Snow Race");
@@ -1310,7 +1311,7 @@ describe("the host closes the game", () => {
   });
 
   test("Back stops waiting", async () => {
-    await shell.click("#leave");
+    await leave(app, shell);
     otherLauncher.kill();
     await until("the world gone", async () => !(await fetch(`${other.url}/api/info`)).ok);
     await shell.click("text=Worlds");
@@ -1394,7 +1395,7 @@ describe("usage stats", () => {
     await game.click("#create-start i:last-child");
     await game.click("#create-go");
     await game.waitForURL(/:\d+\/(#.*)?$/);
-    await shell.click("#leave");
+    await leave(app, shell);
     await until("the menu", () => menuShown(shell));
     await quit(app, shell);
 
