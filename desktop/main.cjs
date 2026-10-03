@@ -560,6 +560,7 @@ app.whenReady().then(() => {
   // The game joins every world as this name, without asking again.
   ipcMain.on("player-name", (event) => (event.returnValue = event.sender === game?.view.webContents ? (state.name ?? null) : null));
   ipcMain.on("leave", (event) => (fromShell(event) || event.sender === game?.view.webContents) && leave());
+  ipcMain.handle("version", () => app.getVersion());
   ipcMain.handle("update", (event) => (fromShell(event) || event.sender === game?.view.webContents) && install());
   ipcMain.on("quit", (event) => fromShell(event) && app.quit());
   ipcMain.handle("ready", (event) => fromShell(event) && ready);
