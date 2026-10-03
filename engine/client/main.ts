@@ -55,6 +55,8 @@ const hostKey = localStorage.getItem("sandbox-menu") ?? (await fetch("/api/local
 const hostMenu = (action: string, body?: object) => fetch(`/api/menu/${action}`, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${hostKey}` }, body: body && JSON.stringify(body) });
 const hosting = hostKey ? await hostMenu("state").then((r) => (r.ok ? r.json() : null), () => null) : null;
 let me = "";
+/** When the next picture of the world is due: 20 s after first joining, then every few minutes. */
+let coverAt = Infinity;
 let world = "";
 let invite = "";
 /** The world's one invite link from the host, which works only on the host's Wi-Fi while the relay can't be reached. */
@@ -958,6 +960,7 @@ function connect() {
         voiceHost = msg.host;
         listen();
         me = msg.playerId;
+        coverAt = Math.min(coverAt, performance.now() + 20_000);
         $("world-name").textContent = world;
         $("rules").textContent = "Add only";
         $("rules").hidden = msg.rules !== "additive";
@@ -1150,14 +1153,18 @@ function untagged(render: () => void) {
   render();
   for (const tag of tags) tag.visible = true;
 }
-/** Draws the middle 16:9 of the game's view into a canvas of this size; call it right after the frame is drawn, while it is still in the drawing buffer. */
-function frameInto(out: HTMLCanvasElement) {
+/** The middle 16:9 of the game's view, as x, y, width and height. */
+function middle() {
   const from = renderer.domElement;
   const h = Math.min(from.height, (from.width * 9) / 16);
   const w = (h * 16) / 9;
-  out.getContext("2d")!.drawImage(from, (from.width - w) / 2, (from.height - h) / 2, w, h, 0, 0, out.width, out.height);
+  return [(from.width - w) / 2, (from.height - h) / 2, w, h] as const;
 }
-/** The host's own view as a 960×540 JPEG in base64, without the HUD or name tags; small enough for a keepalive request (64 KB). Encoded synchronously, since the page may be going away. */
+/** Draws the middle 16:9 of the game's view into a canvas of this size; call it right after the frame is drawn, while it is still in the drawing buffer. */
+function frameInto(out: HTMLCanvasElement) {
+  out.getContext("2d")!.drawImage(renderer.domElement, ...middle(), 0, 0, out.width, out.height);
+}
+/** The host's own view as a 960×540 JPEG in base64, without the HUD or name tags, for Share's Current view. */
 function viewJpeg() {
   const out = Object.assign(document.createElement("canvas"), { width: 960, height: 540 });
   untagged(() => {
@@ -1169,15 +1176,41 @@ function viewJpeg() {
   return jpeg.split(",")[1]!;
 }
 
-/** The host's own view of their world is its picture in Worlds and Community: sent every few minutes and as they leave. */
+/**
+ * The player's own view, without the HUD or name tags, is the world's picture in Worlds: the host's goes to their launcher, a joined world's stays in the desktop app.
+ * It is a frame the game draws anyway, 20 s after joining and then every 5 minutes, encoded off the main thread; and one more as the player leaves, encoded at once since the page is going.
+ */
 const hostsThisWorld = hosting?.running?.id === info.id;
-function sendCover(keepalive: boolean) {
-  if (!hostsThisWorld || !me || replay || screen.scene === false) return;
-  const body = Uint8Array.from(atob(viewJpeg()), (c) => c.charCodeAt(0));
-  fetch(`/api/menu/cover?id=${info.id}`, { method: "POST", keepalive, headers: { authorization: `Bearer ${hostKey}` }, body }).catch(() => {});
+const appCover = (window as { sandboxDesktop?: { cover?(jpeg: Uint8Array): void } }).sandboxDesktop?.cover;
+const COVER_EVERY = 5 * 60_000;
+function keepCover(jpeg: Uint8Array<ArrayBuffer>, leaving: boolean) {
+  if (hostsThisWorld) fetch(`/api/menu/cover?id=${info.id}`, { method: "POST", keepalive: leaving, headers: { authorization: `Bearer ${hostKey}` }, body: jpeg }).catch(() => {});
+  else appCover?.(jpeg);
 }
-setInterval(() => document.hidden || sendCover(false), 3 * 60_000);
-addEventListener("beforeunload", () => sendCover(true));
+const coverable = () => (hostsThisWorld || !!appCover) && !!me && !replay && screen.scene !== false;
+/** Whether this frame is the picture: never one right after a slow frame, so it can't add to a hitch. */
+const coverDue = (now: number, dt: number) => now >= coverAt && dt < 1 / 30 && !document.hidden && coverable();
+/** Right after the frame is drawn without name tags: a copy of it the GPU scales, so nothing waits on reading its pixels back. */
+function takeCover() {
+  coverAt = performance.now() + COVER_EVERY;
+  createImageBitmap(renderer.domElement, ...middle(), { resizeWidth: 480, resizeHeight: 270, resizeQuality: "medium" })
+    .then((frame) => {
+      const out = new OffscreenCanvas(480, 270);
+      out.getContext("2d")!.drawImage(frame, 0, 0);
+      frame.close();
+      return out.convertToBlob({ type: "image/jpeg", quality: 0.7 });
+    })
+    .then(async (jpeg) => keepCover(new Uint8Array(await jpeg.arrayBuffer()), false), () => {});
+}
+addEventListener("beforeunload", () => {
+  if (!coverable()) return;
+  const out = Object.assign(document.createElement("canvas"), { width: 480, height: 270 });
+  untagged(() => {
+    draw(0);
+    frameInto(out);
+  });
+  keepCover(Uint8Array.from(atob(out.toDataURL("image/jpeg", 0.7).split(",")[1]!), (c) => c.charCodeAt(0)), true);
+});
 
 // ---------- HUD ----------
 function addLine(text: string, kind = "info", feed = $("feed")) {
@@ -2736,6 +2769,7 @@ renderer.setAnimationLoop(() => {
   updateColliders(now);
   const drawStart = performance.now();
   if (screen.scene !== false && filming) untagged(() => (draw(dt), frameInto(filming!)));
+  else if (coverDue(now, dt)) untagged(() => (draw(dt), takeCover()));
   else if (screen.scene !== false) draw(dt);
   view.position.sub(shakeOffset);
   if (heldMaterials) for (const m of heldMaterials.splice(0)) disposeMaterial.call(m);

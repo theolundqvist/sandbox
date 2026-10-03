@@ -3,6 +3,7 @@
 if (process.env.SANDBOX_PLAYTEST) return void require("./playtest.cjs");
 const { app, BaseWindow, WebContentsView, Menu, clipboard, dialog, ipcMain, net, protocol, safeStorage, session, shell: desktop } = require("electron");
 const { execFile, spawn } = require("node:child_process");
+const { createHash } = require("node:crypto");
 const { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } = require("node:fs");
 const { finished } = require("node:stream/promises");
 const { createServer } = require("node:net");
@@ -56,8 +57,8 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
 const STATE = join(app.getPath("userData"), "state.json");
-/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], last?: string, port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string, worldKeys: Record<string, string>, creditTokens: string[] }} The name this player joins every world as; joined worlds by shareable address; main menus opened, by host key; the world last played, as its address in Worlds; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed; the random id each joined world's playtime goes under; a token per world played in, to accept credit for building it. */
-const state = { recents: [], hosts: {}, mic: [], worldKeys: {}, creditTokens: [] };
+/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], labels: Record<string, string>, hosts: Record<string, string>, mic: string[], last?: string, port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string, worldKeys: Record<string, string>, creditTokens: string[] }} The name this player joins every world as; joined worlds by shareable address, and the names the player gave them; main menus opened, by host key; the world last played, as its address in Worlds; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed; the random id each joined world's playtime goes under; a token per world played in, to accept credit for building it. */
+const state = { recents: [], labels: {}, hosts: {}, mic: [], worldKeys: {}, creditTokens: [] };
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
 } catch {}
@@ -109,7 +110,7 @@ const worldBase = (url) => url.origin + (url.pathname.match(/^\/r\/[a-z0-9-]+/)?
 /** Saves a world the player went into, and unless they only watch its timelapse, makes it the last one played: a world this computer hosts by its entry in Worlds, a joined one by its address. */
 async function remember(base, played = true) {
   const info = await session.defaultSession.fetch(`${base}/api/info`).then((r) => r.json()).catch(() => null);
-  const name = info?.name ?? state.recents.find((r) => r.url === base)?.name ?? new URL(base).host;
+  const name = state.labels[base] ?? info?.name ?? state.recents.find((r) => r.url === base)?.name ?? new URL(base).host;
   state.recents = [{ url: base, name, at: Date.now() }, ...state.recents.filter((r) => r.url !== base)].slice(0, 8);
   const host = server?.base === base ? "local" : Object.entries(state.hosts).find(([key, b]) => b === base && key !== ownKey())?.[0];
   if (played && (!host || info?.id)) state.last = host === "local" ? `local:${info.id}` : host ? `${base}/menu#key=${host}&world=${info.id}` : base;
@@ -131,7 +132,7 @@ function play(raw) {
   leave();
   const view = new WebContentsView({ webPreferences: { preload: join(__dirname, "game-preload.cjs"), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
   view.setBackgroundColor("#0b0b0c");
-  game = { view, name: state.recents.find((r) => r.url === worldBase(url))?.name ?? "" };
+  game = { view, name: state.labels[worldBase(url)] ?? state.recents.find((r) => r.url === worldBase(url))?.name ?? "" };
   setTimeout(beatNow, 5000);
   /** Why the game didn't open: this computer is offline, the world is closed, or its host doesn't answer. It opens by itself once the world answers. */
   const fail = (reason, why = "silent") => {
@@ -542,6 +543,41 @@ async function guests() {
   return { name: s.running.name, count: s.running.players.filter((p) => p.online && p.name !== state.name).length };
 }
 
+/** A joined world's picture: the player's own view of it, kept on this computer by its address and never sent anywhere. */
+const COVERS = join(app.getPath("userData"), "covers");
+const coverFile = (url) => join(COVERS, `${createHash("sha256").update(url).digest("hex").slice(0, 32)}.jpg`);
+function joinedCover(url) {
+  const file = coverFile(url);
+  return existsSync(file) ? `sandbox://app/joined-cover/${file.slice(-36, -4)}?v=${statSync(file).mtimeMs}` : null;
+}
+function keepJoinedCover(sender, jpeg) {
+  const url = URL.parse(sender.getURL());
+  if (!url || !(jpeg instanceof Uint8Array) || jpeg.length > 2 << 20 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return;
+  if (server && url.origin === new URL(server.base).origin) return;
+  const file = coverFile(worldBase(url));
+  mkdirSync(COVERS, { recursive: true });
+  writeFileSync(`${file}.tmp`, jpeg);
+  renameSync(`${file}.tmp`, file);
+}
+
+/** A world's new name in Worlds: a hosted world is renamed on the launcher that hosts it, keeping its id and invite; a joined one gets a name only this computer shows. */
+async function renameWorld(url, raw) {
+  const name = String(raw ?? "").trim();
+  if (!name || name.length > 40) return "A name is 1 to 40 characters.";
+  const own = url.match(/^local:(.+)$/)?.[1];
+  if (own) return menu("rename", { id: own, name }).then(() => null, (e) => e.message);
+  const parsed = URL.parse(url);
+  const hash = new URLSearchParams(parsed?.hash.slice(1) ?? "");
+  if (parsed?.pathname.endsWith("/menu") && hash.get("key")) {
+    const res = await fetch(`${worldBase(parsed)}/api/menu/rename`, { method: "POST", headers: { authorization: `Bearer ${hash.get("key")}` }, body: JSON.stringify({ id: hash.get("world"), name }), signal: AbortSignal.timeout(5000) }).catch(() => null);
+    return res?.ok ? null : ((await res?.json().catch(() => null))?.error ?? "The host didn't answer. Try again.");
+  }
+  if (!state.recents.some((r) => r.url === url)) return "That world isn't in Worlds any more.";
+  state.labels[url] = name;
+  save();
+  return null;
+}
+
 /** The worlds this app hosts, read from its data folder so they show without starting the server. */
 function ownGames(live) {
   const dir = join(DATA, "worlds");
@@ -602,12 +638,14 @@ async function games() {
   const copied = (await clipboard.readText()).trim().slice(0, 2000);
   return {
     hosted,
-    joined: state.recents.filter((r) => !mine.has(r.url) && !(server && r.url === server.base)),
+    joined: state.recents.filter((r) => !mine.has(r.url) && !(server && r.url === server.base)).map((r) => ({ ...r, name: state.labels[r.url] ?? r.name, cover: joinedCover(r.url) })),
     copied,
     last: state.last ?? null,
   };
 }
 
+/** Games closing, which may still send the picture they take as they go. */
+const left = new WeakSet();
 function leave() {
   clearTimeout(waiting);
   waiting = null;
@@ -615,7 +653,8 @@ function leave() {
   if (!game) return;
   void beatNow();
   win.contentView.removeChildView(game.view);
-  // Closing as a browser tab would lets the page finish: the host's game sends its world's picture as it goes.
+  // Closing as a browser tab would lets the page finish: the game sends its world's picture as it goes.
+  left.add(game.view.webContents);
   game.view.webContents.close({ waitForBeforeUnload: true });
   game = null;
   layout();
@@ -798,9 +837,12 @@ app.whenReady().then(() => {
       return res.ok ? null : (await res.json()).error;
     }
     state.recents = state.recents.filter((r) => r.url !== url);
+    delete state.labels[url];
+    rmSync(coverFile(String(url)), { force: true });
     save();
     return null;
   });
+  ipcMain.handle("rename", (event, url, name) => (fromShell(event) ? renameWorld(String(url), name) : null));
   ipcMain.handle("name", (event) => (fromShell(event) ? { name: state.name ?? null, suggested: suggestedName() } : null));
   ipcMain.handle("community", async (event, action, body) => {
     if (!fromShell(event) || !Object.hasOwn(COMMUNITY_ACTIONS, action)) return { error: "Unknown action" };
@@ -838,6 +880,7 @@ app.whenReady().then(() => {
   });
   const fromGame = (event) => event.sender === game?.view.webContents;
   const fromAgent = (event) => event.sender === agent?.view.webContents;
+  ipcMain.on("cover", (event, jpeg) => (fromGame(event) || left.has(event.sender)) && keepJoinedCover(event.sender, jpeg));
   ipcMain.on("agents", (event) => (event.returnValue = fromGame(event) ? Object.entries(AGENTS).map(([id, a]) => ({ id, name: a.name })) : []));
   ipcMain.handle("build", async (event, id, key) => {
     if (!fromGame(event)) return false;
@@ -862,6 +905,7 @@ app.whenReady().then(() => {
     const xterm = { "/xterm/xterm.js": "@xterm/xterm/lib/xterm.js", "/xterm/xterm.css": "@xterm/xterm/css/xterm.css", "/xterm/addon-fit.js": "@xterm/addon-fit/lib/addon-fit.js" }[path];
     if (xterm) return net.fetch(pathToFileURL(require.resolve(xterm)).href);
     if (/^\/cover\/[a-z0-9-]+$/.test(path)) return net.fetch(pathToFileURL(join(DATA, "worlds", path.slice(7), "cover.jpg")).href);
+    if (/^\/joined-cover\/[0-9a-f]{32}$/.test(path)) return net.fetch(pathToFileURL(join(COVERS, `${path.slice(14)}.jpg`)).href);
     const file = normalize(join(FRONT, path));
     return file.startsWith(FRONT) ? net.fetch(pathToFileURL(file).href) : new Response("not found", { status: 404 });
   });
