@@ -44,13 +44,17 @@ Deleting an account needs its password. Its sessions end at once and its worlds 
 | `PUT /worlds/:id/vote` | Signed in, `{ up: true }` or `{ up: false }`: the vote the account wants, so sending it twice changes nothing. Answers `{ votes, voted }`. 60 a minute. |
 | `POST /worlds/:id/report` | Counts a report. 10 per IP an hour. |
 | `POST /plays`, `PUT /plays/:id` | The install's token, `{ world }`, and the session in `x-session` when signed in: starts a play. Then `{ seconds }`, the play's focused time so far, every minute. |
+| `POST /playtime` | The install's token, `{ world, seconds }`, the session in `x-session` when signed in: focused time in any game since the last one, added to today's (UTC) total for that world. |
+| `POST /agent-usage` | The install's token, `{ world, provider, model, subscription, inputTokens, outputTokens, cacheRead, cacheWrite, costUsd, requests }`, added to today's row for that world, provider and model. Nothing sends it yet. |
 | `GET /worlds/:id/comments` | Oldest first, 100 at a time, `?after=<id>`. Comments of banned accounts are left out; removed ones show as removed. |
 | `POST /worlds/:id/comments` | Signed in, `{ body }`, 1 to 1,000 characters of plain text. One every 20 s. |
 | `DELETE /comments/:id`, `POST /comments/:id/report` | Removal by its author or the world's owner, which also wipes its text; a report, once per account or IP. |
 
 The app authenticates with `Authorization: Bearer <session>`. Rate limits are counter rows, each bumped in one statement, so requests at the same moment can't slip past them. Shares never finished are swept after a day.
 
-A play is time in a Community world hosted by the desktop app, only while its window has focus, and only with Share usage stats on; joining players aren't counted yet. The server credits no more than the time since the play started on its own clock, a play's seconds never go down, and only an install's newest play counts, so two at once can't both add up. Plays are the plays of a minute or more; players are the installs with at least one. Installs are free to make, so a determined player can still inflate these. The site's origin is the only one browsers may read the API from.
+A play is time in a Community world hosted by the desktop app, only while its window has focus, and only with Share usage stats on; joining players aren't counted yet. The server credits no more than the time since the play started on its own clock, a play's seconds never go down, and only an install's newest play counts, so two at once can't both add up. Plays are the plays of a minute or more; players are the installs with at least one. Installs are free to make, so a determined player can still inflate these.
+
+Playtime covers every game the app has open, its own, joined ones and Community's, with the same focus rule and switch. A world goes under its Community id, the random id a world keeps in its `config.json` (`telemetry`), or, for a joined world, a random id the app keeps for that world's address in its `state.json`; names and links never leave the computer. Each heartbeat is credited at most the time since the install's last one (a minute for its first, two at most), so a replay or two worlds at once add nothing. Playtime and agent usage outlive a deleted account, without it. The site's origin is the only one browsers may read the API from.
 
 ## Free voice
 

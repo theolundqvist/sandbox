@@ -53,8 +53,8 @@ app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 
 const STATE = join(app.getPath("userData"), "state.json");
-/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], last?: string, port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string }} The name this player joins every world as; joined worlds by shareable address; main menus opened, by host key; the world last played, as its address in Worlds; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed. */
-const state = { recents: [], hosts: {}, mic: [] };
+/** @type {{ fullscreen?: boolean, name?: string, recents: { url: string, name: string, at: number }[], hosts: Record<string, string>, mic: string[], last?: string, port?: number, reopen?: { hosting: boolean, url: string | null }, updatedTo?: string, worldKeys: Record<string, string> }} The name this player joins every world as; joined worlds by shareable address; main menus opened, by host key; the world last played, as its address in Worlds; the port this app hosts on; what to bring back after an update restarts the app, and the version it installed; the random id each joined world's playtime goes under. */
+const state = { recents: [], hosts: {}, mic: [], worldKeys: {} };
 try {
   Object.assign(state, JSON.parse(readFileSync(STATE, "utf8")));
 } catch {}
@@ -129,6 +129,7 @@ function play(raw) {
   const view = new WebContentsView({ webPreferences: { preload: join(__dirname, "game-preload.cjs"), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
   view.setBackgroundColor("#0b0b0c");
   game = { view, name: state.recents.find((r) => r.url === worldBase(url))?.name ?? "" };
+  setTimeout(beatNow, 5000);
   /** Why the game didn't open: this computer is offline, the world is closed, or its host doesn't answer. It opens by itself once the world answers. */
   const fail = (reason, why = "silent") => {
     if (game?.view !== view) return;
@@ -269,9 +270,7 @@ function startServer() {
 async function hostGame(target) {
   const { base, key } = await startServer();
   const screen = { new: "screen=create", community: "screen=community" }[target] ?? `world=${target}`;
-  const opened = play(`${base}/menu#key=${key}&${screen}`);
-  setTimeout(beatNow, 5000);
-  return opened;
+  return play(`${base}/menu#key=${key}&${screen}`);
 }
 
 /** Starts this app's server again after a restart: the launcher brings back the world it hosted, under the same link. */
@@ -408,14 +407,18 @@ async function hostingHere(event, id) {
   return event.sender === game?.view.webContents && (await hostState())?.running?.id === id;
 }
 
-/** Plays of Community worlds hosted here: focused time as a running total each minute, rechecking the hosted world since the in-game menu can switch it. */
+/** Time in games while the window has focus, sent each minute: as playtime for every game, under a Community world's id or a random id per world, and as plays of Community worlds hosted here. The hosted world is checked each time, since the in-game menu can switch it. Off with Share usage stats. */
 let focusedMs = 0;
 let focusedSince = null;
 const focusedNow = () => focusedMs + (focusedSince === null ? 0 : Date.now() - focusedSince);
 /** @type {{ local: string, id: string, to: { token: string, host: string }, from: number } | null} */ let playing = null;
+let playtimeFrom = 0;
+/** @type {string | null} */ let playtimeWorld = null;
 async function beat() {
   const s = game && usage.sharing() ? await hostState() : null;
   const local = s?.running?.id ?? null;
+  await sendPlaytime(playtimeWorld);
+  playtimeWorld = game && usage.sharing() ? worldKey(s, local) : null;
   if (playing && playing.local !== local) await sendBeat(playing).then(() => (playing = null));
   if (playing) return sendBeat(playing);
   const world = local && s.worlds.find((w) => w.id === local);
@@ -430,6 +433,32 @@ async function beat() {
     signal: AbortSignal.timeout(10000),
   }).catch(() => null);
   if (res?.ok) playing = { local, id: (await res.json()).play, to, from: focusedNow() };
+}
+/** A Community world's id, the random id a world of this computer's keeps, or one this app makes up for a world it joined: never a world's name or link. */
+function worldKey(s, local) {
+  const world = local && s.worlds.find((w) => w.id === local);
+  if (world) return world.shared?.id ?? world.from ?? world.telemetry;
+  const url = URL.parse(game.view.webContents.getURL());
+  if (!url || (server && url.origin === new URL(server.base).origin)) return null;
+  const base = worldBase(url);
+  if (!state.worldKeys[base]) {
+    state.worldKeys[base] = crypto.randomUUID();
+    save();
+  }
+  return state.worldKeys[base];
+}
+async function sendPlaytime(world) {
+  const seconds = Math.round((focusedNow() - playtimeFrom) / 1000);
+  playtimeFrom = focusedNow();
+  const to = world && seconds > 0 && (await usage.install());
+  if (!to) return;
+  const token = to.host === COMMUNITY && sessionToken();
+  await fetch(`${to.host}/playtime`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${to.token}`, "content-type": "application/json", ...(token && { "x-session": token }) },
+    body: JSON.stringify({ world, seconds }),
+    signal: AbortSignal.timeout(10000),
+  }).catch(() => null);
 }
 const sendBeat = (p) =>
   fetch(`${p.to.host}/plays/${p.id}`, {

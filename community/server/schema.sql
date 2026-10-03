@@ -114,6 +114,48 @@ alter table worlds add column if not exists players integer not null default 0;
 create index if not exists worlds_forks on worlds (remix_of, created_at desc, id desc) where removed_at is null and zip_key is not null and visibility = 'public';
 create index if not exists worlds_top on worlds (players desc, created_at desc, id desc) where removed_at is null and zip_key is not null and visibility = 'public';
 
+-- Time in any game per install, world and UTC day. world_key is a Community world's id or the random id a world keeps on its computer, never its name.
+alter table installs add column if not exists playtime_at timestamptz;
+create table if not exists playtime (
+  install text not null references installs (id) on delete cascade,
+  account uuid references accounts (id) on delete set null,
+  world_key text not null,
+  day date not null,
+  seconds integer not null default 0,
+  primary key (install, world_key, day)
+);
+create index if not exists playtime_account on playtime (account) where account is not null;
+-- Adds a heartbeat's seconds to today's playtime, but never more than the time since this install's last heartbeat (a minute for its first, two at most), so replays, a fast clock or two worlds at once credit nothing extra. Locks the install's row, so beats at the same moment take turns.
+create or replace function credit_playtime(inst text, acct uuid, key text, asked integer) returns integer language plpgsql as $$
+declare was timestamptz; credit integer;
+begin
+  select playtime_at into was from installs where id = inst for update;
+  update installs set playtime_at = clock_timestamp() where id = inst;
+  credit := greatest(0, least(asked, 120, coalesce(extract(epoch from clock_timestamp() - was)::integer, 60)));
+  insert into playtime (install, account, world_key, day, seconds) values (inst, acct, key, (now() at time zone 'utc')::date, credit)
+    on conflict (install, world_key, day) do update set seconds = playtime.seconds + excluded.seconds, account = coalesce(excluded.account, playtime.account);
+  return credit;
+end $$;
+
+-- What agents used, per install, world, UTC day, provider and model, the same fields as OMP's stats. Outside agents are invisible here; nothing estimates them.
+create table if not exists agent_usage (
+  install text not null references installs (id) on delete cascade,
+  account uuid references accounts (id) on delete set null,
+  world_key text not null,
+  day date not null default (now() at time zone 'utc')::date,
+  provider text not null,
+  model text not null,
+  subscription boolean not null,
+  input_tokens bigint not null default 0,
+  output_tokens bigint not null default 0,
+  cache_read bigint not null default 0,
+  cache_write bigint not null default 0,
+  cost_usd numeric(14, 6) not null default 0,
+  requests integer not null default 0,
+  primary key (install, world_key, day, provider, model, subscription)
+);
+create index if not exists agent_usage_world on agent_usage (world_key, day);
+
 -- Comments are plain text. Their author or the world's owner removes one; it stays as a row without its words.
 create table if not exists comments (
   id bigserial primary key,

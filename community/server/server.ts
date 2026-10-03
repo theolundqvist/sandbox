@@ -28,6 +28,8 @@ const RATE = {
   play: [30, "1 hour"],
   heartbeat: [10, "1 minute"],
   comment: [1, "20 seconds"],
+  playtime: [5, "1 minute"],
+  "agent-usage": [30, "1 minute"],
 } as const;
 const ID = /^[a-z0-9]{12}$/;
 
@@ -592,6 +594,64 @@ async function beat(req: Request, id: string) {
   return json({ seconds: play.seconds });
 }
 
+/** The install's account, when the app sends its session along: playtime and usage count for both. */
+const sender = async (req: Request) => {
+  const session = req.headers.get("x-session");
+  return session ? await accountOfToken(session) : null;
+};
+/** A Community world's id, or the random id a world keeps on one computer: never its name. */
+const WORLD_KEY = /^[a-z0-9-]{12,36}$/;
+
+/** Time in any game, own, joined or Community, added to today's total for that world. The credit is at most the time since this install's last beat (see credit_playtime in schema.sql). */
+async function playtime(req: Request) {
+  const install = await installOf(req);
+  await limit(install.id, "playtime", "Too many heartbeats from this computer.");
+  const body = await req.json();
+  const world = String(body.world ?? "");
+  const seconds = Math.floor(Number(body.seconds));
+  if (!WORLD_KEY.test(world) || !(seconds >= 0)) throw new Refusal("Send { world, seconds }.");
+  const account = await sender(req);
+  const [{ credited }] = await sql`select credit_playtime(${install.id}, ${account?.id ?? null}::uuid, ${world}, ${seconds}) as credited`;
+  return json({ credited });
+}
+
+/** What an agent used in a world, added to today's row for its provider and model. Nothing sends it yet. */
+async function agentUsage(req: Request) {
+  const install = await installOf(req);
+  await limit(install.id, "agent-usage", "Too much usage sent from this computer.");
+  const b = await req.json();
+  const count = (v: unknown, max: number) => {
+    const n = Number(v ?? 0);
+    if (!(n >= 0 && n <= max)) throw new Refusal("Usage counts are numbers of zero or more.");
+    return n;
+  };
+  const name = (v: unknown) => {
+    const t = String(v ?? "");
+    if (!/^[\w.:/@-]{1,64}$/.test(t)) throw new Refusal("Name the provider and model.");
+    return t;
+  };
+  const world = String(b.world ?? "");
+  if (!WORLD_KEY.test(world)) throw new Refusal("Send the world's id.");
+  const row = {
+    install: install.id,
+    account: (await sender(req))?.id ?? null,
+    world_key: world,
+    provider: name(b.provider),
+    model: name(b.model),
+    subscription: b.subscription === true,
+    input_tokens: Math.floor(count(b.inputTokens, 1e9)),
+    output_tokens: Math.floor(count(b.outputTokens, 1e9)),
+    cache_read: Math.floor(count(b.cacheRead, 1e9)),
+    cache_write: Math.floor(count(b.cacheWrite, 1e9)),
+    cost_usd: count(b.costUsd, 1000),
+    requests: Math.floor(count(b.requests, 1e5)),
+  };
+  await sql`insert into agent_usage ${sql(row)} on conflict (install, world_key, day, provider, model, subscription) do update set
+    account = coalesce(excluded.account, agent_usage.account), input_tokens = agent_usage.input_tokens + excluded.input_tokens, output_tokens = agent_usage.output_tokens + excluded.output_tokens,
+    cache_read = agent_usage.cache_read + excluded.cache_read, cache_write = agent_usage.cache_write + excluded.cache_write, cost_usd = agent_usage.cost_usd + excluded.cost_usd, requests = agent_usage.requests + excluded.requests`;
+  return new Response(null, { status: 204, headers: cors });
+}
+
 // ---------- comments ----------
 
 const shownComment = (c: any, account: Account | null) => ({
@@ -660,6 +720,8 @@ async function route(req: Request, ip: string) {
   if (at === "PATCH /account") return rename(req);
   if (at === "DELETE /account") return deleteAccount(req);
   if (at === "POST /plays") return startPlay(req);
+  if (at === "POST /playtime") return playtime(req);
+  if (at === "POST /agent-usage") return agentUsage(req);
   const [, part, part2, part3] = url.pathname.split("/");
   if (req.method === "PUT" && part === "plays" && part2 && !part3) return beat(req, part2);
   if (req.method === "DELETE" && part === "comments" && part2 && !part3) return uncomment(req, part2);
