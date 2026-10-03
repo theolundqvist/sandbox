@@ -342,7 +342,8 @@ async function done(req: Request, id: string) {
   if (!live) throw new Refusal("This world changed while it uploaded. Share it again.", 409);
   const replaced = [row.zip_key, keys.cover && row.cover_key, keys.clip && row.clip_key].filter(Boolean) as string[];
   await Promise.allSettled(replaced.map((key) => files.delete(key)));
-  return json(await shown({ ...live, username: account!.username }, account));
+  const [fresh] = await sql`${worldRows(account)} where w.id = ${id}`;
+  return json(await shown(fresh, account));
 }
 
 async function remove(req: Request, id: string) {
@@ -375,7 +376,7 @@ async function shown(row: any, account?: Account | null) {
     description: row.description,
     author: row.username ?? row.author,
     visibility: row.visibility,
-    forkOf: row.remix_of,
+    forkOf: row.fork_of ?? null,
     engineVersion: row.engine_version,
     mods: row.mods,
     size: Number(row.size),
@@ -431,7 +432,7 @@ async function register(req: Request, ip: string) {
 async function installOf(req: Request) {
   const token = req.headers.get("authorization")?.match(/^Bearer (\S+)$/)?.[1] ?? "";
   const [row] = await sql`select id, spent from installs where token_hash = ${sha256(token)}`;
-  if (!row) throw new Refusal("This computer isn't signed up for free voice.", 401);
+  if (!row) throw new Refusal("This computer isn't signed up with Community.", 401);
   return row as { id: string; spent: string };
 }
 
@@ -528,11 +529,22 @@ async function events(req: Request) {
   return new Response(null, { status: 204, headers: cors });
 }
 
-/** Worlds with their owner's username, their votes, and whether the asker voted. */
+/** Worlds with their owner's username, their votes, whether the asker voted, and the world they were forked from if that one is listed. */
 const worldRows = (account: Account | null) =>
-  sql`select w.*, a.username, (select count(*)::int from votes v where v.world = w.id) as votes, exists(select 1 from votes v where v.world = w.id and v.account = ${account?.id ?? null}::uuid) as voted
+  sql`select w.*, a.username, (select count(*)::int from votes v where v.world = w.id) as votes, exists(select 1 from votes v where v.world = w.id and v.account = ${account?.id ?? null}::uuid) as voted,
+      (select p.id from worlds p left join accounts pa on pa.id = p.account where p.id = w.remix_of and p.visibility = 'public' and p.zip_key is not null and p.removed_at is null and pa.banned_at is null) as fork_of
     from worlds w left join accounts a on a.id = w.account`;
 const PAGE = 50;
+/** What lists show: public, live, and not by a banned account. Link-only worlds open only by their link. */
+const listed = () => sql`w.visibility = 'public' and w.zip_key is not null and w.removed_at is null and a.banned_at is null`;
+
+/** The world a fork came from, as much of it as anyone may see: a removed one is only that, and a link-only one keeps its link to itself. */
+async function parentOf(id: string | null) {
+  if (!id) return null;
+  const [p] = await sql`select w.id, w.title, coalesce(a.username, w.author) as author, ${listed()} as shown, w.removed_at is not null as removed from worlds w left join accounts a on a.id = w.account where w.id = ${id}`;
+  if (!p || p.removed) return { removed: true };
+  return p.shown ? { id: p.id, title: p.title, author: p.author } : { unlisted: true };
+}
 
 /** A vote is the state the asker wants, so sending it twice changes nothing. */
 async function vote(req: Request, id: string) {
@@ -674,7 +686,7 @@ async function route(req: Request, ip: string) {
         : top
           ? sql`and (w.players, w.created_at, w.id) < (select players, created_at, id from worlds where id = ${after})`
           : sql`and (w.created_at, w.id) < (select created_at, id from worlds where id = ${after})`;
-      const rows = await sql`${worldRows(account)} where w.visibility = 'public' and w.zip_key is not null and w.removed_at is null and a.banned_at is null
+      const rows = await sql`${worldRows(account)} where ${listed()}
         ${cursor} order by ${top ? sql`w.players desc,` : sql``} w.created_at desc, w.id desc limit ${PAGE}`;
       return json(await Promise.all(rows.map((row: any) => shown(row, account))));
     }
@@ -685,7 +697,16 @@ async function route(req: Request, ip: string) {
       const [row] = await sql`${worldRows(account)} where w.id = ${id} and (w.zip_key is not null or w.removed_at is not null)`;
       if (!row) throw new Refusal("There is no such world.", 404);
       if (row.removed_at) throw new Refusal("This world was taken down.", 410);
-      return json(await shown(row, account));
+      const [{ forks }] = await sql`select count(*)::int as forks from worlds w left join accounts a on a.id = w.account where w.remix_of = ${id} and ${listed()}`;
+      return json({ ...(await shown(row, account)), parent: await parentOf(row.remix_of), forks });
+    }
+    case "GET :id/forks": {
+      // Newest first, 50 at a time, going on from ?after=<id>.
+      const account = await sessionOf(req);
+      const after = url.searchParams.get("after") ?? "";
+      const cursor = ID.test(after) ? sql`and (w.created_at, w.id) < (select created_at, id from worlds where id = ${after})` : sql``;
+      const rows = await sql`${worldRows(account)} where w.remix_of = ${id} and ${listed()} ${cursor} order by w.created_at desc, w.id desc limit ${PAGE}`;
+      return json(await Promise.all(rows.map((row: any) => shown(row, account))));
     }
     case "PUT :id":
       return update(req, ip, id!);

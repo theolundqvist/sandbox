@@ -111,6 +111,7 @@ create index if not exists plays_install on plays (install, started_at desc);
 -- Plays of at least a minute and the installs behind them, kept on the world for the list's order.
 alter table worlds add column if not exists plays integer not null default 0;
 alter table worlds add column if not exists players integer not null default 0;
+create index if not exists worlds_forks on worlds (remix_of, created_at desc, id desc) where removed_at is null and zip_key is not null and visibility = 'public';
 create index if not exists worlds_top on worlds (players desc, created_at desc, id desc) where removed_at is null and zip_key is not null and visibility = 'public';
 
 -- Comments are plain text. Their author or the world's owner removes one; it stays as a row without its words.

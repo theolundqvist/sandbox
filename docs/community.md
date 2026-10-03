@@ -11,7 +11,7 @@ A host shares a world from the game (Tab, World, Share; the desktop app asks in 
 | Clip | The whole timelapse played back in 12 s and recorded in the host's game: muted 640×360 WebM, without name tags. A world with nothing to replay yet goes up without one. |
 | Details | Title, a one-line description, link-only or public, the world it was forked from, a random id the world keeps on this computer (so a world a moderator removed can't simply go up again), the engine version and the mod count. The author is the account's username. |
 
-Link-only worlds open by their link and are never listed. Sharing a world again updates the same community world. A copy of a community world keeps the world it came from in its own `config.json` (`forkOf`), so the parent survives export and import; a parent never changes once set, and a chain that would loop is refused. Mods are code that runs on whoever hosts them, so Host and Fork of anyone else's world first say "This world runs code from <author>. Only play worlds from people you trust."
+Link-only worlds open by their link and are never listed. Sharing a world again updates the same community world. A copy of a community world keeps the world it came from in its own `config.json` (`forkOf`), so the parent survives export and import; a parent never changes once set, and a chain that would loop is refused. A world's page says what it was forked from and lists its forks; taking a world down leaves its forks up, saying they came from a removed world, and a link-only parent is never named, since its id is its link. Mods are code that runs on whoever hosts them, so Host and Fork of anyone else's world first say "This world runs code from <author>. Only play worlds from people you trust."
 
 ## Accounts
 
@@ -39,7 +39,8 @@ Deleting an account needs its password. Its sessions end at once and its worlds 
 | `POST /worlds/:id/claim` | Signed in, `{ ownerToken }`: moves a world shared before accounts to this account. |
 | `DELETE /worlds/:id` | Its account, or the owner token of an unclaimed world. Leaves a tombstone (`410 Gone`) and deletes its files. |
 | `GET /worlds` | Public live worlds, 50 at a time: by players, or newest first with `?sort=new`; `?after=<id>` goes on from that world, ties broken by id. Worlds of banned accounts are left out. |
-| `GET /worlds/:id` | One world, link-only included, `410` once removed, with `zip`, `cover` and `clip` URLs that last the hour. |
+| `GET /worlds/:id` | One world, link-only included, `410` once removed, with `zip`, `cover` and `clip` URLs that last the hour, `parent` (the world it was forked from: its id, title and author while that one is listed, otherwise only `removed` or `unlisted`) and its number of `forks`. |
+| `GET /worlds/:id/forks` | Its listed forks, newest first, 50 at a time, `?after=<id>`. |
 | `PUT /worlds/:id/vote` | Signed in, `{ up: true }` or `{ up: false }`: the vote the account wants, so sending it twice changes nothing. Answers `{ votes, voted }`. 60 a minute. |
 | `POST /worlds/:id/report` | Counts a report. 10 per IP an hour. |
 | `POST /plays`, `PUT /plays/:id` | The install's token, `{ world }`, and the session in `x-session` when signed in: starts a play. Then `{ seconds }`, the play's focused time so far, every minute. |

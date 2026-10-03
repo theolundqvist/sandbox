@@ -23,6 +23,7 @@
   #cworld .stage :is(img, video) { display: block; width: 100%; height: 100%; object-fit: cover; }
   #cworld-by { margin: -16px 0 8px; }
   #cworld-about { margin: 0 0 24px; color: var(--dim); max-width: 640px; }
+  #cworld-lineage { margin: -12px 0 20px; }
   .comment { max-width: 720px; padding: 14px 0 14px 32px; border-bottom: 1px solid var(--line); user-select: text; }
   .comment p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .comment.removed p { color: var(--dim); }
@@ -104,14 +105,23 @@
     <h1 id="cworld-title"></h1>
     <p class="status" id="cworld-by"></p>
     <p id="cworld-about"></p>
+    <p class="status" id="cworld-lineage" hidden></p>
     <div class="items">
       <button class="item" id="cworld-play">Play</button>
       <button class="item" id="cworld-fork">Fork<span class="value">Copy to Worlds</span></button>
       <button class="item" id="cworld-vote">Upvote<span class="value" id="cworld-votes"></span></button>
       <button class="item" id="cworld-comments">Comments</button>
+      <button class="item" id="cworld-parent" hidden>Forked from<span class="value" id="cworld-parent-name"></span></button>
+      <button class="item" id="cworld-forks" hidden>Forks<span class="value" id="cworld-fork-count"></span></button>
       <button class="item danger" id="cworld-down" hidden>Take down</button>
       <button class="item" id="cworld-report" hidden>Report</button>
     </div>
+  </section>
+
+  <section id="forks" class="screen" data-nav hidden>
+    <h1 id="forks-title"></h1>
+    <div class="items" id="fork-list"></div>
+    <div class="items"><button class="item" id="forks-more" hidden>More</button></div>
   </section>
 
   <section id="comments" class="screen" data-nav hidden>
@@ -242,11 +252,13 @@
   // ---------- screens: a stack, Esc goes back one ----------
   const stack = [];
   const current = () => stack.at(-1);
+  /** The community world the screen is about; each screen keeps the one it opened with, so Back returns to it. */
+  let opened = null;
   function show(id, { reset = false } = {}) {
     if (reset) stack.length = 0;
     const from = current();
     if (from) from.focus = document.activeElement?.closest(".screen") === $(from.id) ? document.activeElement : null;
-    stack.push({ id });
+    stack.push({ id, world: opened });
     enter();
   }
   function back() {
@@ -254,6 +266,10 @@
     // Leaving the waiting screen stops waiting for that world.
     if (current().id === "waiting") shell.leave();
     stack.pop();
+    if (current().world && current().world !== opened) {
+      opened = current().world;
+      renderWorld();
+    }
     enter();
   }
   function enter() {
@@ -468,7 +484,8 @@
   /** A world's clip looping over its picture, or the picture alone. */
   const clipOf = (w, cls) => {
     const tile = el("span", { className: cls });
-    tile.append(w.clip ? el("video", { src: w.clip, poster: w.cover, muted: true, loop: true, autoplay: true, playsInline: true }) : el("img", { src: w.cover, alt: "", onerror: (e) => e.target.remove() }));
+    if (w.clip) tile.append(el("video", { src: w.clip, poster: w.cover, muted: true, loop: true, autoplay: true, playsInline: true }));
+    else if (w.cover) tile.append(el("img", { src: w.cover, alt: "", onerror: (e) => e.target.remove() }));
     return tile;
   };
   const counted = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
@@ -486,19 +503,17 @@
       $("error").textContent = e.message;
     }
     communityStatus(listed.length ? "" : mine ? "Worlds you publish show up here" : "No worlds shared yet");
-    $("community-list").replaceChildren(
-      ...listed.map((w) => {
-        const b = el("button", { className: "item pictured", onclick: () => openWorld(w) }, clipOf(w, "cover"), el("span", { className: "what", textContent: w.title }, el("small", { textContent: `by ${w.author} · ${counted(w.plays, "play")} · ${counted(w.votes, "vote")}` })), el("span", { className: "value", textContent: w.visibility === "link" ? "Link only" : counted(w.players, "player") }));
-        b.dataset.key = w.id;
-        return b;
-      }),
-    );
+    $("community-list").replaceChildren(...listed.map(worldRow));
+  }
+  function worldRow(w) {
+    const b = el("button", { className: "item pictured", onclick: () => openWorld(w) }, clipOf(w, "cover"), el("span", { className: "what", textContent: w.title }, el("small", { textContent: `by ${w.author} · ${counted(w.plays, "play")} · ${counted(w.votes, "vote")}` })), el("span", { className: "value", textContent: w.visibility === "link" ? "Link only" : counted(w.players, "player") }));
+    b.dataset.key = w.id;
+    return b;
   }
   pick($("community-tab"), () => loadCommunity());
   $("go-community").addEventListener("click", () => loadCommunity());
   $("community-more").onclick = () => loadCommunity(true);
 
-  let opened = null;
   function renderWorld() {
     const w = opened;
     $("cworld-stage").replaceChildren(clipOf(w, "stage-art"));
@@ -512,12 +527,44 @@
     $("cworld-report").disabled = false;
     $("cworld-report").firstChild.textContent = "Report";
     $("cworld-fork").firstChild.textContent = "Fork";
+    const parent = w.parent;
+    $("cworld-parent").hidden = !parent?.id;
+    $("cworld-parent-name").textContent = parent?.title ?? "";
+    $("cworld-lineage").hidden = !parent || !!parent.id;
+    $("cworld-lineage").textContent = parent?.removed ? "Forked from a removed world" : "Forked from an unlisted world";
+    $("cworld-forks").hidden = !w.forks;
+    $("cworld-fork-count").textContent = String(w.forks ?? "");
   }
+  /** A row from a list shows at once; the rest, like where it came from and its forks, follows. */
   async function openWorld(w) {
     opened = w;
     renderWorld();
     show("cworld");
+    const full = await communityCall("world", { id: w.id }).catch((e) => void ($("error").textContent = e.message));
+    if (full && opened === w) {
+      Object.assign(w, full);
+      renderWorld();
+    }
   }
+  $("cworld-parent").onclick = () => openWorld({ ...opened.parent, votes: 0, plays: 0, players: 0 });
+  let forks = [];
+  async function loadForks(more = false) {
+    if (!more) forks = [];
+    try {
+      const page = await communityCall("forks", { id: opened.id, after: more ? forks.at(-1)?.id : undefined });
+      forks.push(...page);
+      $("forks-more").hidden = page.length < 50;
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+    $("fork-list").replaceChildren(...forks.map(worldRow));
+  }
+  $("cworld-forks").onclick = () => {
+    $("forks-title").textContent = `Forks of ${opened.title}`;
+    show("forks");
+    loadForks();
+  };
+  $("forks-more").onclick = () => loadForks(true);
   /** Play hosts it, Fork copies it into Worlds. Anyone else's world runs their code here, so it asks first. */
   function getWorld(host) {
     const go = async () => {

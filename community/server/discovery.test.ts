@@ -164,3 +164,32 @@ test("comments are plain text from accounts that may still act, one every 20 sec
   expect((await kit.db`select count(*)::int as n from comments where account = ${ana.account.id}`)[0].n).toBe(0);
   expect((await kit.db`select count(*)::int as n from reports where reporter = ${bo.account.id}`)[0].n).toBe(1);
 });
+
+test("a fork names the world it came from while that one is listed, a removed one only as removed, and a link-only one never; the Forks list holds only listed forks", async () => {
+  const ana = await signUp("tree_ana");
+  const ben = await signUp("tree_ben");
+  const root = await publish(ana.token, { title: "Root" });
+  const fork = await publish(ben.token, { title: "Fork", forkOf: root.id });
+  const quiet = await publish(ben.token, { title: "Quiet fork", forkOf: root.id, visibility: "link" });
+  const secret = await publish(ana.token, { title: "Secret", visibility: "link" });
+  const ofSecret = await publish(ben.token, { title: "Of secret", forkOf: secret.id });
+  const get = async (id: string) => (await call(`/worlds/${id}`)).json();
+
+  expect(await get(fork.id)).toMatchObject({ forkOf: root.id, parent: { id: root.id, title: "Root", author: "tree_ana" } });
+  expect(await get(root.id)).toMatchObject({ forkOf: null, parent: null, forks: 1 });
+  expect((await (await call(`/worlds/${root.id}/forks`)).json()).map((w: any) => w.id)).toEqual([fork.id]);
+  expect(await get(quiet.id)).toMatchObject({ forkOf: root.id });
+  const leaked = await get(ofSecret.id);
+  expect(leaked).toMatchObject({ forkOf: null, parent: { unlisted: true } });
+  expect(JSON.stringify(leaked)).not.toContain(secret.id);
+  expect(JSON.stringify(await (await call("/worlds?sort=new")).json())).not.toContain(secret.id);
+
+  // A world can't become a fork of its own fork, and its parent, once set, stays.
+  expect((await call(`/worlds/${root.id}`, { method: "PUT", token: ana.token, body: { title: "Root", visibility: "public", forkOf: fork.id, files: { zip: 9 } } })).status).toBe(400);
+  expect((await call(`/worlds/${fork.id}`, { method: "PUT", token: ben.token, body: { title: "Fork", visibility: "public", forkOf: secret.id, files: { zip: 9 } } })).status).toBe(200);
+  expect((await kit.db`select remix_of from worlds where id = ${fork.id}`)[0].remix_of).toBe(root.id);
+
+  // Taking the parent down leaves its forks up, pointing at a removed world.
+  expect((await call(`/worlds/${root.id}`, { method: "DELETE", token: ana.token })).status).toBe(204);
+  expect(await get(fork.id)).toMatchObject({ forkOf: null, parent: { removed: true } });
+});

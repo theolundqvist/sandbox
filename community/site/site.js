@@ -133,7 +133,26 @@ async function showWorld(id) {
     }
     go("/account");
   };
-  await showComments(id);
+  const parent = w.parent;
+  $("world-parent").hidden = !parent;
+  $("world-parent").replaceChildren(
+    "Forked from ",
+    parent?.id ? el("a", { href: `/w/${parent.id}`, textContent: `${parent.title} by ${parent.author}` }) : parent?.removed ? "a removed world" : "an unlisted world",
+  );
+  await Promise.all([showForks(id, w.forks), showComments(id)]);
+}
+
+/** The listed worlds forked from this one, newest first. */
+let forks = [];
+async function showForks(id, count, more = false) {
+  if (!more) forks = [];
+  $("forks-part").hidden = !count;
+  if (!count) return;
+  const page = await api(`/worlds/${id}/forks${more && forks.length ? `?after=${forks.at(-1).id}` : ""}`);
+  forks.push(...page);
+  $("forks-more").hidden = page.length < 50;
+  $("forks-more").onclick = () => showForks(id, count, true).catch((e) => ($("error").textContent = e.message));
+  $("fork-list").replaceChildren(...forks.map(worldRow));
 }
 
 /** A world's comments, oldest first, 100 at a time. Their author and the world's owner remove them; anyone reports them. */

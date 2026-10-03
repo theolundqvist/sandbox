@@ -138,10 +138,11 @@ test("a shared world goes up as its export, comes down on another computer as a 
   // The copy carries the world it came from inside itself, so it survives export and import.
   expect(JSON.parse(readFileSync(join(ben.data, "worlds", forked.world, "config.json"), "utf8")).forkOf).toBe(communityId);
 
-  // Ben's fork, shared for everyone, names the world it came from; another account can't change Ana's.
+  // Ben's fork, shared for everyone, keeps the world it came from, but never names Ana's link-only one; another account can't change Ana's.
   const benShared = await publish(ben, benSession, { id: forked.world, title: "Lava Keep, colder", visibility: "public", cover: COVER });
   const listed = await (await fetch(`${COMMUNITY}/worlds`)).json();
-  expect(listed.map((w: any) => [w.title, w.forkOf, w.author, w.clip])).toEqual([["Lava Keep, colder", communityId, "ben", null]]);
+  expect(listed.map((w: any) => [w.title, w.forkOf, w.author, w.clip])).toEqual([["Lava Keep, colder", null, "ben", null]]);
+  expect((await (await fetch(`${COMMUNITY}/worlds/${benShared.id}`)).json()).parent).toEqual({ unlisted: true });
   const stolen = await fetch(`${COMMUNITY}/worlds/${communityId}`, { method: "PUT", headers: { authorization: `Bearer ${benSession}`, "content-type": "application/json" }, body: JSON.stringify({ title: "Mine now", visibility: "public", files: { zip: 10 } }) });
   expect(stolen.status).toBe(403);
 
@@ -149,6 +150,8 @@ test("a shared world goes up as its export, comes down on another computer as a 
   const again = await publish(ana, anaSession, { id, title: "Lava Keep 2", visibility: "public" });
   expect(again.link).toBe(shared.link);
   expect(await (await fetch(`${COMMUNITY}/worlds/${communityId}`)).json()).toMatchObject({ title: "Lava Keep 2", visibility: "public" });
+  // Now that it's listed, Ben's fork names it.
+  expect(await (await fetch(`${COMMUNITY}/worlds/${benShared.id}`)).json()).toMatchObject({ forkOf: communityId, parent: { id: communityId, title: "Lava Keep 2", author: "ana" } });
 
   // Hosting a community world again reuses the copy it made, instead of piling up copies.
   const hosted = await menu(ben, "community-get", { id: communityId, trust: true, host: true });
@@ -160,7 +163,7 @@ test("a shared world goes up as its export, comes down on another computer as a 
   expect((await menu(ana, "published", { id })).status).toBe(200);
   expect((await fetch(`${COMMUNITY}/worlds/${communityId}`)).status).toBe(410);
   expect((await menu(ana, "state")).worlds.find((w: any) => w.id === id).shared).toBeNull();
-  expect(await (await fetch(`${COMMUNITY}/worlds/${benShared.id}`)).json()).toMatchObject({ forkOf: communityId });
+  expect(await (await fetch(`${COMMUNITY}/worlds/${benShared.id}`)).json()).toMatchObject({ forkOf: null, parent: { removed: true } });
 }, 120_000);
 
 test("a host without a voice key gets free voice from Community, counted against their computer, and their own key goes around it", async () => {

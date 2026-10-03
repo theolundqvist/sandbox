@@ -455,6 +455,7 @@ const publishedFrom = async (id) => (await startServer(), await hostState())?.wo
 const COMMUNITY_ACTIONS = {
   list: ({ after, mine, sort }) => (mine ? community("/account/worlds") : community(`/worlds?sort=${sort === "new" ? "new" : "top"}${after ? `&after=${worldId(after)}` : ""}`)),
   world: ({ id }) => community(`/worlds/${worldId(id)}`),
+  forks: ({ id, after }) => community(`/worlds/${worldId(id)}/forks${after ? `?after=${worldId(after)}` : ""}`),
   vote: ({ id, up }) => community(`/worlds/${worldId(id)}/vote`, { method: "PUT", body: { up: up === true } }),
   report: ({ id }) => community(`/worlds/${worldId(id)}/report`, { method: "POST" }),
   comments: ({ id, after }) => community(`/worlds/${worldId(id)}/comments${after ? `?after=${commentId(after)}` : ""}`),
