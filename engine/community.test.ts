@@ -200,3 +200,37 @@ test("a host without a voice key gets free voice from Community, counted against
   expect(await speak("One more line.")).toEqual({ status: 400, error: "Free voice is used up on this computer." });
   expect((await menu(ana, "stop", {})).status).toBe(200);
 }, 60_000);
+
+test("the menu page's usage stats land under this computer's install, never its token, and with Share usage stats off nothing reaches Community", async () => {
+  const secrets = join(ben.data, "secrets.json");
+  for (let i = 0; i < 100 && !existsSync(secrets); i++) await Bun.sleep(100);
+  const { token } = JSON.parse(readFileSync(secrets, "utf8")).install;
+  const db = new SQL(stack.env.DATABASE_URL);
+  const [{ id }] = await db`select id from installs where token_hash = encode(sha256(${token}::bytea), 'hex')`;
+  const session = crypto.randomUUID();
+  const send = (screen: string) =>
+    fetch(`${ben.base}/api/menu/events`, { method: "POST", headers: { authorization: `Bearer ${ben.key}`, "content-type": "application/json" }, body: JSON.stringify({ events: [{ session, surface: "menu", screen, action: "screen" }, { session, surface: "menu", screen, action: "create-go" }] }) });
+  const rows = () => db`select screen, action, props from events where install = ${id} order by id`;
+  /** Every request Community got from this install, whether or not it stored anything. */
+  const requests = async () => (await db`select count(*)::int n from hits where ip = ${id} and action = 'events'`)[0].n;
+
+  expect((await send("create")).status).toBe(204);
+  for (let i = 0; i < 50 && (await rows()).length < 2; i++) await Bun.sleep(100);
+  expect((await rows()).map((r: any) => [r.screen, r.action])).toEqual([["create", "screen"], ["create", "create-go"]]);
+  expect((await rows())[0].props).toEqual({ version: expect.any(String), os: process.platform });
+  const [{ found }] = await db`select count(*)::int found from events e where e::text like ${`%${token}%`}`;
+  expect(found).toBe(0);
+
+  expect((await menu(ben, "share-usage", { share: false })).shareUsage).toBe(false);
+  const before = await requests();
+  expect((await send("worlds")).status).toBe(204);
+  await Bun.sleep(1000);
+  expect(await requests()).toBe(before);
+  expect((await rows()).length).toBe(2);
+
+  expect((await menu(ben, "share-usage", { share: true })).shareUsage).toBe(true);
+  await send("community");
+  for (let i = 0; i < 50 && (await rows()).length < 4; i++) await Bun.sleep(100);
+  expect((await rows()).map((r: any) => r.screen)).toEqual(["create", "create", "community", "community"]);
+  await db.close();
+});

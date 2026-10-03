@@ -38,3 +38,18 @@ begin
   if not found then raise exception 'daily cap' using errcode = 'SV002'; end if;
   return today::text;
 end $$;
+
+-- One row per screen shown or button pressed outside the game: the app's start screen (surface app), the launcher's menu page (menu) and the site (site). Never anything typed. An install is known by its id, never its token; the site's visitors are an anonymous id in props.anon. account stays null until there are logins.
+create table if not exists events (
+  id bigserial primary key,
+  at timestamptz not null default now(),
+  install text references installs (id) on delete cascade,
+  account uuid,
+  session uuid not null,
+  surface text not null,
+  screen text,
+  action text not null,
+  props jsonb not null default '{}'
+);
+create index if not exists events_by_install on events (install, at);
+create index if not exists events_by_action on events (action, at);

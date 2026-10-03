@@ -13,6 +13,7 @@
   .front { top: 36px; bottom: 96px; padding-top: 60px; padding-bottom: 0; }
   .status { margin: 0; color: var(--dim); font: 700 14px/1.4 var(--display); letter-spacing: .16em; text-transform: uppercase; }
   #down .lead, #waiting .status { margin: -16px 0 32px; }
+  #settings .note { margin: 20px 0 0; color: var(--dim); font-size: 13px; }
   .hints span { white-space: nowrap; }
   @media (max-width: 1000px), (max-height: 640px) {
     .front { bottom: 64px; padding: 28px 48px 0; }
@@ -55,7 +56,7 @@
   <section id="title" class="screen title" data-nav hidden>
     <svg class="logo" id="logo"></svg>
     <div class="items">
-      <button class="item" id="go-last" hidden>Continue<span class="value" id="last-name"></span></button>
+      <button class="item" id="go-last" hidden>Continue</button>
       <button class="item" data-to="saved">Worlds</button>
       <button class="item" data-to="join">Join world</button>
       <button class="item" id="go-new">Host world</button>
@@ -96,6 +97,8 @@
   <section id="settings" class="screen" data-nav hidden>
     <h1>Settings</h1>
     <label class="field"><span>Name</span><input type="text" id="name-field" maxlength="16" autocomplete="off" spellcheck="false"></label>
+    <div class="field"><span>Share usage stats</span><div class="pick" id="share-usage" data-options="on:On,off:Off"></div></div>
+    <p class="note">Sends which screens and buttons you use, never what you type.</p>
   </section>
 
   <section id="down" class="screen" data-nav hidden>
@@ -119,8 +122,10 @@
 <div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span><kbd>Esc</kbd>Back</span><span id="forget-hint"><kbd>Del</kbd>Remove</span><span id="fullscreen-hint"><kbd>F11</kbd>Full screen</span><span id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span></div>
 
 <script type="module">
-  import { backdrop, joinLink, joinable, logo } from "/front.js";
+  import { backdrop, joinLink, joinable, logo, pick, usage } from "/front.js";
   const $ = (id) => document.getElementById(id);
+  // The app batches them, and sends what's left when it quits.
+  const stats = usage("app", shell.events, 0);
   backdrop($("backdrop"));
   logo($("logo"));
   if (shell.platform === "darwin") {
@@ -149,6 +154,7 @@
   function enter() {
     const { id, focus } = current();
     for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== id;
+    stats.screen(id);
     $("error").textContent = "";
     $("back").hidden = stack.length < 2;
     $("forget-hint").hidden = id !== "saved";
@@ -208,6 +214,7 @@
         if (g.cover) cover.append(el("img", { src: g.cover, alt: "", onerror: (e) => e.target.remove() }));
         const b = el("button", { className: "item pictured", onclick: () => open(g.url) }, cover, el("span", { className: "what", textContent: g.name }), el("span", { className: g.live ? "value live" : "value", textContent: g.value }), el("span", { className: "value", textContent: g.kind }));
         b.dataset.key = g.url;
+        b.dataset.event = g.kind === "Hosted" ? "hosted-world" : "joined-world";
         return b;
       }),
     );
@@ -218,7 +225,6 @@
     const last = games.find((g) => g.url === s.last);
     const appeared = !!last && $("go-last").hidden;
     $("go-last").hidden = !last;
-    $("last-name").textContent = last?.name ?? "";
     $("go-last").onclick = () => last && open(last.url);
     if (appeared && current()?.id === "title") $("go-last").focus();
     if (current()?.id === "title" && !document.activeElement?.closest("#title .item:not([hidden])")) enter();
@@ -242,7 +248,9 @@
 
   async function join() {
     try {
-      await open(joinLink($("join-link").value));
+      const link = joinLink($("join-link").value);
+      stats.step("join");
+      await open(link);
     } catch (e) {
       $("error").textContent = e.message;
     }
@@ -254,9 +262,17 @@
     $("error").textContent = error ?? "";
     return !error;
   }
-  $("name-go").onclick = async () => (await saveName($("name-first"))) && show("title", { reset: true });
+  $("name-go").onclick = async () => {
+    if (!(await saveName($("name-first")))) return;
+    stats.step("named");
+    show("title", { reset: true });
+  };
   $("name-field").onchange = async () => (await saveName($("name-field"))) || ($("name-field").value = (await shell.name()).name);
-  document.querySelector("[data-to=settings]").addEventListener("click", async () => ($("name-field").value = (await shell.name()).name));
+  document.querySelector("[data-to=settings]").addEventListener("click", async () => {
+    $("name-field").value = (await shell.name()).name;
+    $("share-usage").set((await shell.shareUsage()) ? "on" : "off");
+  });
+  pick($("share-usage"), (value) => shell.shareUsage(value === "on"));
 
   $("quit").onclick = () => shell.quit();
   $("go-update").onclick = () => busy("Downloading…", shell.update);
