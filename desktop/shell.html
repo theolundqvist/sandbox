@@ -133,6 +133,7 @@
       <button class="item" id="cworld-comments">Comments</button>
       <button class="item" id="cworld-parent" hidden>Forked from<span class="value" id="cworld-parent-name"></span></button>
       <button class="item" id="cworld-forks" hidden>Forks<span class="value" id="cworld-fork-count"></span></button>
+      <button class="item" id="cworld-versions" hidden>Versions<span class="value" id="cworld-version"></span></button>
       <button class="item danger" id="cworld-down" hidden>Take down</button>
       <button class="item" id="cworld-report" hidden>Report</button>
     </div>
@@ -150,6 +151,11 @@
     <div id="credits-part" hidden><h2 class="status">Credits waiting</h2><div class="items" id="credit-list"></div></div>
     <div class="items" id="profile-worlds"></div>
     <p class="status" id="profile-none" hidden>No worlds yet</p>
+  </section>
+
+  <section id="versions" class="screen" data-nav hidden>
+    <h1>Versions</h1>
+    <div class="items" id="version-list"></div>
   </section>
 
   <section id="notices" class="screen" data-nav hidden>
@@ -221,6 +227,7 @@
     <h1 id="publish-name"></h1>
     <label class="field"><span>Title</span><input type="text" id="publish-title" maxlength="60" autocomplete="off" spellcheck="false"></label>
     <label class="field"><span>Description</span><input type="text" id="publish-description" maxlength="200" autocomplete="off"></label>
+    <label class="field" id="publish-changes-field" hidden><span>What changed</span><input type="text" id="publish-changes" maxlength="280" autocomplete="off"></label>
     <div class="field"><span>Who can play</span><div class="pick" id="publish-visibility" data-options="public:Everyone,link:Anyone with the link"></div></div>
     <div id="publish-builders"></div>
     <div class="items"><button class="item" id="publish-go">Publish</button></div>
@@ -367,6 +374,7 @@
   for (const b of document.querySelectorAll("[data-to]")) b.onclick = () => show(b.dataset.to);
   $("back").onclick = back;
 
+  const day = (ms) => new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(new Date(ms).getFullYear() !== new Date().getFullYear() && { year: "numeric" }) }).replaceAll(" ", "\u00a0");
   const ago = (ms) => {
     const m = Math.round((Date.now() - ms) / 60000);
     return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : Math.round(m / 1440) === 1 ? "yesterday" : `${Math.round(m / 1440)} days ago`;
@@ -649,7 +657,7 @@
     $("cworld-title").textContent = w.title;
     const names = w.builders ?? [w.author];
     const mod = w.kind === "mod";
-    $("cworld-by").replaceChildren("by ", ...names.flatMap((n, i) => [i ? ", " : "", el("button", { textContent: n, onclick: () => openProfile(n) })]), mod ? ` · ${counted(w.uses ?? 0, "world")} use it` : ` · ${counted(w.players, "player")} · ${counted(w.plays, "play")}`);
+    $("cworld-by").replaceChildren("by ", ...names.flatMap((n, i) => [i ? ", " : "", el("button", { textContent: n, onclick: () => openProfile(n) })]), mod ? ` · ${counted(w.uses ?? 0, "world")} use it` : ` · ${counted(w.players, "player")} · ${counted(w.plays, "play")}${w.version > 1 ? ` · Updated ${day(w.updatedAt)}` : ""}`);
     $("cworld-play").hidden = $("cworld-fork").hidden = mod;
     $("cworld-mod").hidden = !mod;
     $("cworld-add-line").textContent = `./world add_mod id=${w.id}`;
@@ -668,8 +676,12 @@
     const parent = w.parent;
     $("cworld-parent").hidden = !parent?.id;
     $("cworld-parent-name").textContent = parent?.title ?? "";
-    $("cworld-lineage").hidden = !parent || !!parent.id;
-    $("cworld-lineage").textContent = `Forked from ${parent?.removed ? "a removed" : "an unlisted"} ${mod ? "mod" : "world"}`;
+    $("cworld-lineage").hidden = !parent || (!!parent.id && !parent.updated);
+    $("cworld-lineage").textContent = parent?.updated
+      ? `The original was updated ${day(parent.updated.at)}${parent.updated.changelog ? `: ${parent.updated.changelog}` : ""}`
+      : `Forked from ${parent?.removed ? "a removed" : "an unlisted"} ${mod ? "mod" : "world"}`;
+    $("cworld-versions").hidden = !(w.history?.length > 1);
+    $("cworld-version").textContent = String(w.version ?? "");
     $("cworld-forks").hidden = !w.forks;
     $("cworld-fork-count").textContent = String(w.forks ?? "");
   }
@@ -705,6 +717,16 @@
     loadForks();
   };
   $("forks-more").onclick = () => loadForks(true);
+  $("cworld-versions").onclick = () => {
+    $("version-list").replaceChildren(
+      ...opened.history.map((v) => {
+        const row = el("div", { className: "item pictured" }, el("span", { className: "what", textContent: `Version ${v.version}` }, el("small", { textContent: v.changelog })), el("span", { className: "value", textContent: day(v.at) }));
+        row.dataset.key = `version-${v.version}`;
+        return row;
+      }),
+    );
+    show("versions");
+  };
   /** Play hosts it, Fork copies it into Worlds. Anyone else's world runs their code here, so it asks first. */
   function getWorld(host) {
     const go = async () => {
@@ -1040,6 +1062,8 @@
     $("publish-description").value = w.shared?.description ?? "";
     $("publish-visibility").set(w.shared?.visibility ?? "public");
     $("publish-go").firstChild.textContent = w.shared ? "Update" : "Publish";
+    $("publish-changes-field").hidden = !w.shared;
+    $("publish-changes").value = "";
     $("publish-builders").replaceChildren();
     show("publish");
     loadBuilders(w);
@@ -1070,7 +1094,7 @@
         let world;
         try {
           const builders = [...document.querySelectorAll("#publish-builders [data-builder]")].filter((b) => b.dataset.value === "yes").map((b) => b.dataset.builder);
-          world = await communityCall("publish", { id: publishing.id, title: $("publish-title").value, description: $("publish-description").value, visibility: $("publish-visibility").dataset.value, builders });
+          world = await communityCall("publish", { id: publishing.id, title: $("publish-title").value, description: $("publish-description").value, visibility: $("publish-visibility").dataset.value, changelog: $("publish-changes").value, builders });
         } catch (e) {
           return e.message;
         }

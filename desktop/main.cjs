@@ -558,9 +558,9 @@ const COMMUNITY_ACTIONS = {
   /** This computer's worlds, to pick one to publish. */
   local: async () => (await startServer(), await hostState())?.worlds.map((w) => ({ id: w.id, name: w.name, shared: w.shared })) ?? [],
   /** Publishing invites the builders picked, by name; each is credited once they accept. */
-  publish: async ({ id, title, description, visibility, builders }) => {
+  publish: async ({ id, title, description, visibility, changelog, builders }) => {
     await startServer();
-    const stage = await menu("publish-stage", { id: String(id), title, description, visibility });
+    const stage = await menu("publish-stage", { id: String(id), title, description, visibility, changelog });
     const world = await publishStaged(String(id), stage);
     if (Array.isArray(builders) && builders.length) await community(`/worlds/${world.id}/credits`, { method: "PUT", body: { credits: await menu("credit-checks", { id: String(id), names: builders }) } });
     return world;

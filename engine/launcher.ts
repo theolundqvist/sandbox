@@ -619,6 +619,7 @@ async function stagePublish(body: any) {
   const details = {
     title: String(body.title ?? "").trim() || own.name,
     description: String(body.description ?? "").trim(),
+    changelog: String(body.changelog ?? "").trim(),
     visibility,
     forkOf: own.forkOf ?? before.from,
     origin: own.telemetry,

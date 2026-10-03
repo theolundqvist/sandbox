@@ -56,6 +56,7 @@ async function copyFor(w, tip) {
 }
 
 const counted = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
+const day = (ms) => new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(new Date(ms).getFullYear() !== new Date().getFullYear() && { year: "numeric" }) }).replaceAll(" ", "\u00a0");
 const ago = (ms) => {
   const m = Math.round((Date.now() - ms) / 60000);
   return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : Math.round(m / 1440) === 1 ? "yesterday" : `${Math.round(m / 1440)} days ago`;
@@ -147,6 +148,7 @@ async function showWorld(id, kind = "world") {
   $("world-title").textContent = w.title;
   const names = w.builders ?? [w.author];
   const counts = mod ? ["", `${counted(w.uses, "world")} use it`] : ["", counted(w.players, "player"), counted(w.plays, "play"), w.mods ? `${w.mods} mods` : ""];
+  if (w.version > 1) counts.push(`Updated ${day(w.updatedAt)}`);
   $("world-by").replaceChildren("by ", ...names.flatMap((n, i) => [i ? ", " : "", el("a", { href: `/u/${n}`, textContent: n })]), counts.filter((x, i) => !i || x).join(" · "));
   $("world-get").hidden = mod;
   $("mod-part").hidden = !mod;
@@ -196,6 +198,11 @@ async function showWorld(id, kind = "world") {
   $("world-parent").replaceChildren(
     "Forked from ",
     parent?.id ? el("a", { href: `/${mod ? "m" : "w"}/${parent.id}`, textContent: `${parent.title} by ${parent.author}` }) : `${parent?.removed ? "a removed" : "an unlisted"} ${kind}`,
+    parent?.updated ? `. The original was updated ${day(parent.updated.at)}${parent.updated.changelog ? `: ${parent.updated.changelog}` : ""}` : "",
+  );
+  $("versions-part").hidden = !(w.history?.length > 1);
+  $("version-list").replaceChildren(
+    ...(w.history ?? []).map((v) => el("div", { className: "world" }, el("span", { className: "what" }, el("b", { textContent: `Version ${v.version}` }), el("small", { textContent: v.changelog })), el("span", { className: "when", textContent: day(v.at) }))),
   );
   await Promise.all([showForks(id, w.forks), showComments(id, false, here)]);
 }

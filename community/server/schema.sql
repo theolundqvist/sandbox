@@ -247,3 +247,16 @@ alter table worlds add column if not exists mod jsonb;
 alter table worlds add column if not exists uses integer not null default 0;
 create index if not exists worlds_mods on worlds (uses desc, created_at desc, id desc) where kind = 'mod' and removed_at is null and zip_key is not null;
 create table if not exists mod_uses (mod text not null references worlds (id) on delete cascade, world_key text not null, install text references installs (id) on delete set null, at timestamptz not null default now(), primary key (mod, world_key));
+
+-- Each time a world's files went live is a version, with what its publisher said changed. A fork keeps the version of its original it was first published from.
+alter table worlds add column if not exists version integer not null default 0;
+alter table worlds add column if not exists parent_version integer;
+create table if not exists versions (
+  world text not null references worlds (id) on delete cascade,
+  version integer not null,
+  changelog text not null default '',
+  at timestamptz not null default now(),
+  primary key (world, version)
+);
+insert into versions (world, version, at) select id, 1, updated_at from worlds where version = 0 and zip_key is not null on conflict do nothing;
+update worlds set version = 1 where version = 0 and zip_key is not null;

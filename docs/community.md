@@ -34,12 +34,12 @@ Deleting an account needs its password. Its sessions end at once and its worlds 
 | `GET /account`, `PATCH /account`, `DELETE /account` | Who is signed in, a new `username`, deletion with `{ password }`. |
 | `GET /account/worlds` | The account's live worlds, link-only included. |
 | `POST /worlds` | Signed in. JSON details and `files: { zip, cover, clip? }` sizes (zip 200 MB, JPEG cover 2 MB, WebM clip 6 MB). Answers `{ id, link, uploads }`, an upload URL per file. 10 per IP an hour. |
-| `PUT /worlds/:id` | Same, by the account that owns it; a cover or clip not sent keeps the old one. 30 per IP an hour. |
+| `PUT /worlds/:id` | Same, by the account that owns it; a cover or clip not sent keeps the old one, and `changelog` (280 characters) says what changed. Each share that goes live is the world's next `version`. 30 per IP an hour. |
 | `POST /worlds/:id/done` | Its account only, after the uploads. Checks each file landed at its size and is the kind it claims, then the world goes live; an update replaces the old files only now. |
 | `POST /worlds/:id/claim` | Signed in, `{ ownerToken }`: moves a world shared before accounts to this account. |
 | `DELETE /worlds/:id` | Its account, or the owner token of an unclaimed world. Leaves a tombstone (`410 Gone`) and deletes its files. |
 | `GET /worlds` | Public live worlds, 50 at a time: by players, or newest first with `?sort=new`; `?after=<id>` goes on from that world, ties broken by id. Worlds of banned accounts are left out. |
-| `GET /worlds/:id` | One world, link-only included, `410` once removed, with `zip`, `cover` and `clip` URLs that last the hour, `parent` (the world it was forked from: its id, title and author while that one is listed, otherwise only `removed` or `unlisted`) and its number of `forks`, and `builders`: its author, then each credited builder who accepted. |
+| `GET /worlds/:id` | One world, link-only included, `410` once removed, with `zip`, `cover` and `clip` URLs that last the hour, `parent` (the world it was forked from: its id, title and author while that one is listed, otherwise only `removed` or `unlisted`; `updated` is the original's newest `{ version, changelog, at }` when it is newer than the version the fork was first published from), its `history`, the 20 newest `{ version, changelog, at }`, and its number of `forks`, and `builders`: its author, then each credited builder who accepted. |
 | `GET /worlds/:id/forks` | Its listed forks, newest first, 50 at a time, `?after=<id>`. |
 | `PUT /worlds/:id/vote` | Signed in, `{ up: true }` or `{ up: false }`: the vote the account wants, so sending it twice changes nothing. Answers `{ votes, voted }`. 60 a minute. |
 | `POST /worlds/:id/report` | Counts a report. 10 per IP an hour. |

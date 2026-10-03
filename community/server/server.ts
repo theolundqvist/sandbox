@@ -268,6 +268,7 @@ function details(body: any, update: boolean) {
     origin: text(body.origin, 40) || null,
     engine_version: text(body.engineVersion, 40),
     mods: Math.max(0, Math.floor(Number(body.mods) || 0)),
+    changelog: text(body.changelog, 280),
   };
   if (!meta.title) throw new Refusal("A world needs a title.");
   if (meta.visibility !== "link" && meta.visibility !== "public") throw new Refusal("Visibility is link or public.");
@@ -347,9 +348,11 @@ async function done(req: Request, id: string) {
   const { meta, keys, sizes } = pending;
   const [live] = await sql`update worlds set title = ${meta.title}, description = ${meta.description}, author = ${account!.username}, visibility = ${meta.visibility},
       remix_of = coalesce(remix_of, ${meta.remix_of}), origin = coalesce(${meta.origin ?? null}, origin), engine_version = ${meta.engine_version}, mods = ${meta.mods}, size = ${sizes.zip},
-      zip_key = ${keys.zip}, cover_key = ${keys.cover ?? row.cover_key}, clip_key = ${keys.clip ?? row.clip_key}, mod = ${meta.mod ?? null}, pending = null, updated_at = now()
+      zip_key = ${keys.zip}, cover_key = ${keys.cover ?? row.cover_key}, clip_key = ${keys.clip ?? row.clip_key}, mod = ${meta.mod ?? null}, pending = null, updated_at = now(), version = version + 1,
+      parent_version = coalesce(parent_version, (select p.version from worlds p where p.id = coalesce(worlds.remix_of, ${meta.remix_of})))
     where id = ${id} and removed_at is null and pending->>'upload' = ${pending.upload} returning *`;
   if (!live) throw new Refusal("This world changed while it uploaded. Share it again.", 409);
+  await sql`insert into versions (world, version, changelog) values (${id}, ${live.version}, ${meta.changelog ?? ""})`;
   if (!row.zip_key && live.remix_of && live.visibility === "public") await notify((await sql`select account from worlds where id = ${live.remix_of} and removed_at is null`)[0]?.account ?? null, "fork", account!.id, id);
   const replaced = [row.zip_key, keys.cover && row.cover_key, keys.clip && row.clip_key].filter(Boolean) as string[];
   await Promise.allSettled(replaced.map((key) => files.delete(key)));
@@ -372,6 +375,7 @@ export async function takeDown(row: any, by: "owner" | "account" | "moderator", 
   const keys = [row.zip_key, row.cover_key, row.clip_key, ...Object.values(row.pending?.keys ?? {})].filter(Boolean) as string[];
   await sql`update worlds set removed_at = coalesce(removed_at, now()), removed_by = ${by}, title = '', description = '', author = '', owner_token_hash = null,
       zip_key = null, cover_key = null, clip_key = null, mod = null, pending = null where id = ${row.id}`;
+  await sql`delete from versions where world = ${row.id}`;
   if (keys.length) await sql`insert into doomed ${sql(keys.map((key) => ({ key })))} on conflict do nothing`;
   await deleteDoomed(keys);
 }
@@ -393,6 +397,7 @@ export async function shown(row: any, account?: Account | null) {
     size: Number(row.size),
     createdAt: new Date(row.created_at).getTime(),
     updatedAt: new Date(row.updated_at).getTime(),
+    version: row.version,
     link: `${SITE}/${row.kind === "mod" ? "m" : "w"}/${row.id}`,
     zip: presign(worlds, row.zip_key),
     cover: presign(worlds, row.cover_key),
@@ -550,13 +555,17 @@ const PAGE = 50;
 /** What lists show: public, live, and not by a banned account. Link-only worlds open only by their link. */
 export const listed = () => sql`w.visibility = 'public' and w.zip_key is not null and w.removed_at is null and a.banned_at is null`;
 
-/** The world a fork came from, as much of it as anyone may see: a removed one is only that, and a link-only one keeps its link to itself. */
-export async function parentOf(id: string | null) {
+/** The world a fork came from, as much of it as anyone may see: a removed one is only that, and a link-only one keeps its link to itself. Its newest version, if newer than the one the fork was published from. */
+export async function parentOf(id: string | null, since: number | null = null) {
   if (!id) return null;
-  const [p] = await sql`select w.id, w.title, coalesce(a.username, w.author) as author, ${listed()} as shown, w.removed_at is not null as removed from worlds w left join accounts a on a.id = w.account where w.id = ${id}`;
+  const [p] = await sql`select w.id, w.title, coalesce(a.username, w.author) as author, w.version, ${listed()} as shown, w.removed_at is not null as removed from worlds w left join accounts a on a.id = w.account where w.id = ${id}`;
   if (!p || p.removed) return { removed: true };
-  return p.shown ? { id: p.id, title: p.title, author: p.author } : { unlisted: true };
+  if (!p.shown) return { unlisted: true };
+  if (since === null) return { id: p.id, title: p.title, author: p.author };
+  const [newer] = p.version > since ? await sql`select version, changelog, at from versions where world = ${id} order by version desc limit 1` : [];
+  return { id: p.id, title: p.title, author: p.author, updated: newer ? shownVersion(newer) : null };
 }
+const shownVersion = (v: any) => ({ version: v.version, changelog: v.changelog, at: new Date(v.at).getTime() });
 
 /** A vote is the state the asker wants, so sending it twice changes nothing. */
 async function vote(req: Request, id: string) {
@@ -1073,7 +1082,8 @@ async function route(req: Request, ip: string) {
       if (!row) throw new Refusal("There is no such world.", 404);
       if (row.removed_at) throw new Refusal("This world was taken down.", 410);
       const [{ forks }] = await sql`select count(*)::int as forks from worlds w left join accounts a on a.id = w.account where w.remix_of = ${id} and ${listed()}`;
-      return json({ ...(await shown(row, account)), parent: await parentOf(row.remix_of), forks, builders: [row.username ?? row.author, ...(await builders(id!))] });
+      const history = (await sql`select version, changelog, at from versions where world = ${id} order by version desc limit 20`).map(shownVersion);
+      return json({ ...(await shown(row, account)), parent: await parentOf(row.remix_of, row.parent_version), forks, builders: [row.username ?? row.author, ...(await builders(id!))], history });
     }
     case "GET :id/forks": {
       // Newest first, 50 at a time, going on from ?after=<id>.

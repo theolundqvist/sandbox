@@ -2504,6 +2504,8 @@ async function openShare(status = "") {
   $("share-link").textContent = shared?.link ?? "";
   $("share-stop").textContent = "Stop sharing";
   $("share-go").textContent = shared?.link ? "Update" : "Share";
+  $("share-changes-field").hidden = !shared?.link;
+  if (!status) $<HTMLInputElement>("share-changes").value = "";
   $("share-status").textContent = status || "The timelapse goes with it. Chat stays on this computer.";
   openPage("share");
   $("page-title").textContent = "Share";
@@ -2512,7 +2514,7 @@ async function openShare(status = "") {
 $("world-share").onclick = () => openShare();
 $("share-go").onclick = async () => {
   const cover = $("share-cover").dataset.value === "view" ? viewPicture || viewJpeg() : undefined;
-  const form = { id: info.id, title: $<HTMLInputElement>("share-title").value, description: $<HTMLInputElement>("share-description").value, visibility: $("share-visibility").dataset.value, cover };
+  const form = { id: info.id, title: $<HTMLInputElement>("share-title").value, description: $<HTMLInputElement>("share-description").value, changelog: $<HTMLInputElement>("share-changes").value, visibility: $("share-visibility").dataset.value, cover };
   showMenu(false);
   toast("Recording a clip of the timelapse…");
   const clip = await recordClip().catch(() => null);
