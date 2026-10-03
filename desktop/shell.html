@@ -56,7 +56,7 @@
   <section id="title" class="screen title" data-nav hidden>
     <svg class="logo" id="logo"></svg>
     <div class="items">
-      <button class="item" id="go-last" hidden>Continue<span class="value" id="last-name"></span></button>
+      <button class="item" id="go-last" hidden>Continue</button>
       <button class="item" data-to="saved">Worlds</button>
       <button class="item" data-to="join">Join world</button>
       <button class="item" id="go-new">Host world</button>
@@ -225,7 +225,6 @@
     const last = games.find((g) => g.url === s.last);
     const appeared = !!last && $("go-last").hidden;
     $("go-last").hidden = !last;
-    $("last-name").textContent = last?.name ?? "";
     $("go-last").onclick = () => last && open(last.url);
     if (appeared && current()?.id === "title") $("go-last").focus();
     if (current()?.id === "title" && !document.activeElement?.closest("#title .item:not([hidden])")) enter();
