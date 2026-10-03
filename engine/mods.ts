@@ -47,8 +47,9 @@ export const hasGit = (() => {
 /**
  * How the engine runs git on a world's history. A world may be a stranger's and bring its own .git, which import cuts down to history alone; on top of that, no hooks, no fsmonitor,
  * and none of this computer's git config, whose filters, attributes or programs a world's .gitattributes could otherwise set off.
+ * An empty core.fsmonitor turns it off on every git: before 2.36 git takes the setting for a command, and "false" would run a program of that name on each index read.
  */
-export const GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.symlinks=false"];
+export const GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "core.symlinks=false"];
 export const GIT_ENV = { PATH: process.env.PATH ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: devNull, GIT_TERMINAL_PROMPT: "0", ...(process.env.SYSTEMROOT && { SYSTEMROOT: process.env.SYSTEMROOT }) };
 const sameFile = (a: string, b: string) => existsSync(a) && existsSync(b) && readFileSync(a).equals(readFileSync(b));
 const unique = (xs: Iterable<string>) => [...new Set(xs)];
@@ -112,11 +113,7 @@ export class Mods {
     return this.refusal ? Promise.resolve() : this.checker.warm();
   }
 
-  /**
-   * Starts the typecheck's warm-up in the background, the first time only; the server calls this when the hub first ticks, so the world opens and players join before the checker takes the CPU.
-   * One that can't warm up is reported and the world runs anyway: every reload's check runs it again and is refused while it can't, and a mod can't keep its world down.
-   * A warm-up the world's own stop cut short is no news, and none starts after it.
-   */
+  /** Warm-up failure is reported here; reloads still require a successful check. */
   startWarmUp() {
     if (this.warmUpStarted || this.closed) return;
     this.warmUpStarted = true;
@@ -154,7 +151,7 @@ export class Mods {
    * Restores exactly the builds that were live at shutdown; a fresh world builds its seed mods.
    * A saved build is used only when its server file is a plain file inside build/; any other (an imported world with doctored state) is built again from the mod's files.
    * Without the sandbox only the engine's unchanged seed mods load, built afresh from the engine's own files, since the saved builds are the world's.
-   * Neither waits for the typecheck: the world opens and players join at once, its warm-up starts when the hub first ticks (startWarmUp), and the first reload waits for the warm-up and says so.
+   * Neither waits for the typecheck: the world opens and players join at once, its warm-up starts when the hub is ready (startWarmUp), and the first reload waits for the warm-up and says so.
    */
   async loadAll(owners: Record<string, string>) {
     const refusal = this.refusal;

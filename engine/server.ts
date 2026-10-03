@@ -29,7 +29,7 @@ const token = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 const readJson = <T>(file: string, fallback: T): T => (existsSync(join(DATA, file)) ? JSON.parse(readFileSync(join(DATA, file), "utf8")) : fallback);
 const writeJson = (file: string, value: unknown) => writeFileSync(join(DATA, file), JSON.stringify(value, null, 2));
 
-// The sandbox's probe runs while the world's files are set up; nothing below asks whether mods can run until it has answered.
+// The sandbox's probe runs while the world starts up; it is awaited only where the world first asks whether mods can run: a needed install, then loading the mods.
 const boxPrepared = prepareBox();
 mkdirSync(DB, { recursive: true });
 const config = readJson<Config>("config.json", { name: "Sandbox", rules: "open", start: "basics", invite: token(), hostKey: token() });
@@ -84,11 +84,12 @@ const startNotices: string[] = [];
 if (packages.dropped.length) startNotices.push(`Left out packages that aren't plain npm registry versions: ${packages.dropped.join(", ")}.`);
 if (packages.dropped.length || !packageJson || Object.keys(packageJson).some((key) => key !== "private" && key !== "dependencies") || packageJson.private !== true)
   writeFileSync(join(ROOT, "package.json"), JSON.stringify(packages.manifest, null, 2));
-await boxPrepared;
 // An imported world comes without the packages its mods added; its lockfile pins the same versions, so mods that use them reload. A start whose install failed left the folder empty, so the next start tries again.
 const modules = join(ROOT, "node_modules");
-if (packages.manifest.dependencies && !(existsSync(modules) && readdirSync(modules).length) && !boxRefusal())
-  await install(ROOT).catch((e: Error) => startNotices.push(`This world's packages couldn't be installed, so mods that import them won't load: ${e.message}`));
+if (packages.manifest.dependencies && !(existsSync(modules) && readdirSync(modules).length)) {
+  await boxPrepared;
+  if (!boxRefusal()) await install(ROOT).catch((e: Error) => startNotices.push(`This world's packages couldn't be installed, so mods that import them won't load: ${e.message}`));
+}
 // Bun's bundler remembers a folder without node_modules for the life of the process, so the first add_package would not build until a restart.
 mkdirSync(modules, { recursive: true });
 cpSync(join(ENGINE, "GUIDE.md"), join(ROOT, "GUIDE.md"));
@@ -278,11 +279,9 @@ const sims = new Sims(DATA, DB, () => mods.list(), {
   },
   unavailable: (reason) => feed(reason, "error"),
   reloadedJustBefore: (game) => mods.reloadedJustBefore(game),
-  // The typecheck warms up once the world is open and its hub ticking, not before players can join.
-  hubTick: (diff) => {
-    mods.startWarmUp();
-    store.track(diff);
-  },
+  hubTick: (diff) => store.track(diff),
+  // The typecheck warms up once the hub has loaded its mods, so it never competes with the hub's own start.
+  hubReady: () => mods.startWarmUp(),
   changed: () => broadcast(gamesMessage()),
 });
 mods.sims = sims;
@@ -297,6 +296,7 @@ function gamesMessage() {
 
 const store = openStore(join(DATA, "world.sqlite"));
 store.load(hub);
+await boxPrepared;
 await mods.loadAll(owners);
 // The launcher restarts a world that crashed right after a reload without that reload.
 const crashed = process.env.SANDBOX_REVERT;

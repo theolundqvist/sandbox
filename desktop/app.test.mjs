@@ -242,6 +242,12 @@ async function leave(app, shell) {
   await Promise.all(left.map((w) => w.isClosed() || w.waitForEvent("close")));
 }
 const gamePage = (app) => until("the game view", async () => app.windows().find((w) => /^https?:/.test(w.url())));
+/** Where the game view and the app's other pages are, for a failure's message: each address up to its path, since a query or a #fragment may carry a key, with how far the game's page loaded and the frames it holds. */
+async function whereAll(app, game) {
+  const at = (u) => u.split(/[?#]/)[0];
+  const ready = game.isClosed() ? "closed" : await game.evaluate(() => document.readyState).catch((e) => `unreadable (${e.message.split("\n")[0]})`);
+  return JSON.stringify({ game: at(game.url()), ready, frames: game.isClosed() ? [] : game.frames().map((f) => at(f.url())), windows: app.windows().map((w) => at(w.url())) });
+}
 const menuShown = (shell) => shell.locator("#title .items").isVisible();
 const shown = (page, sel) => page.locator(sel).isVisible();
 const rows = (shell) => shell.locator("#games .item").evaluateAll((items) => items.map((b) => [...b.childNodes].filter((n) => !n.classList.contains("cover")).map((n) => n.textContent).join(" | ")));
@@ -414,8 +420,8 @@ describe("hosting and joining", () => {
     await game.evaluate(() => (document.getElementById("error").textContent = ""));
     await game.keyboard.press("Enter");
     // The menu goes to the world, or says why it couldn't.
-    const outcome = await until("the hosted world or the menu's error", async () => (/:\d+\/(#.*)?$/.test(game.url()) ? "hosted" : (await game.evaluate(() => document.getElementById("error")?.textContent).catch(() => null)) || false), 30000);
-    if (outcome !== "hosted") assert.fail((unhosted = `the menu said: ${outcome}`));
+    const outcome = await until("the hosted world or the menu's error", async () => (/:\d+\/(#.*)?$/.test(game.url()) ? "hosted" : (await game.evaluate(() => document.getElementById("error")?.textContent).catch(() => null)) || false), 30000).catch(() => null);
+    if (outcome !== "hosted") assert.fail((unhosted = `${outcome ? `the menu said: ${outcome}` : "neither the world nor an error in 30 s"}; ${await whereAll(app, game)}`));
     await playing(game);
     unhosted = null;
     const world = await game.textContent("#world-name");

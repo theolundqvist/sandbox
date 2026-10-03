@@ -1,6 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { zipSync, type Zippable } from "fflate";
 import { GIT, GIT_ENV, hasGit } from "./mods";
 
@@ -175,6 +175,19 @@ test.skipIf(!hasGit)("an imported world keeps its history but none of the git co
   expect(plain("commit", "-qm", "grew").exitCode).toBe(0);
   expect(plain("checkout", "-q", "HEAD~1", "--", "mods/garden/server.ts").exitCode).toBe(0);
   expect(["fsmonitor", "filter", "hook", "worktree", "script"].some((what) => existsSync(ran(what)))).toBe(false);
+
+  // Should a world's config still name an fsmonitor, the engine's own git runs neither it nor a program called false, which git before 2.36 would take core.fsmonitor=false for.
+  const bin = join(root, "bin");
+  mkdirSync(bin, { recursive: true });
+  for (const name of ["false", "monitor"]) writeFileSync(join(bin, name), `#!/bin/sh\n${run(name)}\nexit 1\n`, { mode: 0o755 });
+  writeFileSync(join(world, ".git/config"), `${config}[core]\n\tfsmonitor = ${join(bin, "monitor")}\n`);
+  const guarded = (...args: string[]) => Bun.spawnSync([...GIT, ...args], { cwd: world, env: { ...GIT_ENV, PATH: `${bin}${delimiter}${GIT_ENV.PATH}` }, stdout: "pipe", stderr: "pipe" });
+  writeFileSync(join(world, "mods/garden/server.ts"), "export default { grown: 2 };\n");
+  expect(guarded("status", "--porcelain").exitCode).toBe(0);
+  expect(guarded("add", "-A").exitCode).toBe(0);
+  expect(guarded("commit", "-qm", "grew again").exitCode).toBe(0);
+  expect(guarded("log", "-1", "--format=%s").stdout.toString().trim()).toBe("grew again");
+  expect(["monitor", "false"].filter((what) => existsSync(ran(what)))).toEqual([]);
 }, 30_000);
 
 test.skipIf(!hasGit)("restoring imported Git history cannot turn a mod file into a link outside the world", async () => {
