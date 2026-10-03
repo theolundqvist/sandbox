@@ -697,9 +697,18 @@ THREE.Material.prototype.dispose = function () {
   else disposeMaterial.call(this);
 };
 
+/**
+ * Shaders a mod's materials need compile in the background before the scene is drawn with them: drawing first makes the page wait on each one, frozen for seconds with software GL.
+ * The page and its HUD keep running meanwhile; the 3D view holds its last frame.
+ */
+let warming: Promise<void> | null = null;
+let warmWanted = false;
+function warm() {
+  warmWanted = true;
+}
 /** Mods load one at a time in the order the server sent them, so a slow import never lands an old version over a newer one. */
 let loading = Promise.resolve();
-const queue = (load: () => Promise<unknown>) => (loading = loading.then(load).then(() => {}, (e) => console.error(e)));
+const queue = (load: () => Promise<unknown>) => (loading = loading.then(load).then(warm, (e) => console.error(e)));
 /** The client builds the server has live; a timelapse puts them back when it ends. */
 let live = new Map<string, string>();
 
@@ -1133,6 +1142,8 @@ async function screenshot() {
   g.imageSmoothingEnabled = !screen.pixelated;
   // The frame the game draws next, instead of drawing one more just for this; a tab that gets no frames draws its own.
   if (screen.scene !== false) {
+    // Shaders still compiling would freeze the page if drawn now; the server waits 10 s in all.
+    if (warming) await Promise.race([warming, new Promise((resolve) => setTimeout(resolve, 4000))]);
     const frame = document.hidden ? null : await nextFrame();
     if (frame) {
       g.drawImage(frame, 0, 0, w, h);
@@ -2900,11 +2911,17 @@ renderer.setAnimationLoop(() => {
   shakeCamera(dt);
   updateColliders(now);
   const drawStart = performance.now();
-  if (screen.scene !== false && filming) untagged(() => (draw(dt), frameInto(filming!)));
-  else if (coverDue(now, dt)) untagged(() => (draw(dt), takeCover()));
-  else if (screen.scene !== false && still) untagged(() => draw(dt));
-  else if (screen.scene !== false) draw(dt);
-  if (frameWanted.size && screen.scene !== false) {
+  if (warmWanted && !warming) {
+    warmWanted = false;
+    warming = renderer.compileAsync(scene, view).then(() => void (warming = null));
+  }
+  if (!warming) {
+    if (screen.scene !== false && filming) untagged(() => (draw(dt), frameInto(filming!)));
+    else if (coverDue(now, dt)) untagged(() => (draw(dt), takeCover()));
+    else if (screen.scene !== false && still) untagged(() => draw(dt));
+    else if (screen.scene !== false) draw(dt);
+  }
+  if (frameWanted.size && screen.scene !== false && !warming) {
     for (const take of frameWanted) {
       frameWanted.delete(take);
       createImageBitmap(renderer.domElement).then(take, () => take(null));
