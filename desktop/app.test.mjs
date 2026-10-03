@@ -420,7 +420,7 @@ describe("hosting and joining", () => {
     assert.match(row, /^.+ \| Live \| Hosted$/);
     assert.equal((await rows(shell)).length, 1);
     const shot = async () => (await shell.evaluate(() => dispatchEvent(new Event("focus"))), (await pictures(shell.locator("#games")))[0]);
-    assert.equal(await until("the picture", shot), 960);
+    assert.equal(await until("the picture", shot), 480);
     await shell.keyboard.press("Escape");
   });
 
@@ -1593,5 +1593,92 @@ describe("playtest", () => {
     await close(app);
     app = null;
     await until("the playtest's processes gone", async () => !playtestProcesses().length, 15000);
+  });
+});
+
+describe("world list", () => {
+  let app, shell, state, own, hostKey, hosted;
+  before(async () => ({ app, shell, state } = await launch("lister", {}, "lister")));
+  after(() => close(app));
+  const worldsDir = () => join(dir, "lister", "Sandbox", "data", "worlds");
+  const coversDir = () => join(dir, "lister", "Sandbox", "covers");
+  const hostState = () => menu(`http://127.0.0.1:${own}`, hostKey, "state");
+  const picturesNow = async () => (await shell.evaluate(() => dispatchEvent(new Event("focus"))), pictures(shell.locator("#games")));
+  const renaming = () => shell.locator("#games .renaming input");
+
+  test("a world played 25 seconds keeps a picture of its 3D view, and every world in Worlds shows its own, joined ones from this computer", async () => {
+    await shell.click("text=Host world");
+    const game = await gamePage(app);
+    await game.click("#create-go");
+    await playing(game);
+    own = state().port;
+    hostKey = JSON.parse(readFileSync(join(dir, "lister", "Sandbox", "data", "launcher.json"), "utf8")).hostKey;
+    hosted = (await hostState()).running;
+    const cover = join(worldsDir(), hosted.id, "cover.jpg");
+    assert.equal(existsSync(cover), false);
+    // The first picture comes while playing, about 20 s in, not only on leaving.
+    await until("the picture taken while playing", async () => existsSync(cover), 40000);
+    assert.deepEqual([...readFileSync(cover).subarray(0, 2)], [0xff, 0xd8]);
+    await capture(game, "worldlist-playing");
+    await leave(app, shell);
+
+    await shell.click("text=Join world");
+    await shell.fill("#join-link", `${other.url}/#invite=${other.invite}`);
+    await shell.press("#join-link", "Enter");
+    await playing(await gamePage(app));
+    await leave(app, shell);
+    await until("the joined world's picture on this computer", async () => existsSync(coversDir()) && readdirSync(coversDir()).length === 1);
+
+    await shell.click("text=Worlds");
+    await until("both worlds", async () => (await rows(shell)).length === 2);
+    assert.deepEqual(await until("both pictures", async () => ((await picturesNow()).every((w) => w === 480) ? picturesNow() : null)), [480, 480]);
+    await capture(shell, "worldlist-worlds");
+  });
+
+  test("F2 renames a hosted world and a joined one in place: Enter keeps a name, Esc and an empty name don't, and the world keeps its id, invite and players", async () => {
+    const hostedRow = `#games .item[data-key="local:${hosted.id}"]`;
+    const joinedRow = `#games .item[data-key="${other.url}"]`;
+    const name = (sel) => shell.locator(`${sel} .what`).textContent();
+    const before = await name(hostedRow);
+
+    await shell.focus(hostedRow);
+    await shell.keyboard.press("F2");
+    assert.equal(await renaming().inputValue(), before);
+    await renaming().fill("");
+    await renaming().press("Enter");
+    assert.equal(await renaming().isVisible(), true);
+    await renaming().fill("Lava Keep");
+    await capture(shell, "worldlist-renaming");
+    await renaming().press("Escape");
+    assert.equal(await renaming().count(), 0);
+    assert.equal(await name(hostedRow), before);
+    assert.equal(await shell.locator("#games").isVisible(), true);
+
+    await shell.keyboard.press("F2");
+    await renaming().fill("Lava Keep");
+    await renaming().press("Enter");
+    await until("the new name", async () => (await name(hostedRow)) === "Lava Keep");
+    assert.equal(await shell.evaluate(() => document.activeElement.dataset.key), `local:${hosted.id}`);
+    const after = await hostState();
+    assert.deepEqual([after.running.id, after.running.invite, after.running.link], [hosted.id, hosted.invite, hosted.link]);
+    assert.equal(JSON.parse(readFileSync(join(worldsDir(), hosted.id, "config.json"), "utf8")).name, "Lava Keep");
+    const friend = await guest(`http://127.0.0.1:${own}`, hosted.invite, "friend");
+    friend.close();
+
+    await shell.focus(joinedRow);
+    await shell.keyboard.press("F2");
+    await renaming().fill("Ana's race");
+    await renaming().press("Enter");
+    await until("the joined world's new name", async () => (await name(joinedRow)) === "Ana's race");
+    assert.equal(state().labels[other.url], "Ana's race");
+    assert.ok((await menu(other.base, other.key, "state")).worlds.some((w) => w.name === "Snow Race"));
+    assert.deepEqual(await picturesNow(), [480, 480]);
+    await capture(shell, "worldlist-renamed");
+
+    await shell.click(hostedRow);
+    const game = await gamePage(app);
+    await playing(game);
+    assert.equal(await game.textContent("#world-name"), "Lava Keep");
+    await leave(app, shell);
   });
 });
