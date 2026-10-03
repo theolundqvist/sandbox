@@ -68,6 +68,32 @@ const controls = watching ? null : await hostControls({
   stopped: () => void leave(),
   share: () => void openShare(),
   view: () => viewJpeg(),
+  /** Moments of the timelapse, evenly spaced, drawn without trails or name tags as the replay shows them. */
+  async moments() {
+    const res = await fetch("/api/timelapse", { headers: { authorization: `Bearer ${key}` } });
+    const frames: Moment[] = res.ok ? await res.json() : [];
+    if (frames.length < 2) {
+      toast("Nothing to replay yet: the world records a moment every two seconds, so come back in a minute.");
+      return null;
+    }
+    showMenu(false);
+    startReplay(frames);
+    replay!.playing = false;
+    const moments: Uint8Array<ArrayBuffer>[] = [];
+    for (let i = 0; i < 8; i++) {
+      seek(Math.round((i * (frames.length - 1)) / 7));
+      await loading;
+      const drawn = Promise.withResolvers<void>();
+      setTimeout(drawn.resolve, 500);
+      await drawn.promise;
+      replayLayer.visible = false;
+      moments.push(viewJpeg());
+      replayLayer.visible = true;
+    }
+    await openMenu();
+    void openShare();
+    return moments;
+  },
   async clip() {
     showMenu(false);
     toast("Recording a clip of the timelapse…");

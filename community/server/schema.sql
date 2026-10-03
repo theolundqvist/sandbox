@@ -260,3 +260,6 @@ create table if not exists versions (
 );
 insert into versions (world, version, at) select id, 1, updated_at from worlds where version = 0 and zip_key is not null on conflict do nothing;
 update worlds set version = 1 where version = 0 and zip_key is not null;
+
+-- Up to 8 pictures the publisher picked for the world's page, beside its cover.
+alter table worlds add column if not exists gallery_keys text[];

@@ -33,8 +33,12 @@
   .item:hover { background: none; color: var(--faint); }
   .item:focus-visible, .item:focus { color: var(--text); background: none; }
   .item:focus::before { scale: 1; }
-  #share-picture { display: block; width: 320px; max-width: 100%; aspect-ratio: 16 / 9; object-fit: cover; margin: 20px 0 0; background: #1b1c1f; }
-  #share-picture:not([src]) { visibility: hidden; }
+  #share-shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 6px; margin: 8px 0 0; }
+  #share-shots button { position: relative; display: block; width: 100%; padding: 0; margin: 0; aspect-ratio: 16 / 9; background: #1b1c1f; border: 2px solid transparent; }
+  #share-shots button:hover, #share-shots button:focus-visible { border-color: rgba(255,255,255,.4); }
+  #share-shots button[data-n] { border-color: var(--accent); }
+  #share-shots button[data-n]::after { content: attr(data-n); position: absolute; left: 0; top: 0; padding: 3px 6px; background: var(--accent); color: #111; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+  #share-shots img { display: block; width: 100%; height: 100%; object-fit: cover; }
   .copy-row { display: flex; align-items: center; gap: 16px; width: 100%; max-width: 100%; min-height: 56px; border-bottom: 1px solid var(--line); }
   .copy-row > span { width: 150px; flex: none; color: var(--dim); font: 700 12px/1.2 var(--display); letter-spacing: .14em; text-transform: uppercase; }
   .copy-row code { flex: 1; min-width: 0; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d9d6cf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -67,8 +71,10 @@
   <label class="field" id="share-changes-field" hidden><span>What changed</span><input type="text" id="share-changes" maxlength="280" autocomplete="off"></label>
   <div class="field"><span>Who sees it</span><div class="pick" id="share-visibility" data-options="link:Link only,public:Everyone"></div></div>
   <p class="note" id="share-names" hidden>Player names in scores and items are shared with the world.</p>
-  <div class="field"><span>Picture</span><div class="pick" id="share-cover" data-options="world:World picture,view:Current view"></div></div>
-  <img id="share-picture" alt="">
+  <div class="field"><span>Timelapse</span><div class="pick" id="share-timelapse" data-options="on:On its page,off:Off"></div></div>
+  <div class="field"><span>Pictures</span><button id="share-moments">Take from the timelapse</button></div>
+  <p class="note" id="share-pick-note"></p>
+  <div id="share-shots"></div>
   <div class="copy-row" id="share-shared" hidden><span>Link</span><code id="share-link"></code><button id="share-copy">Copy</button><button id="share-stop" class="danger">Stop sharing</button></div>
   <div class="gap"></div>
   <button id="share-go" class="item">Share</button>
@@ -81,7 +87,7 @@
 <script type="module">
   // The host's controls inside their own game: on the main menu's origin, framed only by the game at localhost, whose page and mods can't read in here.
   // The game may ask for exactly five things, each about the world running now: join it as the host, take a picture of it, stage one of its mods for the app to publish, show or focus these controls, and fill in Share's About.
-  // Stopping, exporting, rewinding, sharing, stopping sharing and the speech key happen only from the buttons here. Share asks the game for its view and a clip of its timelapse, which only it can make, and for the app's dialog that publishes through the player's account; everything else it sends is typed or picked here.
+  // Stopping, exporting, rewinding, sharing, stopping sharing and the speech key happen only from the buttons here. Share asks the game for what only it can make: its view, moments of its timelapse and a clip of it, and the app's dialog that publishes through the player's account; everything else it sends is typed or picked here.
   // What goes back out is a toast, a size, whether this frame has drawn, the host's own player key, whether this is their world, and these requests.
   import { pick } from "/front.js";
   const $ = (id) => document.getElementById(id);
@@ -205,7 +211,7 @@
       else if (msg.t === "join" && view === "world") void join(msg);
       else if (msg.t === "cover" && view === "world") void cover(msg);
       else if (msg.t === "mod" && view === "world") void stageMod(msg);
-      else if (["view", "clip", "publish", "unpublish"].includes(msg.t) && view === "share") asked.get(Number(msg.id))?.(msg);
+      else if (["view", "moments", "clip", "publish", "unpublish"].includes(msg.t) && view === "share") asked.get(Number(msg.id))?.(msg);
     });
 
     if (view === "world") {
@@ -231,33 +237,52 @@
       };
       void showWorld();
     } else if (view === "share") {
-      /** Share: this world to Community through the app's account, as a link for friends or for everyone, with its picture and a clip of its timelapse. Sharing again updates it. */
-      /** The game's view, once the host picks Current view: the picture that goes up. */
-      let viewPicture = null;
-      let shown = null;
+      /** Share: this world to Community through the app's account, as a link for friends or for everyone, with a cover, a gallery and its timelapse. Sharing again updates it. */
       let about = "";
       let busy = false;
-      function picture(bytes) {
-        if (shown) URL.revokeObjectURL(shown);
-        shown = bytes && URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }));
-        if (shown) $("share-picture").src = shown;
-        else $("share-picture").removeAttribute("src");
+      /**
+       * The pictures Share can send, as base64 JPEGs, all world-only: the game's view right now, the world's picture and the views its game kept, and moments of its timelapse.
+       * The first picked is the cover and up to 8 more make its gallery; a shared world nobody re-picks for keeps the ones Community has.
+       */
+      let shots = [];
+      let picks = [];
+      let repicked = false;
+      /** The shots as they are now, asking the game for its view again only when `fresh`; an answer that arrives after a newer one is dropped. */
+      let loadingShots = 0;
+      async function loadShots(fresh) {
+        const at = ++loadingShots;
+        const kept = api("shots", { id: bound }).then((r) => (r.ok ? r.json() : []), () => []);
+        const view = !fresh && shots[0]?.name === "view" ? shots[0].jpeg : await askGame("view", 5000).then((msg) => (isJpeg(msg?.jpeg) ? base64(msg.jpeg) : null));
+        const all = [...(view ? [{ name: "view", jpeg: view }] : []), ...(await kept)];
+        if (at !== loadingShots) return;
+        shots = all;
+        picks = picks.filter((p) => shots.some((s) => s.name === p));
+        showShots();
       }
-      /** Shows the picture picked; an answer that arrives after another pick is dropped. */
-      let picking = 0;
-      async function showPicture() {
-        const at = ++picking;
-        const viewing = $("share-cover").dataset.value === "view";
-        const bytes = viewing ? (await askGame("view", 5000))?.jpeg : await api(`cover?id=${encodeURIComponent(bound)}`).then(async (res) => (res.ok ? new Uint8Array(await res.arrayBuffer()) : null), () => null);
-        if (at !== picking) return;
-        if (viewing) viewPicture = isJpeg(bytes) ? bytes : null;
-        picture(viewing ? viewPicture : bytes);
+      function showShots() {
+        $("share-shots").replaceChildren(
+          ...shots.map((shot) => {
+            const n = picks.indexOf(shot.name);
+            const button = Object.assign(document.createElement("button"), { type: "button", title: shot.name === "view" ? "Current view" : shot.name === "cover" ? "World picture" : "" });
+            if (n >= 0) button.dataset.n = n ? String(n) : "Cover";
+            button.append(Object.assign(document.createElement("img"), { src: `data:image/jpeg;base64,${shot.jpeg}`, alt: "" }));
+            button.onclick = () => {
+              repicked = true;
+              picks = n >= 0 ? picks.filter((p) => p !== shot.name) : picks.length < 9 ? [...picks, shot.name] : picks;
+              showShots();
+            };
+            return button;
+          }),
+        );
+        const shared = $("share-go").textContent === "Update";
+        $("share-pick-note").textContent = !picks.length && shared ? "Pick none to keep the pictures it has." : "The first you pick is the cover; up to 8 more go on its page.";
       }
+      const jpegOf = (name) => shots.find((s) => s.name === name).jpeg;
       const showNames = (value) => ($("share-names").hidden = value !== "public");
       const visibility = pick($("share-visibility"), showNames);
-      const coverPick = pick($("share-cover"), () => void showPicture());
-      /** The page as the world is shared now; an About the game offered fills in a world not shared yet. While a share goes up, it says so instead. */
-      async function open(status = "") {
+      const timelapsePick = pick($("share-timelapse"), () => {});
+      /** The page as the world is shared now; an About the game offered fills in a world not shared yet. While a share goes up, it says so instead; the picks stay while it does, or once new moments come in. */
+      async function open(status = "", keepPicks = false) {
         const s = await api("state").then((r) => (r.ok ? r.json() : null), () => null);
         const w = s?.worlds.find((x) => x.id === bound);
         const shared = w?.shared;
@@ -265,20 +290,34 @@
         $("share-description").value = shared?.description ?? about;
         visibility.set(shared?.visibility ?? "link");
         showNames(visibility.dataset.value);
-        coverPick.set(w?.cover ? "world" : "view");
+        if (!status && !keepPicks) timelapsePick.set(shared?.timelapse === false ? "off" : "on");
         $("share-shared").hidden = !shared?.link;
         $("share-link").textContent = shared?.link ?? "";
         $("share-stop").textContent = "Stop sharing";
         $("share-go").textContent = shared?.link ? "Update" : "Share";
         $("share-changes-field").hidden = !shared?.link;
-        if (!status) $("share-changes").value = "";
-        $("share-status").textContent = status || "The timelapse goes with it. Chat stays on this computer.";
-        viewPicture = null;
-        await showPicture();
+        if (!status && !keepPicks) {
+          $("share-changes").value = "";
+          picks = shared?.link ? [] : [w?.cover ? "cover" : "view"];
+          repicked = false;
+        }
+        $("share-status").textContent = status || "Chat stays on this computer.";
+        await loadShots(!status);
       }
       showShare = (offered) => {
         about = offered;
         if (!busy) void open();
+      };
+      /** Moments of the timelapse, evenly spaced, drawn by the game as its replay shows them, without trails or name tags; they replace the moments drawn before. */
+      $("share-moments").onclick = async () => {
+        if (busy) return;
+        busy = true;
+        const jpegs = (await askGame("moments", 120_000))?.jpegs;
+        const frames = Array.isArray(jpegs) ? jpegs.filter(isJpeg) : [];
+        const res = frames.length ? await api("timelapse-shots", { id: bound, frames: await Promise.all(frames.map(base64)) }).catch(() => null) : null;
+        if (frames.length && !res?.ok) toast(await failed(res), "error");
+        busy = false;
+        await open("", true);
       };
       $("share-go").onclick = async () => {
         if (busy) return;
@@ -286,12 +325,14 @@
         if (!query.has("desktop")) return void (await open("Publish from the Sandbox app."));
         busy = true;
         $("share-go").disabled = true;
-        const viewing = $("share-cover").dataset.value === "view";
-        if (viewing && !viewPicture) await showPicture();
+        // The world's picture is already its cover, so only another pick replaces it.
+        const cover = picks[0] && picks[0] !== "cover" ? jpegOf(picks[0]) : undefined;
+        const gallery = repicked ? picks.slice(1).map(jpegOf) : undefined;
+        const timelapse = $("share-timelapse").dataset.value !== "off";
         // Bound to the world running as these controls opened.
-        const form = { id: bound, title: $("share-title").value, description: $("share-description").value, changelog: $("share-changes").value, visibility: $("share-visibility").dataset.value, cover: viewing && viewPicture ? await base64(viewPicture) : undefined };
-        $("share-status").textContent = "Recording a clip of the timelapse…";
-        const webm = (await askGame("clip", 120_000))?.webm;
+        const form = { id: bound, title: $("share-title").value, description: $("share-description").value, changelog: $("share-changes").value, visibility: $("share-visibility").dataset.value, cover, gallery, timelapse };
+        if (timelapse) $("share-status").textContent = "Recording a clip of the timelapse…";
+        const webm = timelapse ? (await askGame("clip", 120_000))?.webm : null;
         $("share-status").textContent = "Uploading…";
         const res = await api("publish-stage", { ...form, clip: webm instanceof Uint8Array ? await base64(webm) : undefined }).catch(() => null);
         // The app asks the player in a dialog no world can draw, then publishes what was staged here.

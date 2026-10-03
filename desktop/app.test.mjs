@@ -83,6 +83,8 @@ const BUILD = Buffer.alloc(4 << 20, 7);
 const RELEASES = port();
 const isle = { id: "tinyisle0001", title: "Tiny Isle", description: "One small island.", author: "maker", visibility: "public", votes: 2, plays: 5, players: 3, forks: 0, cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, zip: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/zip`, clip: null, link: "https://site.example/w/tinyisle0001" };
 const community = { shared: null, mod: null, files: {}, session: "session-token-1" };
+/** Another site with a picture and an answer anyone may read, which the game's page must never reach. */
+const canary = { hits: 0 };
 const jetpack = { id: "jetpack00001", kind: "mod", name: "jetpack", title: "Jetpack", description: "Fly with space.", author: "maker", votes: 4, uses: 12, forks: 0, cover: `http://127.0.0.1:${RELEASES}/files/tinyisle0001/cover`, link: "https://site.example/m/jetpack00001", readme: "# Jetpack\nHold space to fly. Fuel refills on the ground.", api: '// server.ts, reached with world.use("jetpack")\n/** Fuel left for a player, 0 to 1. */\nfuel(world, player: string): number', builders: ["maker"], parent: null };
 const ACCOUNT = { username: "ana", email: "ana@example.com" };
 const body = (req) => new Promise((resolve) => {
@@ -124,6 +126,11 @@ const github = createServer(async (req, res) => {
   if (req.url.split("?")[0] === "/worlds") return res.end(JSON.stringify([isle]));
   if (req.url === "/worlds/tinyisle0001") return res.end(JSON.stringify(isle));
   if (req.url === "/files/tinyisle0001/cover") return res.end(COVER);
+  if (req.url.startsWith("/canary")) {
+    canary.hits++;
+    res.setHeader("access-control-allow-origin", "*");
+    return res.end(COVER);
+  }
   if (req.url === "/files/tinyisle0001/zip") return res.end(tinyIsle);
   if (req.url === "/latest") return res.end(JSON.stringify({ tag_name: `v${releases.latest}` }));
   if (req.url === "/hang") return;
@@ -222,16 +229,23 @@ const answer = (app, response) =>
   }, response);
 const asked = (app) => app.evaluate(() => globalThis.asked);
 /**
- * Clicks a control in the host's frames (World, Share, Voice key), main menu pages the game shows inside itself. Chromium sends a click into a frame
- * from another process by where the game last drew that frame, which trails the game showing or sizing it by a frame or more; a click in between lands
- * on the game around it. So the pointer first goes over the control, until the control itself is under it.
+ * Clicks a control in the host's frames (World, Share, Voice key), main menu pages the game shows inside itself. Chromium routes a click into a frame from
+ * another process by where that frame last drew, and a frame the game just showed again may not have drawn yet: the click then reaches neither it nor the
+ * game. `:hover` can't tell, since it stays from the last time the pointer was there. So the pointer moves onto the control until the control itself
+ * sees it move, and the click follows where it did.
  */
 async function press(control) {
-  await until("the pointer over the control", async () => {
-    await control.hover();
-    return control.evaluate((el) => el.matches(":hover"));
+  let at = { x: 3, y: 4 };
+  await until("the pointer reaching the control", async () => {
+    at = { x: 3 + (at.x % 4), y: 4 };
+    await control.evaluate((el) => {
+      el.reached = false;
+      el.addEventListener("pointermove", () => (el.reached = true), { once: true });
+    });
+    await control.hover({ position: at, timeout: 2000 }).catch(() => {});
+    return control.evaluate((el) => el.reached);
   });
-  await control.click();
+  await control.click({ position: at });
 }
 
 /** In the game: the app joins as its player's name without asking. */
@@ -544,11 +558,14 @@ describe("hosting and joining", () => {
     const share = game.frameLocator('iframe[title="Share"]');
     await until("the share page", async () => (await share.locator("#share-title").inputValue()) === "Tiny Isle");
     assert.equal(await game.locator('iframe[title="Share"]').evaluate((el) => el.contentDocument), null);
-    // Current view is the game's own picture of itself, 960×540; the world's saved picture goes up.
-    await press(share.locator("#share-cover i").last());
-    await until("the game's view in the share page", async () => (await share.locator("#share-picture").evaluate((img) => img.naturalWidth)) === 960);
-    await press(share.locator("#share-cover i").first());
-    await until("the world's picture in the share page", async () => (await share.locator("#share-picture").evaluate((img) => img.naturalWidth)) === 16);
+    // Its pictures are world-only: the game's own view of itself, 960×540, and the world's saved picture, the cover until another is picked first.
+    const tile = (title) => share.locator(`#share-shots button[title="${title}"]`);
+    await until("the game's view in the share page", async () => (await tile("Current view").locator("img").evaluate((img) => img.naturalWidth)) === 960);
+    assert.deepEqual([await tile("World picture").locator("img").evaluate((img) => img.naturalWidth), await tile("World picture").getAttribute("data-n")], [16, "Cover"]);
+    await press(tile("Current view"));
+    await until("the view picked for the gallery", async () => (await tile("Current view").getAttribute("data-n")) === "1");
+    await press(tile("Current view"));
+    await until("the view left out again", async () => (await tile("Current view").getAttribute("data-n")) === null);
     await share.locator("#share-description").fill("One small island, remixed.");
     await answer(app, 0);
     await press(share.locator("#share-go"));
@@ -1079,6 +1096,67 @@ export default {
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
     await until("the menu to close", () => page.locator("#menu").isHidden());
+  });
+
+  test("a mod's model loads through GLTFLoader from its own world, while the game's page reaches no other site", async () => {
+    const key = await join("modeller");
+    // A real glTF binary: one triangle, named dragon.
+    const positions = Buffer.from(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]).buffer);
+    const gltf = JSON.stringify({
+      asset: { version: "2.0" },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ name: "dragon", mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: "VEC3", min: [0, 0, 0], max: [1, 1, 0] }],
+      bufferViews: [{ buffer: 0, byteLength: positions.length }],
+      buffers: [{ byteLength: positions.length }],
+    });
+    const chunk = (type, data) => Buffer.concat([Buffer.from(new Uint32Array([data.length]).buffer), Buffer.from(type, "latin1"), data]);
+    const chunks = Buffer.concat([chunk("JSON", Buffer.from(gltf.padEnd(Math.ceil(gltf.length / 4) * 4, " "))), chunk("BIN\0", positions)]);
+    const glb = Buffer.concat([Buffer.from("glTF"), Buffer.from(new Uint32Array([2, 12 + chunks.length]).buffer), chunks]);
+    assert.match(await tool(key, "add_asset", { mod: "model", name: "dragon.glb", base64: glb.toString("base64") }), /^Saved mods\/model\/assets\/dragon\.glb/);
+    const content = `import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import type { ClientMod } from "../../api";
+export default {
+  init(ctx) {
+    const seen: Record<string, unknown> = ((window as any).modelTest = {});
+    new GLTFLoader().loadAsync(ctx.asset("dragon.glb")).then((gltf) => {
+      const dragon = gltf.scene.getObjectByName("dragon") as THREE.Mesh;
+      ctx.scene.add(gltf.scene);
+      (window as any).drawn = () => ctx.renderer.info.render.frame;
+      Object.assign(seen, { mesh: dragon.isMesh === true, points: dragon.geometry.getAttribute("position").count, inScene: ctx.scene.getObjectByName("dragon") === dragon });
+    }, (e) => (seen.error = String(e)));
+    const img = new Image();
+    img.onload = () => (seen.image = "loaded");
+    img.onerror = () => (seen.image = "blocked");
+    img.src = "http://127.0.0.1:${RELEASES}/canary.jpg";
+    fetch("http://127.0.0.1:${RELEASES}/canary").then(() => (seen.fetched = "answered"), () => (seen.fetched = "refused"));
+  },
+} satisfies ClientMod;`;
+    await page.evaluate(() => {
+      window.violations = [];
+      document.addEventListener("securitypolicyviolation", (e) => window.violations.push([e.effectiveDirective, e.blockedURI]));
+    });
+    await tool(key, "write_file", { path: "mods/model/client.ts", content });
+    assert.match(await tool(key, "reload", { mod: "model" }), /^model v1 is live/);
+    const seen = await until("the model and both loads from another site", () => page.evaluate(() => {
+      const t = window.modelTest;
+      return t && ("mesh" in t || "error" in t) && t.image && t.fetched && t;
+    }));
+    assert.deepEqual(seen, { mesh: true, points: 3, inScene: true, image: "blocked", fetched: "refused" });
+    const violated = await until("the violations reported", async () => {
+      const all = await page.evaluate(() => window.violations);
+      const canaries = all.filter(([, uri]) => uri.startsWith(`http://127.0.0.1:${RELEASES}`)).map(([directive]) => directive).sort();
+      return canaries.length === 2 && canaries;
+    });
+    assert.deepEqual(violated, ["connect-src", "img-src"]);
+    assert.equal(canary.hits, 0);
+    // The same-origin scene keeps drawing, the model in it.
+    const drawn = () => page.evaluate(() => window.drawn());
+    const before = await drawn();
+    await until("the scene drawing on", async () => (await drawn()) > before);
   });
 
   test("a mod may remove the vote bar and the chat, hide everything and cover the screen, but Tab still opens the menu and its votes", async () => {

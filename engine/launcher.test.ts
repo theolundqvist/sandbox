@@ -663,6 +663,26 @@ test("the host's game keeps the world's picture fresh until the host picks one w
   expect(new Uint8Array(await (await cover(id)).arrayBuffer())).toEqual(picked);
   expect((await cover(id, jpeg(5))).status).toBe(409);
   expect(new Uint8Array(await (await cover(id)).arrayBuffer())).toEqual(picked);
+
+  // Every frame the game sent is kept for Share to pick from, behind the world's picture, newest first; timelapse moments drawn again replace the old ones.
+  const b64 = (n: number) => Buffer.from(jpeg(n)).toString("base64");
+  const shots = async () =>
+    ((await (await fetch(`http://127.0.0.1:${LAUNCHER}/api/menu/shots`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ id }) })).json()) as { name: string; jpeg: string }[]).map((s) => [s.name.split("-")[0], s.jpeg]);
+  expect(await shots()).toEqual([["cover", b64(4)], ...[5, 3, 2, 1].map((n) => ["view", b64(n)])]);
+  expect((await menu("timelapse-shots", { id, frames: [b64(6), b64(7)] })).status).toBe(200);
+  expect((await menu("timelapse-shots", { id, frames: [b64(8)] })).status).toBe(200);
+  expect((await shots()).filter(([kind]) => kind === "timelapse")).toEqual([["timelapse", b64(8)]]);
+  expect((await menu("timelapse-shots", { id, frames: ["AQID"] })).status).toBe(400);
+
+  // The gallery goes up in the order picked, and a timelapse turned off sends no clip.
+  const stage = await menu("publish-stage", { id, visibility: "link", gallery: [b64(8), b64(2)], clip: Buffer.from([0x1a, 0x45, 0xdf, 0xa3]).toString("base64"), timelapse: false });
+  expect(stage.sizes).toEqual({ zip: expect.any(Number), cover: 7, gallery: [7, 7] });
+  expect(stage.details.timelapse).toBe(false);
+  const put: string[] = [];
+  const counting = Bun.serve({ port: 0, fetch: async (req) => (put.push(`${new URL(req.url).pathname} ${(await req.bytes())[4]}`), new Response(null, { status: 200 })) });
+  expect((await menu("publish-upload", { id, uploads: { zip: `${counting.url}zip`, cover: `${counting.url}cover`, gallery0: `${counting.url}g0`, gallery1: `${counting.url}g1` } })).status).toBe(200);
+  expect(put.filter((p) => p.startsWith("/g")).sort()).toEqual(["/g0 8", "/g1 2"]);
+  counting.stop(true);
   community.stop(true);
   await menu("stop", {});
 });

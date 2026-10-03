@@ -1,7 +1,7 @@
 /**
  * The host's privileged controls inside their game, World (export, stop hosting, rewind), Share (to Community) and the speech key, live in frames on the main menu's own origin (engine/client/host.html).
  * This page, where mods' code runs, never holds the menu's key, the world's host key, a Community owner token or the speech key. It may only ask the frames to join the host into the world running now, to save a picture of it
- * and to stage one of its mods for the app to publish, and hand the Share frame what only the game can make when that frame asks: its view, a clip of its timelapse, and the app's own publish dialog.
+ * and to stage one of its mods for the app to publish, and hand the Share frame what only the game can make when that frame asks: its view, moments and a clip of its timelapse, and the app's own publish dialog.
  * Sharing, stopping sharing and every field of what goes up happen in the Share frame alone. It shows the frames only while they keep saying, from that origin, that they are still the controls.
  */
 
@@ -45,6 +45,8 @@ export async function hostControls(o: {
   share(): void;
   /** The host's view now, as a JPEG, for the Share frame's Current view. */
   view(): Uint8Array<ArrayBuffer>;
+  /** Moments of the timelapse drawn as JPEGs in the game for the Share frame to pick pictures from; null when there is nothing to replay yet. */
+  moments(): Promise<Uint8Array<ArrayBuffer>[] | null>;
   /** A clip of the timelapse, recorded in the game for the Share frame; null when there is nothing to replay yet. */
   clip(): Promise<Blob | null>;
   /** The Share frame staged the world: the app's dialog, then its publishing as the signed-in account; what happened, or null once done or declined. */
@@ -144,6 +146,12 @@ export async function hostControls(o: {
       else if (msg.t === "view" && f.view === "share" && typeof msg.id === "number") {
         const jpeg = o.view();
         post(f, { t: "view", id: msg.id, jpeg }, [jpeg.buffer]);
+      } else if (msg.t === "moments" && f.view === "share" && typeof msg.id === "number") {
+        const id = msg.id;
+        void o
+          .moments()
+          .catch(() => null)
+          .then((jpegs) => post(f, { t: "moments", id, jpegs }, jpegs?.map((j) => j.buffer) ?? []));
       } else if (msg.t === "clip" && f.view === "share" && typeof msg.id === "number") {
         const id = msg.id;
         void o

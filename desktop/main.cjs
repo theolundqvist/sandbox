@@ -569,14 +569,16 @@ const COMMUNITY_ACTIONS = {
   /** This computer's worlds, to pick one to publish. */
   local: async () => (await startServer(), await hostState())?.worlds.map((w) => ({ id: w.id, name: w.name, shared: w.shared })) ?? [],
   /** Publishing invites the builders picked, by name; each is credited once they accept. */
-  publish: async ({ id, title, description, visibility, changelog, builders }) => {
+  publish: async ({ id, title, description, visibility, changelog, builders, cover, gallery, timelapse }) => {
     await startServer();
-    const stage = await menu("publish-stage", { id: String(id), title, description, visibility, changelog });
+    const stage = await menu("publish-stage", { id: String(id), title, description, visibility, changelog, cover, gallery, timelapse });
     const world = await publishStaged(String(id), stage);
     if (Array.isArray(builders) && builders.length) await community(`/worlds/${world.id}/credits`, { method: "PUT", body: { credits: await menu("credit-checks", { id: String(id), names: builders }) } });
     return world;
   },
   builders: async ({ id }) => (await startServer(), menu("builders", { id: String(id) })),
+  /** A world's pictures to pick its cover and gallery from: its current picture, its views and timelapse moments. */
+  shots: async ({ id }) => (await startServer(), menu("shots", { id: String(id) })),
   /** Credits waiting for this player: the tokens from the worlds they played in, matched by Community. */
   credits: () => community("/credits/waiting", { method: "POST", body: { tokens: state.creditTokens } }),
   accept: ({ token }) => community("/credits/accept", { method: "POST", body: { token: String(token) } }),
