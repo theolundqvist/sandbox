@@ -29,6 +29,7 @@ const ID = /^[a-z0-9]{12}$/;
 
 const SITE = process.env.SITE!;
 const worlds = bucketFromEnv(process.env.R2_BUCKET!);
+const STORAGE = !!worlds.endpoint;
 const files = s3(worlds);
 export const sql = process.env.DATABASE_URL
   ? new SQL(process.env.DATABASE_URL)
@@ -205,6 +206,8 @@ export async function removeAccount(id: string) {
 
 /** Every removal is written to R2 first, so a restored backup can have them done again (replay.ts). */
 async function logDeletion(kind: "account" | "world", id: string, by = "") {
+  // Without R2 there are no backups either, so nothing could bring the removed rows back.
+  if (!STORAGE) return;
   await files.write(`deletions/${new Date().toISOString()}-${kind}-${by ? `${by}-` : ""}${id}`, "");
 }
 
@@ -289,6 +292,7 @@ const forget = async (pending: { keys: Record<string, string> } | null | undefin
 };
 
 async function publish(req: Request, ip: string) {
+  if (!STORAGE) throw new Refusal("Publishing isn't available right now.", 503);
   const account = await signedIn(req);
   allowed(account);
   await limit(client(req, ip), "publish", "Too many worlds shared from here this hour. Try again later.");
