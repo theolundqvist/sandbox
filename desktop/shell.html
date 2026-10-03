@@ -45,7 +45,7 @@
     .screen > h1 { font-size: 40px; margin-bottom: 20px; }
     #title .logo { height: 44px; margin-bottom: 32px; }
     .item { font-size: 26px; }
-    .hints { left: 48px; bottom: 22px; }
+    .hints { left: 48px; right: 48px; bottom: 22px; }
     #fullscreen-hint, #reload-hint { display: none; }
     #cworld:not([hidden]) { grid-template-columns: minmax(0, 1fr) minmax(0, 280px); column-gap: 24px; }
   }
@@ -278,7 +278,7 @@
   <div id="progress" hidden><i></i></div>
   <div id="error" class="error"></div>
 </main>
-<div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span><kbd>Esc</kbd>Back</span><span id="rename-hint"><kbd>F2</kbd>Rename</span><span id="forget-hint"><kbd>Del</kbd>Remove</span><span id="fullscreen-hint"><kbd>F11</kbd>Full screen</span><span id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span></div>
+<div class="hints"><span><kbd>↑↓</kbd>Select</span><span><kbd>Enter</kbd>Open</span><span id="rename-hint"><kbd>F2</kbd>Rename</span><span id="forget-hint"><kbd>Del</kbd>Remove</span><span id="fullscreen-hint"><kbd>F11</kbd>Full screen</span><span id="reload-hint"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>Reload</span></div>
 
 <script type="module">
   import { backdrop, joinLink, joinable, logo, pick, renameInPlace, usage } from "/front.js";

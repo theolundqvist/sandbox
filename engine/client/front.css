@@ -91,7 +91,7 @@ body:has(.screen.title:not([hidden])) .front { justify-content: center; align-it
 .item.renaming input, .item.renaming input:not(:placeholder-shown) { flex: 1; min-width: 0; font-size: 26px; letter-spacing: .03em; }
 
 .error { color: var(--err); min-height: 1.4em; margin-top: 16px; font: 600 14px/1.4 var(--display); }
-.hints { position: fixed; left: 96px; bottom: 36px; display: flex; gap: 28px; color: var(--dim); font: 700 12px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; pointer-events: none; }
+.hints { position: fixed; left: 96px; right: 96px; bottom: 36px; display: flex; flex-wrap: wrap; gap: 10px 28px; color: var(--dim); font: 700 12px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; pointer-events: none; }
 .hints kbd { font: inherit; display: inline-block; min-width: 24px; text-align: center; border: 1px solid rgba(255,255,255,.35); padding: 4px 6px; margin-right: 8px; color: var(--text); }
 
 @media (max-width: 760px) {
