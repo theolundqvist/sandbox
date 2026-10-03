@@ -137,6 +137,13 @@ test("every result, answered or refused, sends the agent back to wait_for_chat, 
   for (const { text } of [answered, refused]) expect(text.trimEnd()).toEndWith("call wait_for_chat again. Never end your turn.");
 });
 
+test("a file read ends with the file's last byte, so an agent can pipe what follows the hash line into write_file", async () => {
+  await tool("write_file", { path: "mods/basics/note.txt", content: "one\ntwo\n" });
+  const read = await tool("read_file", { path: "mods/basics/note.txt" });
+  expect(read.status).toBe(200);
+  expect(read.text).toMatch(/^hash: \S+\none\ntwo\n$/);
+});
+
 test("a meshless wall or a mod's terrain that stops a walk is named with the mod that made it", async () => {
   await write(
     "mods/fence/server.ts",

@@ -730,6 +730,7 @@ export function createCli(ctx: CliContext) {
       try {
         const result = await call(command, args, who);
         if (typeof result !== "string") return { status: 200, body: new Blob([Buffer.from(result.image, "base64")]), type: "image/jpeg" };
+        if (command === "read_file") return { status: 200, body: result };
         return { status: 200, body: [result, ...takeChat(who), KEEP_LISTENING].join("\n\n") + "\n" };
       } catch (e: any) {
         if (!(e instanceof ToolError)) console.error(e);

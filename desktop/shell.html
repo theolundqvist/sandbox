@@ -131,7 +131,7 @@
     <p id="cworld-about"></p>
     <p class="status" id="cworld-lineage" hidden></p>
     <div id="cworld-mod" hidden>
-      <div class="items"><button class="item" id="cworld-add">Add to a world<span class="value">Copy for your agent</span></button></div>
+      <div class="items"><button class="item" id="cworld-add">Add to a world<span class="value">Copy</span></button></div>
       <pre id="cworld-add-line"></pre>
       <pre id="cworld-readme"></pre>
       <h2 class="status">API</h2>
@@ -703,7 +703,7 @@ const usedBy = (n = 0) => `${counted(n, "world")} use${n === 1 ? "s" : ""} it`;
     $("cworld-play").hidden = $("cworld-fork").hidden = mod;
     $("cworld-mod").hidden = !mod;
     $("cworld-add-line").textContent = `./world add_mod id=${w.id}`;
-    $("cworld-add").lastChild.textContent = "Copy for your agent";
+    $("cworld-add").lastChild.textContent = "Copy";
     $("cworld-readme").textContent = w.readme ?? "";
     $("cworld-readme").hidden = !w.readme;
     $("cworld-api").textContent = w.api || "Exports nothing to other mods";
