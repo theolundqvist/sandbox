@@ -63,6 +63,7 @@ To move from another machine: export the world there and stop that launcher, the
 
 - Clips and stills live in `docs/readme/`, kebab-case, referenced from README.md with alt text and a one-line caption under each saying exactly what happens. Every file there should be referenced; delete what the README stops using.
 - Clips are animated WebP: 6–12 s, 960–1200 px wide, 10–12 fps, lossy quality 60–75, at most 5 MB each. Stills are JPEG quality ~85 (PNG only for small flat UI crops).
+- Menu backdrop stills (engine/client/stills/, 1920 wide WebP) show the world alone: open a copy of the world with `#still` in the game URL, which hides the HUD, menus, chat and name tags. Never cut them from recordings.
 - Keep screen recordings out of the repo. To cut a clip from one (`ffmpeg` here has no WebP encoder, so go through PNG frames and `img2webp` from Homebrew `webp`):
 
   ```sh

@@ -24,7 +24,7 @@ export function logo(svg) {
 }
 
 /** Stills of games built in Sandbox behind the title screen, crossfading every 7 s in a shuffled order after the first; one still when motion is reduced. */
-const STILLS = ["high-noon", "retro-cabinet", "genesis-creator", "world"];
+const STILLS = ["world", "cactus-flats", "bone-canyon"];
 export function backdrop(el) {
   const still = (name) => Object.assign(document.createElement("img"), { src: `/stills/${name}.webp`, alt: "" });
   let shown = still(STILLS[0]);

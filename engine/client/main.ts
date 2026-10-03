@@ -150,6 +150,9 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.info.autoReset = false;
 document.body.prepend(renderer.domElement);
+/** `#still` draws the world alone, for the menus' backdrop stills: no HUD, menus, chat or name tags. */
+const still = hashParams.has("still");
+if (still) document.head.append(Object.assign(document.createElement("style"), { textContent: "body > :not(canvas) { visibility: hidden !important }" }));
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
@@ -2770,6 +2773,7 @@ renderer.setAnimationLoop(() => {
   const drawStart = performance.now();
   if (screen.scene !== false && filming) untagged(() => (draw(dt), frameInto(filming!)));
   else if (coverDue(now, dt)) untagged(() => (draw(dt), takeCover()));
+  else if (screen.scene !== false && still) untagged(() => draw(dt));
   else if (screen.scene !== false) draw(dt);
   view.position.sub(shakeOffset);
   if (heldMaterials) for (const m of heldMaterials.splice(0)) disposeMaterial.call(m);
