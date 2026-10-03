@@ -1382,6 +1382,10 @@ export default { init(ctx) { if (ctx.playerId === "closed") setTimeout(() => bla
       assert.deepEqual([result.status, result.width, result.by], [200, 1280, "first"]);
     } finally {
       await context.close();
+      if (CAPTURES) {
+        mkdirSync(CAPTURES, { recursive: true });
+        writeFileSync(`${CAPTURES}/screenshot-wire.json`, JSON.stringify(timeline, null, 2));
+      }
     }
     await until("the player gone", async () => (await shot()).status === 422);
     assert.match((await shot()).text, /^shooter doesn't have the game open.*query_world and logs/);
